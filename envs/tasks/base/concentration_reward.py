@@ -24,10 +24,12 @@ MC_IMAGE_MEAN = (0.3331, 0.3245, 0.3051)
 MC_IMAGE_STD = (0.2439, 0.2493, 0.2873)
 MC_NORMALIZER = Normalize(mean=MC_IMAGE_MEAN, std=MC_IMAGE_STD)
 
+
 def normalize_numpy(image, mean, std):
     for c in range(image.shape[2]):
         image[:, :, c] = (image[:, :, c] - mean[c]) / std[c]
     return image
+
 
 def save_image(img, index, name='curr_frame', output_dir='output_tmp'):
     if not os.path.exists(output_dir):
@@ -35,23 +37,28 @@ def save_image(img, index, name='curr_frame', output_dir='output_tmp'):
 
     plt.imsave(os.path.join(output_dir, f"{index}_{name}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png"), img)
 
+
 def save_mask(out_np, index, name='mask', output_dir='output_tmp'):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    
+
     for i, mask in enumerate(out_np):
-        plt.imsave(os.path.join(output_dir, f"{index}_{name}_{i}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png"), mask, cmap='jet', vmin=0, vmax=1)
+        plt.imsave(os.path.join(output_dir, f"{index}_{name}_{i}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png"),
+                   mask, cmap='jet', vmin=0, vmax=1)
+
 
 def save_affordance_map(out_np, episode_num, step_num, output_dir='output_tmp'):
     save_path = os.path.join(output_dir, 'screenshot', f'episode_{episode_num}', 'map')
     if not os.path.exists(save_path):
         os.makedirs(save_path)
-    
+
     for i, mask in enumerate(out_np):
         plt.imsave(os.path.join(save_path, f"{step_num}.png"), mask, cmap='jet', vmin=0, vmax=1.0)
-    
+
+
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
+
 
 def resized_if_need(image, target_size=(256, 160)):
     if image.shape[1] != target_size[0] or image.shape[0] != target_size[1]:
@@ -59,18 +66,22 @@ def resized_if_need(image, target_size=(256, 160)):
         if len(image.shape) == 2:
             image = image.reshape(image.shape[0], image.shape[1], 1)
     return image
-    
+
+
 def MCResize(image, label, target_size=(256, 160)):
     image = resized_if_need(image, target_size)
     label = resized_if_need(label, target_size)
-    
+
     return image, label
+
 
 def MyToTensor(image, label):
     return torch.from_numpy(image).permute(2, 0, 1), torch.from_numpy(label).permute(2, 0, 1)
-    
+
+
 def MNormalize(image, label):
     return normalize_numpy(image / 255.0, MC_IMAGE_MEAN, MC_IMAGE_STD), label
+
 
 class Config:
     class AUG:
@@ -160,6 +171,7 @@ class Config:
     })
     THROUGHPUT_MODE = False
 
+
 class RandomGenerator(object):
     def __init__(self, output_height=224, output_width=224):
         self.output_height = output_height
@@ -172,28 +184,29 @@ class RandomGenerator(object):
 
         return image, label
 
+
 class ThresholdBuffer:
     def __init__(self):
-        self.n = 0       
-        self.mean = 0    
-        self.M2 = 0      
+        self.n = 0
+        self.mean = 0
+        self.M2 = 0
 
     def count(self):
         return self.n
-    
+
     def fmean(self):
         return self.mean if self.n > 0 else 0
-    
+
     def std_dev(self):
         return math.sqrt(self.M2 / self.n) if self.n > 1 else 0
-    
+
     def add(self, number):
         self.n += 1
         delta = number - self.mean
         self.mean += delta / self.n
         delta2 = number - self.mean
         self.M2 += delta * delta2
-    
+
     def get_threshold(self):
         if self.n > 0:
             return self.fmean() + self.std_dev()
@@ -202,29 +215,114 @@ class ThresholdBuffer:
 
 
 class ConcentrationReward(ABC):
-    def __init__(self, ckpt="weights/mineclip_attn.pth", unet_checkpoint_dir="envs/tasks/base/unet_checkpoint", output_dir="output_tmp", gaussian_sigma_weight=0.5, **kwargs) -> None:
-        kwargs["arch"] = kwargs.pop("arch", "vit_base_p16_fz.v2.t2")
-        kwargs["hidden_dim"] = kwargs.pop("hidden_dim", 512)
-        kwargs["image_feature_dim"] = kwargs.pop("image_feature_dim", 512)
-        kwargs["mlp_adapter_spec"] = kwargs.pop("mlp_adapter_spec", "v0-2.t0")
-        kwargs["pool_type"] = kwargs.pop("pool_type", "attn.d2.nh8.glusw")
-        kwargs["resolution"] = [160, 256]
-
-        self.text_feature = None
-        self.prompts = None
-        self.unet_checkpoint_dir = unet_checkpoint_dir
+    # def __init__(self, ckpt="weights/mineclip_attn.pth", unet_checkpoint_dir="envs/tasks/base/unet_checkpoint", output_dir="output_tmp", gaussian_sigma_weight=0.5, **kwargs) -> None:
+    def __init__(
+            self,
+            clip_reward,
+            output_dir="output_tmp",
+            gaussian_sigma_weight=0.5,
+            relevance_threshold=0.30,
+            relevance_temperature=0.03,
+            # ------------------------------------------------------------
+            # Natural Zoom gates
+            # ------------------------------------------------------------
+            zoom_cooldown_steps=5,
+            semantic_gate_enabled=True,
+            semantic_min_p95_p50=0.025,
+            semantic_min_cc_fraction=0.02,
+            post_zoom_semantic_gate_enabled=False,
+            post_zoom_min_p95_gain=0.0,
+            post_zoom_min_contrast_gain=-0.005,
+            post_zoom_min_cc_retention=0.50,
+            # None = keep original unlimited behaviour; e.g. 3.0 = at most 3x
+            max_zoom_factor=3.5,
+            **kwargs,
+    ):
+        self.clip = clip_reward
+        # 和 ClipWrapper 完全共用同一个 MineCLIP
+        self.model = clip_reward.model
         self.output_dir = output_dir
+        self.resolution = self.get_resolution()
+        self.device = self.clip.device
 
-        self.resolution = self.get_resolution() # (160, 256)
-        self.u_net_resolution = 224
-        self.device = kwargs.pop("device", "cuda")
-        self.model = None
-        self.unet = None
-        self.gaussian = self._generate_gaussian_distribution(height=self.resolution[0], width=self.resolution[1], peak=1.0, sigma_x=self.resolution[1]*gaussian_sigma_weight, sigma_y=self.resolution[0]*gaussian_sigma_weight)
+        # relevance map 参数
+        self.relevance_threshold = float(
+            relevance_threshold
+        )
+        self.relevance_temperature = float(
+            relevance_temperature
+        )
+        assert (self.relevance_temperature > 0)
+
+        # ============================================================
+        # Natural Zoom gate configuration
+        # ============================================================
+        self.zoom_cooldown_steps = max(0, int(zoom_cooldown_steps))
+
+        self.semantic_gate_enabled = bool(semantic_gate_enabled)
+        self.semantic_min_p95_p50 = float(semantic_min_p95_p50)
+        self.semantic_min_cc_fraction = float(semantic_min_cc_fraction)
+
+        self.post_zoom_semantic_gate_enabled = bool(post_zoom_semantic_gate_enabled)
+        self.post_zoom_min_p95_gain = float(post_zoom_min_p95_gain)
+        self.post_zoom_min_contrast_gain = float(post_zoom_min_contrast_gain)
+        self.post_zoom_min_cc_retention = float(post_zoom_min_cc_retention)
+
+        self.max_zoom_factor = (
+            None
+            if max_zoom_factor is None
+            else float(max_zoom_factor)
+        )
+        if self.max_zoom_factor is not None:
+            assert self.max_zoom_factor > 1.0
+
+        # Runtime state. Cooldown resets when episode_num changes.
+        self.current_episode_num = None
+        self.current_step_num = -1
+        self.last_zoom_attempt_step = None
+        self.zoom_gate_reason = "not_checked"
+
+        # Current-frame semantic diagnostics.
+        self.current_raw_p50 = 0.0
+        self.current_raw_p95 = 0.0
+        self.current_raw_p95_p50 = 0.0
+        self.current_largest_cc_fraction = 0.0
+        self.semantic_ok = False
+
+        # Zoomed-frame semantic diagnostics.
+        self.zoom_raw_p50 = 0.0
+        self.zoom_raw_p95 = 0.0
+        self.zoom_raw_p95_p50 = 0.0
+        self.zoom_largest_cc_fraction = 0.0
+        self.zoom_p95_gain = 0.0
+        self.zoom_contrast_gain = 0.0
+        self.zoom_cc_retention = 0.0
+        self.zoom_semantic_gain_ok = False
+
+        self.raw_zoom_factor = 1.0
+        self.actual_zoom_factor = 1.0
+
+        # 原 LS-Imagine 逻辑保留
+        self.gaussian = (
+            self._generate_gaussian_distribution(
+                height=self.resolution[0],
+                width=self.resolution[1],
+                peak=1.0,
+                sigma_x=(
+                        self.resolution[1]
+                        * gaussian_sigma_weight
+                ),
+                sigma_y=(
+                        self.resolution[0]
+                        * gaussian_sigma_weight
+                ),
+            )
+        )
+
         self.gaussian_mean = np.mean(self.gaussian)
         self.mask = None
         self.mask_on_zoomed_image = None
-        self.preprocess = RandomGenerator(output_height=self.u_net_resolution, output_width=self.u_net_resolution)
+
         self.best_value_on_mask = 0
 
         self.have_center = False
@@ -232,22 +330,16 @@ class ConcentrationReward(ABC):
         self.ker_size = 0.15
         self.strides = 9
         self.stride = 1
+
         self.zoom_in_frames = []
         self.video_feats = None
         self.zoom_in_score = None
 
         self.index = 0
 
-        self.unet_cfg = Config()
-        self._load_mineclip(ckpt, kwargs)
-        self._load_unet()
-
         self.gaussian_score = 0
         self.zoom_in_prob = 0
         self.num_above_threshold = 0
-
-        self.blur_x = 51
-        self.blur_y = 79 
 
         self.check_threshold_buffer = ThresholdBuffer()
         self.gaussian_buffer = ThresholdBuffer()
@@ -257,64 +349,182 @@ class ConcentrationReward(ABC):
         self.curr_frame = None
         self.zoomed_frame = None
 
-        
+        self.prompts = None
+
     @abstractstaticmethod
     def get_resolution():
         raise NotImplementedError()
-    
+
     @abstractstaticmethod
     def get_curr_frame(obs):
         raise NotImplementedError()
-    
-    def _load_mineclip(self, ckpt, config):
-        config = OmegaConf.create(config)
-        self.model = MineCLIP(**config).to(self.device)
-        self.model.load_ckpt(ckpt, strict=True)
-        if self.resolution != (160, 256):  # Not ideal, but we need to resize the relative position embedding
-            self.model.clip_model.vision_model._resolution = torch.tensor([160, 256])  # This isn't updated from when mineclip resized it
-            self.model.clip_model.vision_model.resize_pos_embed(self.resolution)
-        self.model.eval()
 
-    def _load_unet(self):
-        self.unet = MCUnet(self.unet_cfg, img_size=self.u_net_resolution, num_classes=1).cuda()
-        snapshot = os.path.join(self.unet_checkpoint_dir, 'swin_unet_checkpoint.pth')
-        msg = self.unet.load_state_dict(torch.load(snapshot))
-        print("self trained swin unet",msg)
-        self.unet.eval()
+    # def _load_mineclip(self, ckpt, config):
+    #     config = OmegaConf.create(config)
+    #     self.model = MineCLIP(**config).to(self.device)
+    #     self.model.load_ckpt(ckpt, strict=True)
+    #     if self.resolution != (160, 256):  # Not ideal, but we need to resize the relative position embedding
+    #         self.model.clip_model.vision_model._resolution = torch.tensor([160, 256])  # This isn't updated from when mineclip resized it
+    #         self.model.clip_model.vision_model.resize_pos_embed(self.resolution)
+    #     self.model.eval()
+
+    # def _load_unet(self):
+    #     self.unet = MCUnet(self.unet_cfg, img_size=self.u_net_resolution, num_classes=1).cuda()
+    #     snapshot = os.path.join(self.unet_checkpoint_dir, 'swin_unet_checkpoint.pth')
+    #     msg = self.unet.load_state_dict(torch.load(snapshot))
+    #     print("self trained swin unet",msg)
+    #     self.unet.eval()
 
     def _get_text_feats(
-        self,
-        prompts: str
+            self,
+            prompts: str
     ) -> torch.Tensor:
 
         if self.prompts is not None and self.text_feature is not None and self.prompts == prompts:
-            return self.text_feature # shape: [P, 512]
-        
+            return self.text_feature  # shape: [P, 512]
+
         else:
             self.prompts = prompts
             self.text_feature = self.model.encode_text(prompts)
-            assert len(self.text_feature.shape) == 2 and self.text_feature.shape[0] == len(prompts), "Found shape {}".format(self.text_feature.shape)
-            return self.text_feature # shape: [P, 512]
+            assert len(self.text_feature.shape) == 2 and self.text_feature.shape[0] == len(
+                prompts), "Found shape {}".format(self.text_feature.shape)
+            return self.text_feature  # shape: [P, 512]
 
-    def _generate_mask(self,
-                       obs: Dict,
-                       prompts: List[str]):
+    # def _generate_mask(self,
+    #                    obs: Dict,
+    #                    prompts: List[str]):
+    #     self.index += 1
+    #     self.curr_frame = self.get_curr_frame(obs) # shape: [160, 256, 3]
+    #     random_lable = np.random.rand(self.u_net_resolution, self.u_net_resolution, 1)
+    #     img, _ = self.preprocess(self.curr_frame, random_lable)
+    #     img = img.unsqueeze(0) # shape: [1, 3, 224, 224]
+    #
+    #     with torch.no_grad():
+    #         texts_feats = self._get_text_feats(prompts).cuda().float()
+    #         img = img.cuda().float().expand(texts_feats.shape[0], -1, -1, -1)
+    #         out = self.unet(img, texts_feats) # out.shape: [P, 1, 224, 224]
+    #         out_np = out.squeeze(1).cpu().detach().numpy() # out_np.shape: [P, 224, 224]
+    #         out_np = out_np.transpose((1, 2, 0))
+    #         out_np = resized_if_need(out_np, target_size=(self.resolution[1], self.resolution[0]))
+    #         out_np = out_np.transpose((2, 0, 1)).squeeze(0)
+    #         out_np = cv2.GaussianBlur(out_np, (self.blur_x, self.blur_y), 0)
+    #         out_np = out_np[np.newaxis, :]
+    #
+    #     return out_np
+
+    @staticmethod
+    def _largest_connected_component_fraction(
+            relevance_map,
+            threshold=0.5,
+    ):
+        """
+        relevance_map: [H,W], normally the 10x16 MineCLIP patch grid.
+        Returns the area fraction of the largest 8-connected component.
+        """
+        binary = (
+            np.asarray(relevance_map) > threshold
+        ).astype(np.uint8)
+
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
+            binary,
+            connectivity=8,
+        )
+
+        if num_labels <= 1:
+            return 0.0
+
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        return float(np.max(areas) / binary.size)
+
+    def _generate_mask(
+            self,
+            obs: Dict,
+            prompts: List[str],
+    ):
         self.index += 1
-        self.curr_frame = self.get_curr_frame(obs) # shape: [160, 256, 3]
-        random_lable = np.random.rand(self.u_net_resolution, self.u_net_resolution, 1)
-        img, _ = self.preprocess(self.curr_frame, random_lable)
-        img = img.unsqueeze(0) # shape: [1, 3, 224, 224]
+        # 保留 HWC RGB，
+        # generate_zoom_in_frame() 还需要它
+        self.curr_frame = (
+            self.get_curr_frame(obs)
+        )
+        self.prompts = prompts
 
         with torch.no_grad():
-            texts_feats = self._get_text_feats(prompts).cuda().float()
-            img = img.cuda().float().expand(texts_feats.shape[0], -1, -1, -1)
-            out = self.unet(img, texts_feats) # out.shape: [P, 1, 224, 224]
-            out_np = out.squeeze(1).cpu().detach().numpy() # out_np.shape: [P, 224, 224]
-            out_np = out_np.transpose((1, 2, 0))
-            out_np = resized_if_need(out_np, target_size=(self.resolution[1], self.resolution[0]))
-            out_np = out_np.transpose((2, 0, 1)).squeeze(0)
-            out_np = cv2.GaussianBlur(out_np, (self.blur_x, self.blur_y), 0)
-            out_np = out_np[np.newaxis, :]
+            # 关键：如果 ClipWrapper 已经处理过当前 obs,这里不会再次执行 ViT。
+            bundle = (
+                self.clip.get_frame_bundle(obs)
+            )
+
+            # [1,P,160]
+            similarity = (
+                self.clip.get_patch_similarity(bundle, prompts, )
+            )
+
+            # --------------------------------------------------------
+            # Current-frame raw semantic diagnostics.
+            # For multiple prompts, use the per-patch maximum because the
+            # final production mask also takes max over prompts.
+            # --------------------------------------------------------
+            similarity_for_gate = torch.max(
+                similarity[0],
+                dim=0,
+            ).values
+
+            sim_gate_np = (
+                similarity_for_gate
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
+            self.current_raw_p50 = float(np.percentile(sim_gate_np, 50))
+            self.current_raw_p95 = float(np.percentile(sim_gate_np, 95))
+            self.current_raw_p95_p50 = (
+                self.current_raw_p95 - self.current_raw_p50
+            )
+
+            # cosine -> relevance
+            # 固定尺度，不做每帧 min-max
+            relevance = torch.sigmoid(
+                (
+                        similarity
+                        - self.relevance_threshold
+                )
+                / self.relevance_temperature
+            )
+            B, P, N = relevance.shape
+            grid_h, grid_w = (bundle["grid_size"])
+
+            assert (N == grid_h * grid_w)
+
+            # Spatial coherence on the true MineCLIP 10x16 semantic grid.
+            relevance_for_gate = torch.max(
+                relevance[0],
+                dim=0,
+            ).values.reshape(grid_h, grid_w)
+
+            self.current_largest_cc_fraction = (
+                self._largest_connected_component_fraction(
+                    relevance_for_gate.detach().cpu().numpy(),
+                    threshold=0.5,
+                )
+            )
+
+            # [1,P,160]->[P,1,10,16]
+            relevance = relevance.reshape(B * P, 1, grid_h, grid_w, )
+
+            # 10×16->160×256
+            relevance = F.interpolate(
+                relevance,
+                size=self.resolution,
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            # [P,H,W]
+            relevance = relevance.reshape(B, P, self.resolution[0], self.resolution[1], )[0]
+
+            out_np = (relevance.detach().cpu().numpy().astype(np.float32))
 
         return out_np
 
@@ -325,7 +535,7 @@ class ConcentrationReward(ABC):
         x = np.linspace(-width // 2, width // 2, width)
         y = np.linspace(-height // 2, height // 2, height)
         x, y = np.meshgrid(x, y)
-        gaussian = peak * np.exp(-((x**2 / (2 * sigma_x**2)) + (y**2 / (2 * sigma_y**2))))
+        gaussian = peak * np.exp(-((x ** 2 / (2 * sigma_x ** 2)) + (y ** 2 / (2 * sigma_y ** 2))))
 
         return gaussian
 
@@ -336,12 +546,21 @@ class ConcentrationReward(ABC):
             episode_num: int,
             step_num: int
     ):
+        # ------------------------------------------------------------
+        # Track causal episode/step for cooldown.
+        # ------------------------------------------------------------
+        if self.current_episode_num != episode_num:
+            self.current_episode_num = episode_num
+            self.last_zoom_attempt_step = None
+
+        self.current_step_num = int(step_num)
+
         masks = self._generate_mask(obs, prompts)
-        self.mask = np.max(masks, axis=0) * 255.0 # shape: [160, 256]
+        self.mask = np.max(masks, axis=0) * 255.0  # shape: [160, 256]
 
         score = 0
         for mask in masks:
-            score += (np.mean(mask * self.gaussian)/self.gaussian_mean)
+            score += (np.mean(mask * self.gaussian) / self.gaussian_mean)
 
         self.gaussian_score = score
         self.gaussian_buffer.add(self.gaussian_score)
@@ -350,31 +569,99 @@ class ConcentrationReward(ABC):
         kurtosis_value = kurtosis(heatmap_normalized.flatten())
         normalized_kurtosis = sigmoid(kurtosis_value)
 
-        self.zoom_in_prob = normalized_kurtosis * (np.max(heatmap_normalized) - np.mean(heatmap_normalized))
+        self.zoom_in_prob = normalized_kurtosis * (
+            np.max(heatmap_normalized) - np.mean(heatmap_normalized)
+        )
         self.check_threshold_buffer.add(self.zoom_in_prob)
-        self.check_threshold = self.check_threshold_buffer.get_threshold()   
-        
+        self.check_threshold = self.check_threshold_buffer.get_threshold()
+
+        # ------------------------------------------------------------
+        # Gate 2: current-frame semantic reliability.
+        # This does NOT prove the region is really water/tree/etc.; it only
+        # asks for both semantic contrast and spatial coherence.
+        # ------------------------------------------------------------
+        self.semantic_ok = (
+            self.current_raw_p95_p50 >= self.semantic_min_p95_p50
+            and self.current_largest_cc_fraction >= self.semantic_min_cc_fraction
+        )
+
         return score, self.zoom_in_prob, self.check_threshold
-        
+
     def get_heatmap(self, is_zoomed=False):
         if is_zoomed:
-            return np.expand_dims(self.mask_on_zoomed_image, axis=-1) # [H, W, 1]
+            return np.expand_dims(self.mask_on_zoomed_image, axis=-1)  # [H, W, 1]
         else:
-            return np.expand_dims(self.mask, axis=-1) / 255.0 # [H, W, 1]
+            return np.expand_dims(self.mask, axis=-1) / 255.0  # [H, W, 1]
 
     def generate_zoom_in_frame(self, ):
+        # ============================================================
+        # Gate 0: original adaptive Natural Zoom threshold
+        # ============================================================
         if self.check_threshold >= self.zoom_in_prob:
+            self.zoom_gate_reason = "adaptive_threshold"
             return self.curr_frame, False
-        
-        image_tensor = torch.from_numpy(self.curr_frame).unsqueeze(0).float().to(self.device) # shape: [1, 160, 256, 3]
+
+        # ============================================================
+        # Gate 1: cooldown
+        # Count from the last actual zoom attempt that produced a crop.
+        # ============================================================
+        if (
+            self.zoom_cooldown_steps > 0
+            and self.last_zoom_attempt_step is not None
+            and (
+                self.current_step_num - self.last_zoom_attempt_step
+                <= self.zoom_cooldown_steps
+            )
+        ):
+            self.zoom_gate_reason = "cooldown"
+            return self.curr_frame, False
+
+        # ============================================================
+        # Gate 2: pre-zoom semantic reliability
+        # ============================================================
+        if self.semantic_gate_enabled and not self.semantic_ok:
+            self.zoom_gate_reason = "semantic_gate"
+            return self.curr_frame, False
+
+        image_tensor = (
+            torch.from_numpy(self.curr_frame)
+            .unsqueeze(0)
+            .float()
+            .to(self.device)
+        )
         B, H, W, C = image_tensor.shape
+
         heatmap_normalized = self.mask / 255.0
-        threshold_value = (np.max(heatmap_normalized) + np.min(heatmap_normalized)) / 2.0 + np.std(heatmap_normalized)
-        _, binary_image = cv2.threshold(heatmap_normalized, threshold_value, 1, cv2.THRESH_BINARY)
-        open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (16, 10))
-        binary_image = cv2.morphologyEx(binary_image, cv2.MORPH_OPEN, open_kernel)
-        contours, _ = cv2.findContours(binary_image.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        threshold_value = (
+            (np.max(heatmap_normalized) + np.min(heatmap_normalized)) / 2.0
+            + np.std(heatmap_normalized)
+        )
+
+        _, binary_image = cv2.threshold(
+            heatmap_normalized,
+            threshold_value,
+            1,
+            cv2.THRESH_BINARY,
+        )
+
+        open_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (16, 10),
+        )
+        binary_image = cv2.morphologyEx(
+            binary_image,
+            cv2.MORPH_OPEN,
+            open_kernel,
+        )
+
+        contours, _ = cv2.findContours(
+            binary_image.astype(np.uint8),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+
         if len(contours) == 0:
+            self.zoom_gate_reason = "no_contour"
             return self.curr_frame, False
 
         max_mean_value = 0
@@ -384,83 +671,405 @@ class ConcentrationReward(ABC):
         self.have_center = False
 
         for contour in contours:
-            mask = np.zeros_like(heatmap_normalized)
-            cv2.drawContours(mask, [contour], -1, (1), thickness=cv2.FILLED)
-            mean_val = np.mean(heatmap_normalized[mask == 1])
+            contour_mask = np.zeros_like(heatmap_normalized)
+            cv2.drawContours(
+                contour_mask,
+                [contour],
+                -1,
+                1,
+                thickness=cv2.FILLED,
+            )
+
+            mean_val = np.mean(heatmap_normalized[contour_mask == 1])
             M = cv2.moments(contour)
-            if self.gaussian[int(M['m01'] / M['m00']), int(M['m10'] / M['m00'])] >= self.gaussian_mean:
+
+            # Defensive check for degenerate contours.
+            if M['m00'] == 0:
+                continue
+
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+
+            if self.gaussian[cy, cx] >= self.gaussian_mean:
                 self.have_center = True
+
             if mean_val > max_mean_value:
                 max_mean_value = mean_val
-                max_area_ratio = np.sum(mask) / mask.size
-                centroid_x = int(M['m10'] / M['m00'])
-                centroid_y = int(M['m01'] / M['m00'])
+                max_area_ratio = np.sum(contour_mask) / contour_mask.size
+                centroid_x = cx
+                centroid_y = cy
 
-        self.num_above_threshold = max_area_ratio / (self.gaussian[centroid_y, centroid_x])
-        proportion = torch.tensor([self.num_above_threshold], device=self.device)
+        if max_area_ratio <= 0:
+            self.zoom_gate_reason = "invalid_contour"
+            return self.curr_frame, False
+
+        self.num_above_threshold = (
+            max_area_ratio
+            / self.gaussian[centroid_y, centroid_x]
+        )
+
+        proportion = torch.tensor(
+            [self.num_above_threshold],
+            device=self.device,
+            dtype=torch.float32,
+        )
+
+        # Original LS-Imagine permits proportion down to 0.01 -> about 10x.
         proportion = torch.clamp(proportion, 0.01, 1.0)
-        sqrt_proportion = torch.sqrt(proportion) # shape: [1]
-        mask = torch.from_numpy(self.mask / 255.0).unsqueeze(0).float().to(self.device) # shape: [1, 160, 256]
 
-        window_width = (sqrt_proportion * W).int()
-        window_height = (sqrt_proportion * H).int()
-        cur_window_height, cur_window_width = window_height[0], window_width[0]
-        kernel = torch.ones((1, 1, cur_window_height, cur_window_width), device=self.device) 
+        self.raw_zoom_factor = float(
+            1.0 / torch.sqrt(proportion)[0].item()
+        )
+
+        # ============================================================
+        # Optional max zoom factor.
+        # If max_zoom_factor=3, crop area fraction can never be smaller
+        # than 1/9, so width/height can never be smaller than 1/3.
+        # ============================================================
+        if self.max_zoom_factor is not None:
+            min_proportion = 1.0 / (self.max_zoom_factor ** 2)
+            proportion = torch.clamp(
+                proportion,
+                min=min_proportion,
+                max=1.0,
+            )
+
+        sqrt_proportion = torch.sqrt(proportion)
+
+        relevance_tensor = (
+            torch.from_numpy(self.mask / 255.0)
+            .unsqueeze(0)
+            .float()
+            .to(self.device)
+        )
+
+        # ceil guarantees the actual zoom does not exceed max_zoom_factor
+        # simply because integer conversion rounded the crop downward.
+        cur_window_width = int(
+            torch.ceil(sqrt_proportion * W)[0].item()
+        )
+        cur_window_height = int(
+            torch.ceil(sqrt_proportion * H)[0].item()
+        )
+
+        cur_window_width = max(1, min(cur_window_width, W))
+        cur_window_height = max(1, min(cur_window_height, H))
+
+        self.actual_zoom_factor = max(
+            W / float(cur_window_width),
+            H / float(cur_window_height),
+        )
+
+        kernel = torch.ones(
+            (1, 1, cur_window_height, cur_window_width),
+            device=self.device,
+        )
         kernel_size = cur_window_height * cur_window_width
-        
-        mask = mask.unsqueeze(1) # shape: [1, 1, 160, 256]
-        conv_result = F.conv2d(mask, kernel, stride=self.stride)
+
+        relevance_tensor = relevance_tensor.unsqueeze(1)
+        conv_result = F.conv2d(
+            relevance_tensor,
+            kernel,
+            stride=self.stride,
+        )
 
         best_value, best_idx = torch.max(conv_result.view(-1), 0)
         self.best_value_on_mask = (best_value / kernel_size).item()
         best_y, best_x = divmod(best_idx.item(), conv_result.shape[-1])
 
-        left_top = torch.tensor([best_x, best_y], device=self.device) * self.stride
-        right_bottom = left_top + torch.tensor([cur_window_width, cur_window_height], device=self.device)
-        window = image_tensor[:, int(left_top[1]):int(right_bottom[1]), int(left_top[0]):int(right_bottom[0]), :] 
-        window = window.permute(0, 3, 1, 2) # shape: [1, 3, window_height, window_width]
-        zoomed_image = F.interpolate(window, size=(H, W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1) # shape: [1, 160, 256, 3]
-        self.zoomed_frame = zoomed_image.squeeze(0).detach().cpu().numpy().astype(np.uint8) # shape: [160, 256, 3]
+        left_top = torch.tensor(
+            [best_x, best_y],
+            device=self.device,
+        ) * self.stride
+
+        right_bottom = left_top + torch.tensor(
+            [cur_window_width, cur_window_height],
+            device=self.device,
+        )
+
+        window = image_tensor[
+            :,
+            int(left_top[1]):int(right_bottom[1]),
+            int(left_top[0]):int(right_bottom[0]),
+            :,
+        ]
+
+        window = window.permute(0, 3, 1, 2)
+
+        zoomed_image = F.interpolate(
+            window,
+            size=(H, W),
+            mode='nearest',
+            # align_corners=False,
+        ).permute(0, 2, 3, 1)
+
+        self.zoomed_frame = (
+            zoomed_image
+            .squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.uint8)
+        )
+
+        # Start cooldown for any zoom attempt that really produced a crop.
+        # This also suppresses repeated false-positive zoom attempts.
+        self.last_zoom_attempt_step = self.current_step_num
+        self.zoom_gate_reason = "natural_zoom_candidate"
+
+        print(
+            "[ZOOM GATE] "
+            f"step={self.current_step_num}, "
+            f"raw_gap={self.current_raw_p95_p50:.4f}, "
+            f"cc={self.current_largest_cc_fraction:.4f}, "
+            f"raw_zoom={self.raw_zoom_factor:.2f}x, "
+            f"actual_zoom={self.actual_zoom_factor:.2f}x"
+        )
 
         return self.zoomed_frame, True
-    
-    def compute_reward_on_zoomed_image(self):
-        random_lable = np.random.rand(self.u_net_resolution, self.u_net_resolution, 1)
-        img, _ = self.preprocess(self.zoomed_frame, random_lable)
-        img = img.unsqueeze(0)
+
+    # def compute_reward_on_zoomed_image(self):
+    #     random_lable = np.random.rand(self.u_net_resolution, self.u_net_resolution, 1)
+    #     img, _ = self.preprocess(self.zoomed_frame, random_lable)
+    #     img = img.unsqueeze(0)
+    #
+    #     with torch.no_grad():
+    #         texts_feats = self._get_text_feats(self.prompts).cuda().float()
+    #         img = img.cuda().float().expand(texts_feats.shape[0], -1, -1, -1)
+    #
+    #         out = self.unet(img, texts_feats) # out.shape: [P, 1, 224, 224]
+    #         out_np = out.squeeze(1).cpu().detach().numpy() # out_np.shape: [P, 224, 224]
+    #         out_np = out_np.transpose((1, 2, 0))
+    #         out_np = resized_if_need(out_np, target_size=(self.resolution[1], self.resolution[0]))
+    #         out_np = out_np.transpose((2, 0, 1)).squeeze(0)
+    #         out_np = cv2.GaussianBlur(out_np, (self.blur_x, self.blur_y), 0)
+    #         out_np = out_np[np.newaxis, :]
+    #
+    #     self.mask_on_zoomed_image = np.max(out_np, axis=0)
+    #
+    #     zoomed_gaussian = 0
+    #     for mask in out_np:
+    #         zoomed_gaussian += (np.mean(mask * self.gaussian)/self.gaussian_mean)
+    #
+    #     kurtosis_value = kurtosis(self.mask_on_zoomed_image.flatten())
+    #     normalized_kurtosis = sigmoid(kurtosis_value)
+    #     zoom_in_prob_on_zoomed_image = normalized_kurtosis * (np.max(self.mask_on_zoomed_image) - np.mean(self.mask_on_zoomed_image))
+    #     zoomed_reward = self.best_value_on_mask
+    #
+    #     if zoomed_gaussian < self.gaussian_score + 2.0 * self.gaussian_buffer.std_dev():
+    #         is_zoomed = False
+    #     else:
+    #         is_zoomed = True
+    #
+    #     jump = is_zoomed and self.have_center
+    #
+    #     return zoomed_reward, zoomed_gaussian, zoom_in_prob_on_zoomed_image, is_zoomed, jump
+
+    def compute_reward_on_zoomed_image(
+            self,
+    ):
+        # HWC -> CHW
+        zoomed_tensor = (
+            torch.from_numpy(self.zoomed_frame)
+            .permute(2, 0, 1)
+            .contiguous()
+        )
 
         with torch.no_grad():
-            texts_feats = self._get_text_feats(self.prompts).cuda().float()
-            img = img.cuda().float().expand(texts_feats.shape[0], -1, -1, -1)
+            # zoomed image is a genuinely new pixel input -> one new Vision pass.
+            bundle = (
+                self.clip.make_bundle_from_frame(
+                    zoomed_tensor,
+                    need_global=False,
+                )
+            )
 
-            out = self.unet(img, texts_feats) # out.shape: [P, 1, 224, 224]
-            out_np = out.squeeze(1).cpu().detach().numpy() # out_np.shape: [P, 224, 224]
-            out_np = out_np.transpose((1, 2, 0))
-            out_np = resized_if_need(out_np, target_size=(self.resolution[1], self.resolution[0]))
-            out_np = out_np.transpose((2, 0, 1)).squeeze(0)
-            out_np = cv2.GaussianBlur(out_np, (self.blur_x, self.blur_y), 0)
-            out_np = out_np[np.newaxis, :]
+            similarity = (
+                self.clip.get_patch_similarity(
+                    bundle,
+                    self.prompts,
+                )
+            )
 
-        self.mask_on_zoomed_image = np.max(out_np, axis=0)
+            # For multiple prompts, stay consistent with max-over-prompts mask.
+            zoom_similarity_for_gate = torch.max(
+                similarity[0],
+                dim=0,
+            ).values
+
+            sim_debug = (
+                zoom_similarity_for_gate
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
+            self.zoom_raw_p50 = float(np.percentile(sim_debug, 50))
+            self.zoom_raw_p95 = float(np.percentile(sim_debug, 95))
+            self.zoom_raw_p95_p50 = (
+                self.zoom_raw_p95 - self.zoom_raw_p50
+            )
+
+            print(
+                "[ZOOM COSINE] "
+                f"min={sim_debug.min():.4f}, "
+                f"mean={sim_debug.mean():.4f}, "
+                f"max={sim_debug.max():.4f}, "
+                f"P50={self.zoom_raw_p50:.4f}, "
+                f"P90={np.percentile(sim_debug, 90):.4f}, "
+                f"P95={self.zoom_raw_p95:.4f}"
+            )
+
+            relevance = torch.sigmoid(
+                (
+                    similarity
+                    - self.relevance_threshold
+                )
+                / self.relevance_temperature
+            )
+
+            B, P, N = relevance.shape
+            grid_h, grid_w = bundle["grid_size"]
+
+            # Zoomed spatial coherence on 10x16 patch grid.
+            zoom_relevance_for_gate = torch.max(
+                relevance[0],
+                dim=0,
+            ).values.reshape(grid_h, grid_w)
+
+            self.zoom_largest_cc_fraction = (
+                self._largest_connected_component_fraction(
+                    zoom_relevance_for_gate.detach().cpu().numpy(),
+                    threshold=0.5,
+                )
+            )
+
+            relevance = relevance.reshape(
+                B * P,
+                1,
+                grid_h,
+                grid_w,
+            )
+
+            relevance = F.interpolate(
+                relevance,
+                size=self.resolution,
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            out_np = relevance.reshape(
+                B,
+                P,
+                self.resolution[0],
+                self.resolution[1],
+            )[0]
+
+            out_np = (
+                out_np
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
+
+        self.mask_on_zoomed_image = np.max(
+            out_np,
+            axis=0,
+        )
 
         zoomed_gaussian = 0
         for mask in out_np:
-            zoomed_gaussian += (np.mean(mask * self.gaussian)/self.gaussian_mean)
+            zoomed_gaussian += (
+                np.mean(mask * self.gaussian)
+                / self.gaussian_mean
+            )
 
-        kurtosis_value = kurtosis(self.mask_on_zoomed_image.flatten())
+        kurtosis_value = kurtosis(
+            self.mask_on_zoomed_image.flatten()
+        )
         normalized_kurtosis = sigmoid(kurtosis_value)
-        zoom_in_prob_on_zoomed_image = normalized_kurtosis * (np.max(self.mask_on_zoomed_image) - np.mean(self.mask_on_zoomed_image))
+
+        zoom_in_prob_on_zoomed_image = (
+            normalized_kurtosis
+            * (
+                np.max(self.mask_on_zoomed_image)
+                - np.mean(self.mask_on_zoomed_image)
+            )
+        )
+
         zoomed_reward = self.best_value_on_mask
 
-        if zoomed_gaussian < self.gaussian_score + 2.0 * self.gaussian_buffer.std_dev():
-            is_zoomed = False
+        # ============================================================
+        # Original LS-Imagine post-zoom Gaussian check.
+        # ============================================================
+        gaussian_gain_ok = (
+            zoomed_gaussian
+            >= self.gaussian_score
+            + 2.0 * self.gaussian_buffer.std_dev()
+        )
+
+        # ============================================================
+        # Gate 3: post-zoom semantic gain.
+        # This is the gate that prevents a semantically worse zoom from being
+        # marked is_zoomed=True and therefore entering ScoreStorage later.
+        # ============================================================
+        self.zoom_p95_gain = (
+            self.zoom_raw_p95 - self.current_raw_p95
+        )
+
+        self.zoom_contrast_gain = (
+            self.zoom_raw_p95_p50 - self.current_raw_p95_p50
+        )
+
+        if self.current_largest_cc_fraction > 1e-8:
+            self.zoom_cc_retention = (
+                self.zoom_largest_cc_fraction
+                / self.current_largest_cc_fraction
+            )
         else:
-            is_zoomed = True
+            self.zoom_cc_retention = (
+                1.0
+                if self.zoom_largest_cc_fraction > 0
+                else 0.0
+            )
+
+        self.zoom_semantic_gain_ok = (
+            self.zoom_p95_gain >= self.post_zoom_min_p95_gain
+            and self.zoom_contrast_gain >= self.post_zoom_min_contrast_gain
+            and self.zoom_cc_retention >= self.post_zoom_min_cc_retention
+        )
+
+        if self.post_zoom_semantic_gate_enabled:
+            is_zoomed = (
+                gaussian_gain_ok
+                and self.zoom_semantic_gain_ok
+            )
+        else:
+            is_zoomed = gaussian_gain_ok
 
         jump = is_zoomed and self.have_center
-        
-        return zoomed_reward, zoomed_gaussian, zoom_in_prob_on_zoomed_image, is_zoomed, jump
-    
+
+        print(
+            "[ZOOM SEMANTIC GAIN] "
+            f"p95_gain={self.zoom_p95_gain:+.4f}, "
+            f"contrast_gain={self.zoom_contrast_gain:+.4f}, "
+            f"cc={self.current_largest_cc_fraction:.4f}"
+            f"->{self.zoom_largest_cc_fraction:.4f}, "
+            f"cc_retention={self.zoom_cc_retention:.3f}, "
+            f"gaussian_ok={gaussian_gain_ok}, "
+            f"semantic_gain_ok={self.zoom_semantic_gain_ok}, "
+            f"accepted={is_zoomed}"
+        )
+
+        return (
+            zoomed_reward,
+            zoomed_gaussian,
+            zoom_in_prob_on_zoomed_image,
+            is_zoomed,
+            jump,
+        )
+
     def save_img_and_mask(self):
         print(self.index)
         save_image(self.curr_frame, self.index)
@@ -477,27 +1086,27 @@ class MCUnet(nn.Module):
         self.config = config
 
         self.swin_unet = MultimodalSwinTransformerSys(img_size=config.DATA.IMG_SIZE,
-                                patch_size=config.MODEL.SWIN.PATCH_SIZE,
-                                in_chans=config.MODEL.SWIN.IN_CHANS,
-                                num_classes=self.num_classes,
-                                embed_dim=config.MODEL.SWIN.EMBED_DIM,
-                                depths=config.MODEL.SWIN.DEPTHS,
-                                num_heads=config.MODEL.SWIN.NUM_HEADS,
-                                window_size=config.MODEL.SWIN.WINDOW_SIZE,
-                                mlp_ratio=config.MODEL.SWIN.MLP_RATIO,
-                                qkv_bias=config.MODEL.SWIN.QKV_BIAS,
-                                qk_scale=config.MODEL.SWIN.QK_SCALE,
-                                drop_rate=config.MODEL.DROP_RATE,
-                                drop_path_rate=config.MODEL.DROP_PATH_RATE,
-                                ape=config.MODEL.SWIN.APE,
-                                patch_norm=config.MODEL.SWIN.PATCH_NORM,
-                                use_checkpoint=config.TRAIN.USE_CHECKPOINT,
-                                text_feature_dim=config.MODEL.TEXT_FEATURE_DIM,
-                                heads=config.MODEL.HEADS)
+                                                      patch_size=config.MODEL.SWIN.PATCH_SIZE,
+                                                      in_chans=config.MODEL.SWIN.IN_CHANS,
+                                                      num_classes=self.num_classes,
+                                                      embed_dim=config.MODEL.SWIN.EMBED_DIM,
+                                                      depths=config.MODEL.SWIN.DEPTHS,
+                                                      num_heads=config.MODEL.SWIN.NUM_HEADS,
+                                                      window_size=config.MODEL.SWIN.WINDOW_SIZE,
+                                                      mlp_ratio=config.MODEL.SWIN.MLP_RATIO,
+                                                      qkv_bias=config.MODEL.SWIN.QKV_BIAS,
+                                                      qk_scale=config.MODEL.SWIN.QK_SCALE,
+                                                      drop_rate=config.MODEL.DROP_RATE,
+                                                      drop_path_rate=config.MODEL.DROP_PATH_RATE,
+                                                      ape=config.MODEL.SWIN.APE,
+                                                      patch_norm=config.MODEL.SWIN.PATCH_NORM,
+                                                      use_checkpoint=config.TRAIN.USE_CHECKPOINT,
+                                                      text_feature_dim=config.MODEL.TEXT_FEATURE_DIM,
+                                                      heads=config.MODEL.HEADS)
 
     def forward(self, x, p):
         if x.size()[1] == 1:
-            x = x.repeat(1,3,1,1)
+            x = x.repeat(1, 3, 1, 1)
         logits = self.swin_unet(x, p)
         return logits
 
@@ -507,14 +1116,14 @@ class MCUnet(nn.Module):
             print("pretrained_path:{}".format(pretrained_path))
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             pretrained_dict = torch.load(pretrained_path, map_location=device)
-            if "model"  not in pretrained_dict:
+            if "model" not in pretrained_dict:
                 print("---start load pretrained modle by splitting---")
-                pretrained_dict = {k[17:]:v for k,v in pretrained_dict.items()}
+                pretrained_dict = {k[17:]: v for k, v in pretrained_dict.items()}
                 for k in list(pretrained_dict.keys()):
                     if "output" in k:
                         print("delete key:{}".format(k))
                         del pretrained_dict[k]
-                msg = self.swin_unet.load_state_dict(pretrained_dict,strict=False)
+                msg = self.swin_unet.load_state_dict(pretrained_dict, strict=False)
                 return
             pretrained_dict = pretrained_dict['model']
             print("---start load pretrained modle of swin encoder---")
@@ -523,13 +1132,13 @@ class MCUnet(nn.Module):
             full_dict = copy.deepcopy(pretrained_dict)
             for k, v in pretrained_dict.items():
                 if "layers." in k:
-                    current_layer_num = 3-int(k[7:8])
+                    current_layer_num = 3 - int(k[7:8])
                     current_k = "layers_up." + str(current_layer_num) + k[8:]
-                    full_dict.update({current_k:v})
+                    full_dict.update({current_k: v})
             for k in list(full_dict.keys()):
                 if k in model_dict:
                     if full_dict[k].shape != model_dict[k].shape:
-                        print("delete:{};shape pretrain:{};shape model:{}".format(k,v.shape,model_dict[k].shape))
+                        print("delete:{};shape pretrain:{};shape model:{}".format(k, v.shape, model_dict[k].shape))
                         del full_dict[k]
 
             msg = self.swin_unet.load_state_dict(full_dict, strict=False)
@@ -863,12 +1472,13 @@ class PatchMerging(nn.Module):
         flops += (H // 2) * (W // 2) * 4 * self.dim * 2 * self.dim
         return flops
 
+
 class PatchExpand(nn.Module):
     def __init__(self, input_resolution, dim, dim_scale=2, norm_layer=nn.LayerNorm):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
-        self.expand = nn.Linear(dim, 2*dim, bias=False) if dim_scale==2 else nn.Identity()
+        self.expand = nn.Linear(dim, 2 * dim, bias=False) if dim_scale == 2 else nn.Identity()
         self.norm = norm_layer(dim // dim_scale)
 
     def forward(self, x):
@@ -881,11 +1491,12 @@ class PatchExpand(nn.Module):
         assert L == H * W, "input feature has wrong size"
 
         x = x.view(B, H, W, C)
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=2, p2=2, c=C//4)
-        x = x.view(B,-1,C//4)
-        x= self.norm(x)
+        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=2, p2=2, c=C // 4)
+        x = x.view(B, -1, C // 4)
+        x = self.norm(x)
 
         return x
+
 
 class FinalPatchExpand_X4(nn.Module):
     def __init__(self, input_resolution, dim, dim_scale=4, norm_layer=nn.LayerNorm):
@@ -893,8 +1504,8 @@ class FinalPatchExpand_X4(nn.Module):
         self.input_resolution = input_resolution
         self.dim = dim
         self.dim_scale = dim_scale
-        self.expand = nn.Linear(dim, 16*dim, bias=False)
-        self.output_dim = dim 
+        self.expand = nn.Linear(dim, 16 * dim, bias=False)
+        self.output_dim = dim
         self.norm = norm_layer(self.output_dim)
 
     def forward(self, x):
@@ -907,11 +1518,13 @@ class FinalPatchExpand_X4(nn.Module):
         assert L == H * W, "input feature has wrong size"
 
         x = x.view(B, H, W, C)
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale, c=C//(self.dim_scale**2))
-        x = x.view(B,-1,self.output_dim)
-        x= self.norm(x)
+        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale,
+                      c=C // (self.dim_scale ** 2))
+        x = x.view(B, -1, self.output_dim)
+        x = self.norm(x)
 
         return x
+
 
 class BasicLayer(nn.Module):
     """ A basic Swin Transformer layer for one stage.
@@ -982,6 +1595,7 @@ class BasicLayer(nn.Module):
             flops += self.downsample.flops()
         return flops
 
+
 class BasicLayer_up(nn.Module):
     """ A basic Swin Transformer layer for one stage.
 
@@ -1040,6 +1654,7 @@ class BasicLayer_up(nn.Module):
             x = self.upsample(x)
         return x
 
+
 class PatchEmbed(nn.Module):
     r""" Image to Patch Embedding
 
@@ -1090,6 +1705,7 @@ class PatchEmbed(nn.Module):
 
 import torch.nn.functional as F
 
+
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, temperature, attn_dropout=0.1):
         super().__init__()
@@ -1100,15 +1716,17 @@ class ScaledDotProductAttention(nn.Module):
         '''
         q, k, v shape: (batch_size, n_head, height * width, d_k)
         '''
-        attn = torch.matmul(q / self.temperature, k.transpose(2, 3)) # shape: (batch_size, n_head, height * width, height * width)
+        attn = torch.matmul(q / self.temperature,
+                            k.transpose(2, 3))  # shape: (batch_size, n_head, height * width, height * width)
 
         if mask is not None:
             attn = attn.masked_fill(mask == 0, -1e9)
 
-        attn = self.dropout(F.softmax(attn, dim=-1)) # shape: (batch_size, n_head, height * width, height * width)
-        output = torch.matmul(attn, v) # shape: (batch_size, n_head, height * width, d_v)
+        attn = self.dropout(F.softmax(attn, dim=-1))  # shape: (batch_size, n_head, height * width, height * width)
+        output = torch.matmul(attn, v)  # shape: (batch_size, n_head, height * width, d_v)
 
         return output, attn
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_head, d_model, d_k, d_v, dropout=0.1):
@@ -1137,24 +1755,25 @@ class MultiHeadAttention(nn.Module):
         d_k, d_v, n_head = self.d_k, self.d_v, self.n_head
         sz_b, len_q, len_k, len_v = q.size(0), q.size(1), k.size(1), v.size(1)
 
-        q = self.w_qs(q).view(sz_b, len_q, n_head, d_k) # shape: (batch_size, height * width, n_head, d_k)
-        k = self.w_ks(k).view(sz_b, len_k, n_head, d_k) # shape: (batch_size, height * width, n_head, d_k)
-        v = self.w_vs(v).view(sz_b, len_v, n_head, d_v) # shape: (batch_size, height * width, n_head, d_v)
+        q = self.w_qs(q).view(sz_b, len_q, n_head, d_k)  # shape: (batch_size, height * width, n_head, d_k)
+        k = self.w_ks(k).view(sz_b, len_k, n_head, d_k)  # shape: (batch_size, height * width, n_head, d_k)
+        v = self.w_vs(v).view(sz_b, len_v, n_head, d_v)  # shape: (batch_size, height * width, n_head, d_v)
 
         # Transpose for attention dot product: (batch_size, n_head, height * width, d_k)
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
 
         if mask is not None:
-            mask = mask.unsqueeze(1) # For head axis broadcasting.
-        
-        output, attn = self.attention(q, k, v, mask=mask) # shape: (batch_size, n_head, height * width, height * width)
+            mask = mask.unsqueeze(1)  # For head axis broadcasting.
 
-        output = output.transpose(1, 2).contiguous().view(sz_b, len_q, -1) # shape: (batch_size, height * width, n_head * d_v)
-        output = self.dropout(self.fc(output)) # shape: (batch_size, height * width, d_model)
-        output = self.layer_norm(output) # shape: (batch_size, height * width, d_model)
-        
+        output, attn = self.attention(q, k, v, mask=mask)  # shape: (batch_size, n_head, height * width, height * width)
+
+        output = output.transpose(1, 2).contiguous().view(sz_b, len_q,
+                                                          -1)  # shape: (batch_size, height * width, n_head * d_v)
+        output = self.dropout(self.fc(output))  # shape: (batch_size, height * width, d_model)
+        output = self.layer_norm(output)  # shape: (batch_size, height * width, d_model)
+
         return output, attn
-        
+
 
 class AttentionFusion(nn.Module):
     def __init__(self, channels):
@@ -1169,7 +1788,7 @@ class AttentionFusion(nn.Module):
         attention_weights = self.attention(combined_features)
         fused_features = feature1 * attention_weights + feature2 * (1 - attention_weights)
         return fused_features
-    
+
 
 class TextImageAttention(nn.Module):
     def __init__(self, image_feature_dim, text_feature_dim, n_heads):
@@ -1180,10 +1799,13 @@ class TextImageAttention(nn.Module):
 
     def forward(self, image_features, text_features):
         residual = image_features
-        text_features = self.text_projection(text_features) # shape: (batch_size, image_feature_dim)
-        text_features = text_features.unsqueeze(1).expand(-1, image_features.shape[1], -1) # shape: (batch_size, height * width, image_feature_dim)
-        attention, _ = self.multi_head_attention(q=text_features, k=image_features, v=image_features) # shape: (batch_size, height * width, image_feature_dim)
+        text_features = self.text_projection(text_features)  # shape: (batch_size, image_feature_dim)
+        text_features = text_features.unsqueeze(1).expand(-1, image_features.shape[1],
+                                                          -1)  # shape: (batch_size, height * width, image_feature_dim)
+        attention, _ = self.multi_head_attention(q=text_features, k=image_features,
+                                                 v=image_features)  # shape: (batch_size, height * width, image_feature_dim)
         return attention
+
 
 class MultimodalSwinTransformerSys(nn.Module):
     r""" Swin Transformer
@@ -1221,8 +1843,10 @@ class MultimodalSwinTransformerSys(nn.Module):
 
         assert num_classes == 1, "num_classes should be 1 for heatmap generation!"
 
-        print("SwinTransformerSys expand initial----depths:{};depths_decoder:{};drop_path_rate:{};num_classes:{}".format(depths,
-        depths_decoder,drop_path_rate,num_classes))
+        print(
+            "SwinTransformerSys expand initial----depths:{};depths_decoder:{};drop_path_rate:{};num_classes:{}".format(
+                depths,
+                depths_decoder, drop_path_rate, num_classes))
 
         self.num_classes = num_classes
         self.num_layers = len(depths)
@@ -1273,47 +1897,51 @@ class MultimodalSwinTransformerSys(nn.Module):
         # build fusion layers
         self.TIA = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            fusion_layer = TextImageAttention(image_feature_dim=int(embed_dim*2**i_layer), 
-                                     text_feature_dim=text_feature_dim, 
-                                     n_heads=heads)
+            fusion_layer = TextImageAttention(image_feature_dim=int(embed_dim * 2 ** i_layer),
+                                              text_feature_dim=text_feature_dim,
+                                              n_heads=heads)
             self.TIA.append(fusion_layer)
-            
-        
+
         # build decoder layers
         self.layers_up = nn.ModuleList()
         self.concat_back_dim = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            concat_linear = nn.Linear(2*int(embed_dim*2**(self.num_layers-1-i_layer)),
-            int(embed_dim*2**(self.num_layers-1-i_layer))) if i_layer > 0 else nn.Identity()
-            if i_layer ==0 :
-                layer_up = PatchExpand(input_resolution=(patches_resolution[0] // (2 ** (self.num_layers-1-i_layer)),
-                patches_resolution[1] // (2 ** (self.num_layers-1-i_layer))), dim=int(embed_dim * 2 ** (self.num_layers-1-i_layer)), dim_scale=2, norm_layer=norm_layer)
+            concat_linear = nn.Linear(2 * int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
+                                      int(embed_dim * 2 ** (
+                                              self.num_layers - 1 - i_layer))) if i_layer > 0 else nn.Identity()
+            if i_layer == 0:
+                layer_up = PatchExpand(
+                    input_resolution=(patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
+                                      patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
+                    dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)), dim_scale=2, norm_layer=norm_layer)
             else:
-                layer_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers-1-i_layer)),
-                                input_resolution=(patches_resolution[0] // (2 ** (self.num_layers-1-i_layer)),
-                                                    patches_resolution[1] // (2 ** (self.num_layers-1-i_layer))),
-                                depth=depths[(self.num_layers-1-i_layer)],
-                                num_heads=num_heads[(self.num_layers-1-i_layer)],
-                                window_size=window_size,
-                                mlp_ratio=self.mlp_ratio,
-                                qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                drop=drop_rate, attn_drop=attn_drop_rate,
-                                drop_path=dpr[sum(depths[:(self.num_layers-1-i_layer)]):sum(depths[:(self.num_layers-1-i_layer) + 1])],
-                                norm_layer=norm_layer,
-                                upsample=PatchExpand if (i_layer < self.num_layers - 1) else None,
-                                use_checkpoint=use_checkpoint)
+                layer_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
+                                         input_resolution=(
+                                             patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
+                                             patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
+                                         depth=depths[(self.num_layers - 1 - i_layer)],
+                                         num_heads=num_heads[(self.num_layers - 1 - i_layer)],
+                                         window_size=window_size,
+                                         mlp_ratio=self.mlp_ratio,
+                                         qkv_bias=qkv_bias, qk_scale=qk_scale,
+                                         drop=drop_rate, attn_drop=attn_drop_rate,
+                                         drop_path=dpr[sum(depths[:(self.num_layers - 1 - i_layer)]):sum(
+                                             depths[:(self.num_layers - 1 - i_layer) + 1])],
+                                         norm_layer=norm_layer,
+                                         upsample=PatchExpand if (i_layer < self.num_layers - 1) else None,
+                                         use_checkpoint=use_checkpoint)
             self.layers_up.append(layer_up)
             self.concat_back_dim.append(concat_linear)
 
         self.norm = norm_layer(self.num_features)
-        self.norm_up= norm_layer(self.embed_dim)
+        self.norm_up = norm_layer(self.embed_dim)
 
         if self.final_upsample == "expand_first":
             print("---final upsample expand_first---")
-            self.up = FinalPatchExpand_X4(input_resolution=(img_size//patch_size,img_size//patch_size),dim_scale=4,dim=embed_dim)
-            self.output = nn.Conv2d(in_channels=embed_dim,out_channels=self.num_classes,kernel_size=1,bias=False)
+            self.up = FinalPatchExpand_X4(input_resolution=(img_size // patch_size, img_size // patch_size),
+                                          dim_scale=4, dim=embed_dim)
+            self.output = nn.Conv2d(in_channels=embed_dim, out_channels=self.num_classes, kernel_size=1, bias=False)
             self.output_sigmoid = nn.Sigmoid()
-
 
         self.apply(self._init_weights)
 
@@ -1334,7 +1962,7 @@ class MultimodalSwinTransformerSys(nn.Module):
     def no_weight_decay_keywords(self):
         return {'relative_position_bias_table'}
 
-    #Encoder and Bottleneck
+    # Encoder and Bottleneck
     def forward_features(self, x):
         x = self.patch_embed(x)
         if self.ape:
@@ -1347,35 +1975,35 @@ class MultimodalSwinTransformerSys(nn.Module):
             x = layer(x)
 
         x = self.norm(x)  # B L C
-  
+
         return x, x_downsample
 
-    #Dencoder and Skip connection
+    # Dencoder and Skip connection
     def forward_up_features(self, x, x_fusion):
         for inx, layer_up in enumerate(self.layers_up):
             if inx == 0:
                 x = layer_up(x)
             else:
-                x = torch.cat([x,x_fusion[3-inx]],-1)
+                x = torch.cat([x, x_fusion[3 - inx]], -1)
                 x = self.concat_back_dim[inx](x)
                 x = layer_up(x)
 
         x = self.norm_up(x)  # B L C
-  
+
         return x
 
     def up_x4(self, x):
         H, W = self.patches_resolution
         B, L, C = x.shape
-        assert L == H*W, "input features has wrong size"
+        assert L == H * W, "input features has wrong size"
 
-        if self.final_upsample=="expand_first":
+        if self.final_upsample == "expand_first":
             x = self.up(x)
-            x = x.view(B,4*H,4*W,-1)
-            x = x.permute(0,3,1,2) #B,C,H,W
+            x = x.view(B, 4 * H, 4 * W, -1)
+            x = x.permute(0, 3, 1, 2)  # B,C,H,W
             x = self.output(x)
             x = self.output_sigmoid(x)
-            
+
         return x
 
     def fusion(self, x_downsample, p):
@@ -1386,7 +2014,7 @@ class MultimodalSwinTransformerSys(nn.Module):
                 x_fusion.append(attention)
             else:
                 x_fusion.append(x_downsample[inx])
-        
+
         return x_fusion
 
     def forward(self, x, p):

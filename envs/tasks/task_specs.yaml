@@ -15,7 +15,21 @@ harvest_log_in_plains:
     prompts: ["Cut a tree"]
   concentration_specs:
     prompts: ["Cut a tree"]
-    unet_checkpoint_dir: "affordance_map/finetune_unet/finetune_checkpoints/harvest_log_in_plains"
+    relevance_threshold: 0.288
+    relevance_temperature: 0.016
+    # Gate 1
+    zoom_cooldown_steps: 5
+    # Gate 2
+    semantic_gate_enabled: false
+    semantic_min_p95_p50: 0.025
+    semantic_min_cc_fraction: 0.02
+    # Gate 3
+    post_zoom_semantic_gate_enabled: false
+    post_zoom_min_p95_gain: 0.0
+    post_zoom_min_contrast_gain: -0.005
+    post_zoom_min_cc_retention: 0.50
+    # 最大缩放倍率
+    max_zoom_factor: 3.5
   reward_specs:
     item_rewards: 
       log:
@@ -51,7 +65,21 @@ harvest_water_with_bucket:
     prompts: ["Obtain water"]
   concentration_specs:
     prompts: ["Obtain water"]
-    unet_checkpoint_dir: "affordance_map/finetune_unet/finetune_checkpoints/harvest_water_with_bucket"
+    relevance_threshold: 0.288
+    relevance_temperature: 0.016
+    # Gate 1
+    zoom_cooldown_steps: 5
+    # Gate 2
+    semantic_gate_enabled: false
+    semantic_min_p95_p50: 0.025
+    semantic_min_cc_fraction: 0.02
+    # Gate 3
+    post_zoom_semantic_gate_enabled: false
+    post_zoom_min_p95_gain: 0.0
+    post_zoom_min_contrast_gain: -0.005
+    post_zoom_min_cc_retention: 0.50
+    # 最大缩放倍率
+    max_zoom_factor: 3.5
   reward_specs:
     item_rewards: 
       water_bucket:
@@ -82,7 +110,21 @@ harvest_sand:
     prompts: ["Obtain sand"]
   concentration_specs:
     prompts: ["Obtain sand"]
-    unet_checkpoint_dir: "affordance_map/finetune_unet/finetune_checkpoints/harvest_sand"
+    relevance_threshold: 0.288
+    relevance_temperature: 0.016
+    # Gate 1
+    zoom_cooldown_steps: 5
+    # Gate 2
+    semantic_gate_enabled: false
+    semantic_min_p95_p50: 0.025
+    semantic_min_cc_fraction: 0.02
+    # Gate 3
+    post_zoom_semantic_gate_enabled: false
+    post_zoom_min_p95_gain: 0.0
+    post_zoom_min_contrast_gain: -0.005
+    post_zoom_min_cc_retention: 0.50
+    # 最大缩放倍率
+    max_zoom_factor: 3.5
   reward_specs:
     item_rewards: 
       sand:
@@ -117,7 +159,21 @@ mine_iron_ore:
     prompts: ["Mine iron ore"]
   concentration_specs:
     prompts: ["Mine iron ore"]
-    unet_checkpoint_dir: "affordance_map/finetune_unet/finetune_checkpoints/mine_iron_ore"
+    relevance_threshold: 0.288
+    relevance_temperature: 0.016
+    # Gate 1
+    zoom_cooldown_steps: 5
+    # Gate 2
+    semantic_gate_enabled: false
+    semantic_min_p95_p50: 0.025
+    semantic_min_cc_fraction: 0.02
+    # Gate 3
+    post_zoom_semantic_gate_enabled: false
+    post_zoom_min_p95_gain: 0.0
+    post_zoom_min_contrast_gain: -0.005
+    post_zoom_min_cc_retention: 0.50
+    # 最大缩放倍率
+    max_zoom_factor: 3.5
   reward_specs:
     item_rewards: 
       iron_ore:
@@ -156,7 +212,21 @@ shear_sheep:
     prompts: ["Obtain wool"]
   concentration_specs:
     prompts: ["Obtain wool"]
-    unet_checkpoint_dir: "affordance_map/finetune_unet/finetune_checkpoints/shear_sheep"
+    relevance_threshold: 0.288
+    relevance_temperature: 0.016
+    # Gate 1
+    zoom_cooldown_steps: 5
+    # Gate 2
+    semantic_gate_enabled: false
+    semantic_min_p95_p50: 0.025
+    semantic_min_cc_fraction: 0.02
+    # Gate 3
+    post_zoom_semantic_gate_enabled: false
+    post_zoom_min_p95_gain: 0.0
+    post_zoom_min_contrast_gain: -0.005
+    post_zoom_min_cc_retention: 0.50
+    # 最大缩放倍率
+    max_zoom_factor: 3.5
   reward_specs:
     item_rewards: 
       wool:

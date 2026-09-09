@@ -1,6 +1,11 @@
 # Ignore all __pycache__ folders in the project
 __pycache__/
 
+# Ignore the relevance map test data folder
+relevance_map/maskclip_test/
+relevance_map/real_approach_runs/
+relevance_map/relevance_test/
+
 # Ignore the entire Minecraft folder
 affordance_map/datasets/Minecraft/
 
