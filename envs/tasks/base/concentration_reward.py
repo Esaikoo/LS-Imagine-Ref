@@ -226,8 +226,8 @@ class ConcentrationReward(ABC):
             # ------------------------------------------------------------
             # Natural Zoom gates
             # ------------------------------------------------------------
-            zoom_cooldown_steps=5,
-            semantic_gate_enabled=True,
+            zoom_cooldown_steps=0,
+            semantic_gate_enabled=False,
             semantic_min_p95_p50=0.025,
             semantic_min_cc_fraction=0.02,
             post_zoom_semantic_gate_enabled=False,
@@ -235,7 +235,7 @@ class ConcentrationReward(ABC):
             post_zoom_min_contrast_gain=-0.005,
             post_zoom_min_cc_retention=0.50,
             # None = keep original unlimited behaviour; e.g. 3.0 = at most 3x
-            max_zoom_factor=3.5,
+            max_zoom_factor=None,
             **kwargs,
     ):
         self.clip = clip_reward
@@ -817,14 +817,14 @@ class ConcentrationReward(ABC):
         self.last_zoom_attempt_step = self.current_step_num
         self.zoom_gate_reason = "natural_zoom_candidate"
 
-        print(
-            "[ZOOM GATE] "
-            f"step={self.current_step_num}, "
-            f"raw_gap={self.current_raw_p95_p50:.4f}, "
-            f"cc={self.current_largest_cc_fraction:.4f}, "
-            f"raw_zoom={self.raw_zoom_factor:.2f}x, "
-            f"actual_zoom={self.actual_zoom_factor:.2f}x"
-        )
+        # print(
+        #     "[ZOOM GATE] "
+        #     f"step={self.current_step_num}, "
+        #     f"raw_gap={self.current_raw_p95_p50:.4f}, "
+        #     f"cc={self.current_largest_cc_fraction:.4f}, "
+        #     f"raw_zoom={self.raw_zoom_factor:.2f}x, "
+        #     f"actual_zoom={self.actual_zoom_factor:.2f}x"
+        # )
 
         return self.zoomed_frame, True
 
@@ -910,15 +910,15 @@ class ConcentrationReward(ABC):
                 self.zoom_raw_p95 - self.zoom_raw_p50
             )
 
-            print(
-                "[ZOOM COSINE] "
-                f"min={sim_debug.min():.4f}, "
-                f"mean={sim_debug.mean():.4f}, "
-                f"max={sim_debug.max():.4f}, "
-                f"P50={self.zoom_raw_p50:.4f}, "
-                f"P90={np.percentile(sim_debug, 90):.4f}, "
-                f"P95={self.zoom_raw_p95:.4f}"
-            )
+            # print(
+            #     "[ZOOM COSINE] "
+            #     f"min={sim_debug.min():.4f}, "
+            #     f"mean={sim_debug.mean():.4f}, "
+            #     f"max={sim_debug.max():.4f}, "
+            #     f"P50={self.zoom_raw_p50:.4f}, "
+            #     f"P90={np.percentile(sim_debug, 90):.4f}, "
+            #     f"P95={self.zoom_raw_p95:.4f}"
+            # )
 
             relevance = torch.sigmoid(
                 (
@@ -1050,17 +1050,17 @@ class ConcentrationReward(ABC):
 
         jump = is_zoomed and self.have_center
 
-        print(
-            "[ZOOM SEMANTIC GAIN] "
-            f"p95_gain={self.zoom_p95_gain:+.4f}, "
-            f"contrast_gain={self.zoom_contrast_gain:+.4f}, "
-            f"cc={self.current_largest_cc_fraction:.4f}"
-            f"->{self.zoom_largest_cc_fraction:.4f}, "
-            f"cc_retention={self.zoom_cc_retention:.3f}, "
-            f"gaussian_ok={gaussian_gain_ok}, "
-            f"semantic_gain_ok={self.zoom_semantic_gain_ok}, "
-            f"accepted={is_zoomed}"
-        )
+        # print(
+        #     "[ZOOM SEMANTIC GAIN] "
+        #     f"p95_gain={self.zoom_p95_gain:+.4f}, "
+        #     f"contrast_gain={self.zoom_contrast_gain:+.4f}, "
+        #     f"cc={self.current_largest_cc_fraction:.4f}"
+        #     f"->{self.zoom_largest_cc_fraction:.4f}, "
+        #     f"cc_retention={self.zoom_cc_retention:.3f}, "
+        #     f"gaussian_ok={gaussian_gain_ok}, "
+        #     f"semantic_gain_ok={self.zoom_semantic_gain_ok}, "
+        #     f"accepted={is_zoomed}"
+        # )
 
         return (
             zoomed_reward,

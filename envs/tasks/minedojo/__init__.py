@@ -109,12 +109,12 @@ def _add_wrappers(
         relevance_threshold = (
             concentration_specs["relevance_threshold"]
             if "relevance_threshold" in concentration_specs
-            else 0.25
+            else 0.288
         )
         relevance_temperature = (
             concentration_specs["relevance_temperature"]
             if "relevance_temperature" in concentration_specs
-            else 0.05
+            else 0.016
         )
 
         # ----------------------------
@@ -123,7 +123,7 @@ def _add_wrappers(
         zoom_cooldown_steps = (
             concentration_specs.get(
                 "zoom_cooldown_steps",
-                5,
+                0,
             )
         )
 
@@ -183,7 +183,7 @@ def _add_wrappers(
         max_zoom_factor = (
             concentration_specs.get(
                 "max_zoom_factor",
-                3.5,
+                None,
             )
         )
 
