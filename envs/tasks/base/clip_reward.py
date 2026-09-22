@@ -14,7 +14,39 @@ from mineclip.mineclip.base import (
 
 
 class ClipReward(ABC):
+    """
+    Shared MineCLIP feature extractor used by both ClipWrapper and
+    ConcentrationWrapper.
+
+    Production spatial paths:
+
+      Value patch -> Temporal(L=1) -> cosine
+          used for the parameter-free relevance map
+
+      NACLIP(K-K + Gaussian) -> Temporal(L=1) -> cosine -> P85
+          used for ScoreStorage progress
+
+    The expensive ViT stem + first 11 transformer blocks are executed only
+    once for a normal observation. The last-block input is cached temporarily
+    inside ``obs['_mineclip_bundle']`` and is dropped by LSImagineWrapper
+    before replay storage.
+    """
+
     def __init__(self, ckpt="weights/mineclip_attn.pth", **kwargs) -> None:
+        # ------------------------------------------------------------
+        # NACLIP parameters are global representation parameters.
+        # They are intentionally NOT task-specific calibration terms.
+        # ------------------------------------------------------------
+        self.naclip_gaussian_std = float(
+            kwargs.pop("naclip_gaussian_std", 5.0)
+        )
+        self.naclip_gaussian_weight = float(
+            kwargs.pop("naclip_gaussian_weight", 1.0)
+        )
+        self.naclip_include_cls = bool(
+            kwargs.pop("naclip_include_cls", True)
+        )
+
         kwargs["arch"] = kwargs.pop("arch", "vit_base_p16_fz.v2.t2")
         kwargs["hidden_dim"] = kwargs.pop("hidden_dim", 512)
         kwargs["image_feature_dim"] = kwargs.pop("image_feature_dim", 512)
@@ -29,8 +61,153 @@ class ClipReward(ABC):
         self._load_mineclip(ckpt, kwargs)
 
         self._text_cache = {}
-        # 仅用于调试：
+        self._naclip_gaussian_cache = {}
+
+        # Debug counter: one increment == one MineCLIP vision encoding.
         self.vision_forward_count = 0
+
+    # ================================================================
+    # Shared vision encoding
+    # ================================================================
+
+    @th.no_grad()
+    def _encode_to_last_block_input(
+            self,
+            curr_frame: th.Tensor,
+    ):
+        """
+        Run MineCLIP vision up to (but not including) the final ViT block.
+
+        Returns:
+            x:
+                [L,B,768], input to the final transformer block
+            last_block:
+                final MineCLIP ViT block
+            grid_size:
+                (10,16) for 160x256 / patch16
+        """
+        if curr_frame.ndim == 3:
+            curr_frame = curr_frame.unsqueeze(0)
+
+        assert curr_frame.ndim == 4
+        assert curr_frame.shape[1] == 3
+        assert tuple(curr_frame.shape[-2:]) == self.resolution, (
+            curr_frame.shape,
+            self.resolution,
+        )
+
+        curr_frame = curr_frame.to(self.device)
+
+        frames = U.basic_image_tensor_preprocess(
+            curr_frame,
+            mean=MC_IMAGE_MEAN,
+            std=MC_IMAGE_STD,
+        )
+
+        vit = self.model.clip_model.vision_model
+        self.vision_forward_count += 1
+
+        x = vit.conv1(frames)
+        B, _, grid_h, grid_w = x.shape
+
+        x = x.reshape(B, x.shape[1], -1).permute(0, 2, 1)
+        x = th.cat([vit.cls_token.repeat(B, 1, 1), x], dim=1)
+        x = vit.ln_pre(x + vit.pos_embed)
+        x = x.permute(1, 0, 2)  # [L,B,D]
+
+        blocks = list(vit.blocks.children())
+        for block in blocks[:-1]:
+            x = block(x)
+
+        return x, blocks[-1], (int(grid_h), int(grid_w))
+
+    @th.no_grad()
+    def _value_patch_from_last_input(
+            self,
+            x,
+            last_block,
+    ):
+        """MaskCLIP-style Value projection from final-block input."""
+        vit = self.model.clip_model.vision_model
+        x_ln = last_block.ln_1(x)
+        attn = last_block.attn
+        embed_dim = x_ln.shape[-1]
+
+        v_weight = attn.in_proj_weight[
+            2 * embed_dim:
+            3 * embed_dim
+        ]
+        v_bias = (
+            None
+            if attn.in_proj_bias is None
+            else attn.in_proj_bias[2 * embed_dim:3 * embed_dim]
+        )
+
+        value = F.linear(x_ln, v_weight, v_bias)
+        value = F.linear(
+            value,
+            attn.out_proj.weight,
+            attn.out_proj.bias,
+        )
+
+        patch_feat = value[1:].permute(1, 0, 2)  # remove CLS
+        patch_feat = vit.ln_post(patch_feat)
+
+        if vit.projection is not None:
+            patch_feat = patch_feat @ vit.projection
+
+        return patch_feat
+
+    @th.no_grad()
+    def _global_from_last_input(
+            self,
+            x,
+            last_block,
+    ):
+        """Original MineCLIP global CLS path."""
+        vit = self.model.clip_model.vision_model
+        x_global = last_block(x).permute(1, 0, 2)
+        global_feat = vit.ln_post(x_global[:, 0, :])
+
+        if vit.projection is not None:
+            global_feat = global_feat @ vit.projection
+
+        return global_feat
+
+    @th.no_grad()
+    def _make_bundle_from_tensor(
+            self,
+            curr_frame,
+            need_global=True,
+    ):
+        """
+        Build a temporary feature bundle from one RGB frame.
+
+        ``_last_block_input`` is kept only so NACLIP can be computed lazily
+        without a second ViT pass. LSImagineWrapper later reconstructs the
+        public observation dictionary, so this tensor never enters replay.
+        """
+        x, last_block, grid_size = self._encode_to_last_block_input(
+            curr_frame
+        )
+
+        patch_feat = self._value_patch_from_last_input(
+            x,
+            last_block,
+        )
+
+        global_feat = (
+            self._global_from_last_input(x, last_block)
+            if need_global
+            else None
+        )
+
+        return {
+            "global_feat": global_feat,
+            "patch_feat": patch_feat,
+            "grid_size": grid_size,
+            "_last_block_input": x.detach(),
+        }
 
     @th.no_grad()
     def forward_image_and_patch(
@@ -39,176 +216,20 @@ class ClipReward(ABC):
             need_global: bool = True,
     ):
         """
-        Args:
-            curr_frame:
-                [3,H,W] 或 [B,3,H,W]
-                uint8, 0~255
+        Backward-compatible public helper.
 
-        Returns:
-            global_feat:
-                [B,512]，need_global=False 时为 None
-            patch_feat:
-                [B,N,512]
-            grid_size:
-                (grid_h, grid_w)
-        关键：
-            ViT 前 11 层只运行一次；
-            最后一个 block 的输入同时分出：
-              1. 正常最后 block -> Global CLS
-              2. MaskCLIP Value -> Patch
-            不再额外调用 forward_image_features()。
+        Returns exactly the same 3 values as the previous implementation:
+            global_feat, Value patch_feat, grid_size
         """
-
-        if curr_frame.ndim == 3:
-            curr_frame = curr_frame.unsqueeze(0)
-
-        assert curr_frame.ndim == 4
-        assert curr_frame.shape[1] == 3
-        assert tuple(curr_frame.shape[-2:]) == self.resolution
-
-        curr_frame = curr_frame.to(self.device)
-
-        # 和 MineCLIP 官方 forward_image_features 完全相同的预处理
-        frames = U.basic_image_tensor_preprocess(
+        bundle = self._make_bundle_from_tensor(
             curr_frame,
-            mean=MC_IMAGE_MEAN,
-            std=MC_IMAGE_STD,
+            need_global=need_global,
         )
-
-        vit = self.model.clip_model.vision_model
-
-        self.vision_forward_count += 1
-
-        # ========================================================
-        # Patch Embedding
-        # [B,3,160,256]
-        # ->
-        # [B,768,10,16]
-        # ========================================================
-        x = vit.conv1(frames)
-
-        B = x.shape[0]
-        grid_h = x.shape[2]
-        grid_w = x.shape[3]
-
-        # [B,768,10,16]
-        # ->
-        # [B,160,768]
-        x = x.reshape(B,x.shape[1],-1,).permute(0,2,1,)
-
-        # ========================================================
-        # CLS + Position
-        # ========================================================
-
-        cls_token = vit.cls_token.repeat(B,1,1,)
-
-        x = th.cat([cls_token, x],dim=1,)
-
-        x = x + vit.pos_embed
-        x = vit.ln_pre(x)
-
-        # [B,L,D] -> [L,B,D]
-        x = x.permute(1,0,2,)
-
-        # ========================================================
-        # 前 11 个 Transformer Block
-        # 只运行一次
-        # ========================================================
-        blocks = list(vit.blocks.children())
-
-        for block in blocks[:-1]:
-            x = block(x)
-
-        # 当前 x 是最后一个 Transformer block 的输入
-        last_block = blocks[-1]
-
-        # ========================================================
-        # 分支 1：
-        # MaskCLIP Value Patch
-        # ========================================================
-        x_ln = last_block.ln_1(x)
-
-        attn = last_block.attn
-        embed_dim = x_ln.shape[-1]
-
-        # nn.MultiheadAttention:
-        # [Wq]
-        # [Wk]
-        # [Wv]
-        v_weight = attn.in_proj_weight[
-            2 * embed_dim:
-            3 * embed_dim
-        ]
-
-        if attn.in_proj_bias is not None:
-            v_bias = attn.in_proj_bias[
-                2 * embed_dim:
-                3 * embed_dim
-            ]
-        else:
-            v_bias = None
-
-        # Value projection
-        value = F.linear(
-            x_ln,
-            v_weight,
-            v_bias,
-        )
-
-        # MHA output projection
-        value = F.linear(
-            value,
-            attn.out_proj.weight,
-            attn.out_proj.bias,
-        )
-
-        # 删除 CLS
-        #
-        # [161,B,768]
-        # ->
-        # [B,160,768]
-        patch_feat = value[1:].permute(1,0,2,)
-
-        # MineCLIP 原视觉 projection
-        #
-        # 768 -> 512
-        patch_feat = vit.ln_post(
-            patch_feat
-        )
-
-        if vit.projection is not None:
-            patch_feat = (
-                    patch_feat
-                    @ vit.projection
-            )
-
-        # ========================================================
-        # 分支 2：
-        # 原 MineCLIP Global CLS
-        # ========================================================
-        global_feat = None
-
-        if need_global:
-            # 最后一个完整 Transformer Block
-            # 这里只运行一次
-            x_global = last_block(x)
-
-            x_global = x_global.permute(1,0,2,)
-
-            global_feat = vit.ln_post(
-                x_global[:, 0, :]
-            )
-
-            if vit.projection is not None:
-                global_feat = (
-                        global_feat
-                        @ vit.projection
-                )
 
         return (
-            global_feat,
-            patch_feat,
-            (grid_h, grid_w),
+            bundle["global_feat"],
+            bundle["patch_feat"],
+            bundle["grid_size"],
         )
 
     @th.no_grad()
@@ -217,47 +238,29 @@ class ClipReward(ABC):
             obs: Dict,
     ):
         """
-        一个 obs 在整个 wrapper 链中只编码一次。
-        ClipWrapper 第一次调用：
-            运行 ViT
-        ConcentrationWrapper 再调用：
-            直接读取缓存
-            不再运行 ViT
+        One normal observation is vision-encoded only once across wrappers.
         """
-
         if "_mineclip_bundle" in obs:
             return obs["_mineclip_bundle"]
 
         curr_frame = self._get_curr_frame(obs)
-
-        global_feat, patch_feat, grid_size = (
-            self.forward_image_and_patch(
-                curr_frame,
-                need_global=True,
-            )
+        bundle = self._make_bundle_from_tensor(
+            curr_frame,
+            need_global=True,
         )
 
-        bundle = {
-            "global_feat": global_feat,
-            "patch_feat": patch_feat,
-            "grid_size": grid_size,
-        }
-
-        # 只在 wrapper 内部临时存在。
-        # 外层 LSImagineWrapper 会重新构造 obs，
-        # 不会进入 replay buffer。
         obs["_mineclip_bundle"] = bundle
-
         return bundle
+
+    # ================================================================
+    # Text / global temporal
+    # ================================================================
 
     @th.no_grad()
     def get_text_feats_cached(
             self,
             prompts,
     ):
-        """
-        每个字符串只运行一次 Text Transformer。
-        """
         prompts = list(prompts)
 
         missing = [
@@ -268,19 +271,11 @@ class ClipReward(ABC):
 
         if len(missing) > 0:
             new_feats = self.model.encode_text(missing)
-            for prompt, feat in zip(
-                    missing,
-                    new_feats,
-            ):
-                self._text_cache[prompt] = (
-                    feat.detach()
-                )
+            for prompt, feat in zip(missing, new_feats):
+                self._text_cache[prompt] = feat.detach()
 
         return th.stack(
-            [
-                self._text_cache[p]
-                for p in prompts
-            ],
+            [self._text_cache[p] for p in prompts],
             dim=0,
         )
 
@@ -290,42 +285,20 @@ class ClipReward(ABC):
             curr_global_feat,
             past_frames=None,
     ):
-        """
-        让 Global Temporal 也只执行一次
-        curr_global_feat:
-            [1,512]
-        past_frames:
-            [15,512]
-
-        Returns:
-            video_feat:
-                [1,512]
-            new_past:
-                [15,512]
-        """
-        assert curr_global_feat.shape == (1,512,)
+        """Original 16-frame MineCLIP temporal path for global reward."""
+        assert curr_global_feat.shape == (1, 512)
 
         if past_frames is None:
-            past_frames = (
-                curr_global_feat
-                .new_zeros(1,15,512,)
-            )
-
+            past_frames = curr_global_feat.new_zeros(1, 15, 512)
         else:
-            past_frames = (
-                past_frames
-                .to(self.device)
-                .unsqueeze(0)
-            )
+            past_frames = past_frames.to(self.device).unsqueeze(0)
 
         current = curr_global_feat.unsqueeze(1)
-        image_feats = th.cat([past_frames,current,],dim=1,)
+        image_feats = th.cat([past_frames, current], dim=1)
+        assert image_feats.shape == (1, 16, 512)
 
-        assert image_feats.shape == (1,16,512,)
-
-        video_feat = (self.model.forward_video_features(image_feats))
-
-        new_past = (image_feats[0,1:].detach())
+        video_feat = self.model.forward_video_features(image_feats)
+        new_past = image_feats[0, 1:].detach()
 
         return video_feat, new_past
 
@@ -337,41 +310,56 @@ class ClipReward(ABC):
     ):
         text_feats = self.get_text_feats_cached(prompts)
 
-        logits = (
-            self.model.forward_reward_head(
-                video_feat,
-                text_tokens=text_feats,
-            )[0][0]
-        )
+        return self.model.forward_reward_head(
+            video_feat,
+            text_tokens=text_feats,
+        )[0][0]
 
-        return logits
+    # ================================================================
+    # Value + Temporal(L=1): relevance map branch
+    # ================================================================
+
+    @th.no_grad()
+    def _temporal_l1(
+            self,
+            patch_feat,
+    ):
+        """
+        Apply MineCLIP temporal adapter to each patch independently with L=1.
+        This is the same adapter used in the validated offline experiments.
+        """
+        B, N, D = patch_feat.shape
+        patch_sequence = patch_feat.reshape(B * N, 1, D)
+        aligned = self.model.forward_video_features(patch_sequence)
+        return aligned.reshape(B, N, -1)
 
     @th.no_grad()
     def get_aligned_patch(
             self,
             bundle,
     ):
-        """
-        Patch
-        -> MineCLIP Temporal
-        -> aligned Patch
-        同一个 bundle 只计算一次。
-        """
-        if "aligned_patch_feat" in bundle:
-            return bundle["aligned_patch_feat"]
+        if "aligned_patch_feat" not in bundle:
+            bundle["aligned_patch_feat"] = self._temporal_l1(
+                bundle["patch_feat"]
+            )
 
-        patch_feat = bundle["patch_feat"]
+        return bundle["aligned_patch_feat"]
 
-        B, N, D = patch_feat.shape
+    @th.no_grad()
+    def _cosine_similarity(
+            self,
+            patch_feat,
+            prompts,
+    ):
+        text_feat = self.get_text_feats_cached(prompts)
+        patch_norm = F.normalize(patch_feat, dim=-1)
+        text_norm = F.normalize(text_feat, dim=-1)
 
-        patch_sequence = (patch_feat.reshape(B * N,1,D,))
-
-        aligned_patch = (self.model.forward_video_features(patch_sequence))
-        aligned_patch = (aligned_patch.reshape(B,N,-1,))
-
-        bundle["aligned_patch_feat"] = aligned_patch
-
-        return aligned_patch
+        return th.einsum(
+            "bnd,pd->bpn",
+            patch_norm,
+            text_norm,
+        )
 
     @th.no_grad()
     def get_patch_similarity(
@@ -380,25 +368,270 @@ class ClipReward(ABC):
             prompts,
     ):
         """
+        Value + Temporal(L=1) raw cosine similarity.
+
         Returns:
             [B,P,N]
         """
-        patch_feat = self.get_aligned_patch(bundle)
-
-        text_feat = (
-            self.get_text_feats_cached(prompts)
+        return self._cosine_similarity(
+            self.get_aligned_patch(bundle),
+            prompts,
         )
 
-        patch_norm = F.normalize(patch_feat,dim=-1,)
-        text_norm = F.normalize(text_feat,dim=-1,)
+    # ================================================================
+    # NACLIP + Temporal(L=1): ScoreStorage branch
+    # ================================================================
 
-        similarity = th.einsum(
-            "bnd,pd->bpn",
-            patch_norm,
-            text_norm,
+    def _get_naclip_gaussian(
+            self,
+            grid_h,
+            grid_w,
+            dtype,
+            device,
+            include_cls,
+    ):
+        key = (
+            int(grid_h),
+            int(grid_w),
+            bool(include_cls),
+            str(dtype),
+            str(device),
         )
 
-        return similarity
+        if key in self._naclip_gaussian_cache:
+            return self._naclip_gaussian_cache[key]
+
+        ys, xs = th.meshgrid(
+            th.arange(
+                grid_h,
+                device=device,
+                dtype=th.float32,
+            ),
+            th.arange(
+                grid_w,
+                device=device,
+                dtype=th.float32,
+            ),
+            indexing="ij",
+        )
+
+        coords = th.stack(
+            [ys.reshape(-1), xs.reshape(-1)],
+            dim=1,
+        )
+
+        delta = coords[:, None, :] - coords[None, :, :]
+        dist2 = (delta * delta).sum(dim=-1)
+
+        patch_gaussian = th.exp(
+            -dist2
+            / (
+                2.0
+                * self.naclip_gaussian_std
+                ** 2
+            )
+        )
+
+        if include_cls:
+            N = grid_h * grid_w
+            gaussian = th.zeros(
+                (N + 1, N + 1),
+                device=device,
+                dtype=th.float32,
+            )
+            gaussian[1:, 1:] = patch_gaussian
+        else:
+            gaussian = patch_gaussian
+
+        gaussian = gaussian.to(dtype=dtype)
+        self._naclip_gaussian_cache[key] = gaussian
+        return gaussian
+
+    @th.no_grad()
+    def get_naclip_patch(
+            self,
+            bundle,
+    ):
+        """
+        NACLIP reduced final block used in our validated experiments:
+
+            softmax(K K^T / sqrt(d_head) + Gaussian) @ V
+            -> out_proj -> ln_post -> vision projection
+
+        No residual / FFN is applied in this NACLIP branch.
+        """
+        if "naclip_patch_feat" in bundle:
+            return bundle["naclip_patch_feat"]
+
+        x = bundle["_last_block_input"]
+        grid_h, grid_w = bundle["grid_size"]
+
+        vit = self.model.clip_model.vision_model
+        last_block = list(vit.blocks.children())[-1]
+        z = last_block.ln_1(x)
+        attn = last_block.attn
+
+        L, B, D = z.shape
+        num_heads = attn.num_heads
+        head_dim = D // num_heads
+        scale = head_dim ** -0.5
+
+        # q is intentionally unused; this matches the tested NACLIP branch.
+        _, k, v = F.linear(
+            z,
+            attn.in_proj_weight,
+            attn.in_proj_bias,
+        ).chunk(3, dim=-1)
+
+        k = (
+            k.contiguous()
+            .view(L, B * num_heads, head_dim)
+            .transpose(0, 1)
+        )
+        v = (
+            v.contiguous()
+            .view(L, B * num_heads, head_dim)
+            .transpose(0, 1)
+        )
+
+        if self.naclip_include_cls:
+            weights = th.bmm(
+                k,
+                k.transpose(1, 2),
+            ) * scale
+
+            gaussian = self._get_naclip_gaussian(
+                grid_h,
+                grid_w,
+                weights.dtype,
+                weights.device,
+                include_cls=True,
+            )
+
+            weights = F.softmax(
+                weights
+                + self.naclip_gaussian_weight
+                * gaussian.unsqueeze(0),
+                dim=-1,
+            )
+
+            out = th.bmm(weights, v)
+            out = (
+                out.transpose(0, 1)
+                .contiguous()
+                .view(L, B, D)
+            )
+
+            out = attn.out_proj(out).permute(1, 0, 2)
+            out = vit.ln_post(out)
+
+            if vit.projection is not None:
+                out = out @ vit.projection
+
+            patch = out[:, 1:, :]
+
+        else:
+            kp = k[:, 1:, :]
+            vp = v[:, 1:, :]
+
+            weights = th.bmm(
+                kp,
+                kp.transpose(1, 2),
+            ) * scale
+
+            gaussian = self._get_naclip_gaussian(
+                grid_h,
+                grid_w,
+                weights.dtype,
+                weights.device,
+                include_cls=False,
+            )
+
+            weights = F.softmax(
+                weights
+                + self.naclip_gaussian_weight
+                * gaussian.unsqueeze(0),
+                dim=-1,
+            )
+
+            N = grid_h * grid_w
+            out = th.bmm(weights, vp)
+            out = (
+                out.transpose(0, 1)
+                .contiguous()
+                .view(N, B, D)
+            )
+
+            out = attn.out_proj(out).permute(1, 0, 2)
+            out = vit.ln_post(out)
+
+            if vit.projection is not None:
+                out = out @ vit.projection
+
+            patch = out
+
+        bundle["naclip_patch_feat"] = patch
+        return patch
+
+    @th.no_grad()
+    def get_naclip_aligned_patch(
+            self,
+            bundle,
+    ):
+        if "naclip_aligned_patch_feat" not in bundle:
+            bundle["naclip_aligned_patch_feat"] = self._temporal_l1(
+                self.get_naclip_patch(bundle)
+            )
+
+        return bundle["naclip_aligned_patch_feat"]
+
+    @th.no_grad()
+    def get_naclip_patch_similarity(
+            self,
+            bundle,
+            prompts,
+    ):
+        """Return NACLIP+Temporal(L=1) raw cosine, shape [B,P,N]."""
+        return self._cosine_similarity(
+            self.get_naclip_aligned_patch(bundle),
+            prompts,
+        )
+
+    @th.no_grad()
+    def get_naclip_progress_score(
+            self,
+            bundle,
+            prompts,
+            percentile=85.0,
+    ):
+        """
+        Symmetric ScoreStorage metric.
+
+        For multiple prompts:
+            max prompt cosine for each patch
+            -> percentile across patches
+
+        Returns:
+            [B]
+        """
+        percentile = float(percentile)
+        assert 0.0 <= percentile <= 100.0
+
+        similarity = self.get_naclip_patch_similarity(
+            bundle,
+            prompts,
+        )
+
+        per_patch = th.max(
+            similarity,
+            dim=1,
+        ).values
+
+        return th.quantile(
+            per_patch,
+            q=percentile / 100.0,
+            dim=-1,
+        )
 
     @th.no_grad()
     def make_bundle_from_frame(
@@ -406,19 +639,11 @@ class ClipReward(ABC):
             curr_frame,
             need_global=False,
     ):
-
-        global_feat, patch_feat, grid_size = (
-            self.forward_image_and_patch(
-                curr_frame,
-                need_global=need_global,
-            )
+        """Build an uncached bundle for a genuinely new RGB frame."""
+        return self._make_bundle_from_tensor(
+            curr_frame,
+            need_global=need_global,
         )
-
-        return {
-            "global_feat": global_feat,
-            "patch_feat": patch_feat,
-            "grid_size": grid_size,
-        }
 
     @abstractstaticmethod
     def get_resolution():

@@ -106,15 +106,13 @@ def _add_wrappers(
             else 0.5
         )
 
-        relevance_threshold = (
-            concentration_specs["relevance_threshold"]
-            if "relevance_threshold" in concentration_specs
-            else 0.288
-        )
-        relevance_temperature = (
-            concentration_specs["relevance_temperature"]
-            if "relevance_temperature" in concentration_specs
-            else 0.016
+        # ScoreStorage progress readout.
+        # Global setting, shared across tasks; no task-specific calibration.
+        progress_percentile = (
+            concentration_specs.get(
+                "progress_percentile",
+                85.0,
+            )
         )
 
         # ----------------------------
@@ -123,7 +121,7 @@ def _add_wrappers(
         zoom_cooldown_steps = (
             concentration_specs.get(
                 "zoom_cooldown_steps",
-                0,
+                5,
             )
         )
 
@@ -183,7 +181,7 @@ def _add_wrappers(
         max_zoom_factor = (
             concentration_specs.get(
                 "max_zoom_factor",
-                None,
+                3.5,
             )
         )
 
@@ -195,8 +193,7 @@ def _add_wrappers(
                 clip_reward=shared_clip_reward,
                 output_dir=log_dir,
                 gaussian_sigma_weight=gaussian_sigma_weight,
-                relevance_threshold=relevance_threshold,
-                relevance_temperature=relevance_temperature,
+                progress_percentile=progress_percentile,
                 # Gate 1
                 zoom_cooldown_steps=zoom_cooldown_steps,
                 # Gate 2

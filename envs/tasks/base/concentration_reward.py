@@ -223,10 +223,11 @@ class ConcentrationReward(ABC):
             gaussian_sigma_weight=0.5,
             relevance_threshold=0.30,
             relevance_temperature=0.03,
+            progress_percentile=85.0,
             # ------------------------------------------------------------
             # Natural Zoom gates
             # ------------------------------------------------------------
-            zoom_cooldown_steps=0,
+            zoom_cooldown_steps=5,
             semantic_gate_enabled=False,
             semantic_min_p95_p50=0.025,
             semantic_min_cc_fraction=0.02,
@@ -235,7 +236,7 @@ class ConcentrationReward(ABC):
             post_zoom_min_contrast_gain=-0.005,
             post_zoom_min_cc_retention=0.50,
             # None = keep original unlimited behaviour; e.g. 3.0 = at most 3x
-            max_zoom_factor=None,
+            max_zoom_factor=3.5,
             **kwargs,
     ):
         self.clip = clip_reward
@@ -245,14 +246,18 @@ class ConcentrationReward(ABC):
         self.resolution = self.get_resolution()
         self.device = self.clip.device
 
-        # relevance map 参数
-        self.relevance_threshold = float(
-            relevance_threshold
-        )
-        self.relevance_temperature = float(
-            relevance_temperature
-        )
-        assert (self.relevance_temperature > 0)
+        # ------------------------------------------------------------
+        # Backward-compatible legacy arguments.
+        # They are intentionally NOT used by the production map anymore.
+        # The map is now parameter-free: relevance = (cosine + 1) / 2.
+        # Keeping these attributes avoids breaking old YAML/check scripts.
+        # ------------------------------------------------------------
+        self.relevance_threshold = float(relevance_threshold)
+        self.relevance_temperature = float(relevance_temperature)
+
+        # Global ScoreStorage readout. This is not task-specific calibration.
+        self.progress_percentile = float(progress_percentile)
+        assert 0.0 <= self.progress_percentile <= 100.0
 
         # ============================================================
         # Natural Zoom gate configuration
@@ -289,6 +294,10 @@ class ConcentrationReward(ABC):
         self.current_largest_cc_fraction = 0.0
         self.semantic_ok = False
 
+        # ScoreStorage progress score:
+        # NACLIP + Temporal(L=1) -> raw percentile.
+        self.current_progress_score = 0.0
+
         # Zoomed-frame semantic diagnostics.
         self.zoom_raw_p50 = 0.0
         self.zoom_raw_p95 = 0.0
@@ -298,6 +307,7 @@ class ConcentrationReward(ABC):
         self.zoom_contrast_gain = 0.0
         self.zoom_cc_retention = 0.0
         self.zoom_semantic_gain_ok = False
+        self.zoomed_progress_score = 0.0
 
         self.raw_zoom_factor = 1.0
         self.actual_zoom_factor = 1.0
@@ -413,17 +423,37 @@ class ConcentrationReward(ABC):
     #     return out_np
 
     @staticmethod
+    def _adaptive_map_threshold(relevance_map):
+        """
+        Parameter-free threshold used only for spatial-coherence diagnostics.
+
+        Important:
+            a fixed threshold=0.5 is meaningless for (cos+1)/2 maps because
+            most MineCLIP cosine values are positive and therefore shifted
+            maps often live around ~0.6. Use the same frame-relative idea as
+            Natural Zoom contour extraction instead.
+        """
+        arr = np.asarray(relevance_map, dtype=np.float32)
+        return float(
+            (np.max(arr) + np.min(arr)) / 2.0
+            + np.std(arr)
+        )
+
+    @staticmethod
     def _largest_connected_component_fraction(
             relevance_map,
-            threshold=0.5,
+            threshold=None,
     ):
         """
         relevance_map: [H,W], normally the 10x16 MineCLIP patch grid.
         Returns the area fraction of the largest 8-connected component.
         """
-        binary = (
-            np.asarray(relevance_map) > threshold
-        ).astype(np.uint8)
+        arr = np.asarray(relevance_map, dtype=np.float32)
+
+        if threshold is None:
+            threshold = ConcentrationReward._adaptive_map_threshold(arr)
+
+        binary = (arr > float(threshold)).astype(np.uint8)
 
         num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
             binary,
@@ -441,30 +471,35 @@ class ConcentrationReward(ABC):
             obs: Dict,
             prompts: List[str],
     ):
+        """
+        Production current-frame path.
+
+        MAP:
+            Value -> Temporal(L=1) -> raw cosine -> (cos+1)/2
+
+        PROGRESS:
+            NACLIP -> Temporal(L=1) -> raw P85 (or configured percentile)
+
+        Both branches reuse the same MineCLIP ViT final-block input.
+        """
         self.index += 1
-        # 保留 HWC RGB，
-        # generate_zoom_in_frame() 还需要它
-        self.curr_frame = (
-            self.get_curr_frame(obs)
-        )
+
+        # HWC RGB is still needed by Natural Zoom crop generation.
+        self.curr_frame = self.get_curr_frame(obs)
         self.prompts = prompts
 
         with torch.no_grad():
-            # 关键：如果 ClipWrapper 已经处理过当前 obs,这里不会再次执行 ViT。
-            bundle = (
-                self.clip.get_frame_bundle(obs)
-            )
-
-            # [1,P,160]
-            similarity = (
-                self.clip.get_patch_similarity(bundle, prompts, )
-            )
+            # If ClipWrapper already touched this obs, no second ViT pass.
+            bundle = self.clip.get_frame_bundle(obs)
 
             # --------------------------------------------------------
-            # Current-frame raw semantic diagnostics.
-            # For multiple prompts, use the per-patch maximum because the
-            # final production mask also takes max over prompts.
+            # A) Value + Temporal(L=1) raw cosine for spatial map.
             # --------------------------------------------------------
+            similarity = self.clip.get_patch_similarity(
+                bundle,
+                prompts,
+            )  # [B,P,N]
+
             similarity_for_gate = torch.max(
                 similarity[0],
                 dim=0,
@@ -480,40 +515,63 @@ class ConcentrationReward(ABC):
             self.current_raw_p50 = float(np.percentile(sim_gate_np, 50))
             self.current_raw_p95 = float(np.percentile(sim_gate_np, 95))
             self.current_raw_p95_p50 = (
-                self.current_raw_p95 - self.current_raw_p50
+                self.current_raw_p95
+                - self.current_raw_p50
             )
 
-            # cosine -> relevance
-            # 固定尺度，不做每帧 min-max
-            relevance = torch.sigmoid(
-                (
-                        similarity
-                        - self.relevance_threshold
-                )
-                / self.relevance_temperature
+            # Parameter-free, fixed global coordinate system.
+            # No per-frame min-max and no task-specific tau / temperature.
+            relevance = torch.clamp(
+                (similarity + 1.0) / 2.0,
+                min=0.0,
+                max=1.0,
             )
+
             B, P, N = relevance.shape
-            grid_h, grid_w = (bundle["grid_size"])
+            grid_h, grid_w = bundle["grid_size"]
+            assert N == grid_h * grid_w
 
-            assert (N == grid_h * grid_w)
-
-            # Spatial coherence on the true MineCLIP 10x16 semantic grid.
             relevance_for_gate = torch.max(
                 relevance[0],
                 dim=0,
             ).values.reshape(grid_h, grid_w)
 
+            relevance_gate_np = (
+                relevance_for_gate
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
             self.current_largest_cc_fraction = (
                 self._largest_connected_component_fraction(
-                    relevance_for_gate.detach().cpu().numpy(),
-                    threshold=0.5,
+                    relevance_gate_np,
+                    threshold=None,
                 )
             )
 
-            # [1,P,160]->[P,1,10,16]
-            relevance = relevance.reshape(B * P, 1, grid_h, grid_w, )
+            # --------------------------------------------------------
+            # B) NACLIP + Temporal(L=1) raw percentile for ScoreStorage.
+            # --------------------------------------------------------
+            progress = self.clip.get_naclip_progress_score(
+                bundle,
+                prompts,
+                percentile=self.progress_percentile,
+            )
 
-            # 10×16->160×256
+            # Environment is single-frame B=1.
+            self.current_progress_score = float(progress[0].item())
+
+            # --------------------------------------------------------
+            # 10x16 -> 160x256 spatial map.
+            # --------------------------------------------------------
+            relevance = relevance.reshape(
+                B * P,
+                1,
+                grid_h,
+                grid_w,
+            )
+
             relevance = F.interpolate(
                 relevance,
                 size=self.resolution,
@@ -521,10 +579,20 @@ class ConcentrationReward(ABC):
                 align_corners=False,
             )
 
-            # [P,H,W]
-            relevance = relevance.reshape(B, P, self.resolution[0], self.resolution[1], )[0]
+            relevance = relevance.reshape(
+                B,
+                P,
+                self.resolution[0],
+                self.resolution[1],
+            )[0]
 
-            out_np = (relevance.detach().cpu().numpy().astype(np.float32))
+            out_np = (
+                relevance
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
 
         return out_np
 
@@ -592,6 +660,17 @@ class ConcentrationReward(ABC):
             return np.expand_dims(self.mask_on_zoomed_image, axis=-1)  # [H, W, 1]
         else:
             return np.expand_dims(self.mask, axis=-1) / 255.0  # [H, W, 1]
+
+    def get_progress_score(self, is_zoomed=False):
+        """
+        ScoreStorage readout. Keep obs dictionary names unchanged:
+
+            obs['score']            <- current NACLIP-P85
+            obs['score_on_zoomed']  <- zoomed NACLIP-P85
+        """
+        if is_zoomed:
+            return float(self.zoomed_progress_score)
+        return float(self.current_progress_score)
 
     def generate_zoom_in_frame(self, ):
         # ============================================================
@@ -868,7 +947,18 @@ class ConcentrationReward(ABC):
     def compute_reward_on_zoomed_image(
             self,
     ):
-        # HWC -> CHW
+        """
+        Evaluate the genuinely new zoomed RGB once.
+
+        MAP:
+            Value + Temporal(L=1) -> (cos+1)/2
+
+        SCORESTORAGE:
+            NACLIP + Temporal(L=1) -> raw percentile
+
+        The old Gaussian post-check is intentionally retained because it is
+        part of Natural Zoom acceptance, not the progress-score definition.
+        """
         zoomed_tensor = (
             torch.from_numpy(self.zoomed_frame)
             .permute(2, 0, 1)
@@ -876,22 +966,17 @@ class ConcentrationReward(ABC):
         )
 
         with torch.no_grad():
-            # zoomed image is a genuinely new pixel input -> one new Vision pass.
-            bundle = (
-                self.clip.make_bundle_from_frame(
-                    zoomed_tensor,
-                    need_global=False,
-                )
+            # New pixels -> exactly one additional Vision pass.
+            bundle = self.clip.make_bundle_from_frame(
+                zoomed_tensor,
+                need_global=False,
             )
 
-            similarity = (
-                self.clip.get_patch_similarity(
-                    bundle,
-                    self.prompts,
-                )
+            similarity = self.clip.get_patch_similarity(
+                bundle,
+                self.prompts,
             )
 
-            # For multiple prompts, stay consistent with max-over-prompts mask.
             zoom_similarity_for_gate = torch.max(
                 similarity[0],
                 dim=0,
@@ -907,41 +992,53 @@ class ConcentrationReward(ABC):
             self.zoom_raw_p50 = float(np.percentile(sim_debug, 50))
             self.zoom_raw_p95 = float(np.percentile(sim_debug, 95))
             self.zoom_raw_p95_p50 = (
-                self.zoom_raw_p95 - self.zoom_raw_p50
+                self.zoom_raw_p95
+                - self.zoom_raw_p50
             )
 
-            # print(
-            #     "[ZOOM COSINE] "
-            #     f"min={sim_debug.min():.4f}, "
-            #     f"mean={sim_debug.mean():.4f}, "
-            #     f"max={sim_debug.max():.4f}, "
-            #     f"P50={self.zoom_raw_p50:.4f}, "
-            #     f"P90={np.percentile(sim_debug, 90):.4f}, "
-            #     f"P95={self.zoom_raw_p95:.4f}"
-            # )
-
-            relevance = torch.sigmoid(
-                (
-                    similarity
-                    - self.relevance_threshold
-                )
-                / self.relevance_temperature
+            # --------------------------------------------------------
+            # Parameter-free zoomed relevance map.
+            # --------------------------------------------------------
+            relevance = torch.clamp(
+                (similarity + 1.0) / 2.0,
+                min=0.0,
+                max=1.0,
             )
 
             B, P, N = relevance.shape
             grid_h, grid_w = bundle["grid_size"]
+            assert N == grid_h * grid_w
 
-            # Zoomed spatial coherence on 10x16 patch grid.
             zoom_relevance_for_gate = torch.max(
                 relevance[0],
                 dim=0,
             ).values.reshape(grid_h, grid_w)
 
+            zoom_relevance_np = (
+                zoom_relevance_for_gate
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
             self.zoom_largest_cc_fraction = (
                 self._largest_connected_component_fraction(
-                    zoom_relevance_for_gate.detach().cpu().numpy(),
-                    threshold=0.5,
+                    zoom_relevance_np,
+                    threshold=None,
                 )
+            )
+
+            # --------------------------------------------------------
+            # Symmetric ScoreStorage metric on zoomed frame.
+            # --------------------------------------------------------
+            zoom_progress = self.clip.get_naclip_progress_score(
+                bundle,
+                self.prompts,
+                percentile=self.progress_percentile,
+            )
+
+            self.zoomed_progress_score = float(
+                zoom_progress[0].item()
             )
 
             relevance = relevance.reshape(
@@ -978,7 +1075,7 @@ class ConcentrationReward(ABC):
             axis=0,
         )
 
-        zoomed_gaussian = 0
+        zoomed_gaussian = 0.0
         for mask in out_np:
             zoomed_gaussian += (
                 np.mean(mask * self.gaussian)
@@ -998,28 +1095,28 @@ class ConcentrationReward(ABC):
             )
         )
 
+        # Retain old intrinsic-shaping quantity. It no longer participates
+        # in ScoreStorage; score_on_zoomed is NACLIP-P85 in the wrapper.
         zoomed_reward = self.best_value_on_mask
 
-        # ============================================================
-        # Original LS-Imagine post-zoom Gaussian check.
-        # ============================================================
+        # ------------------------------------------------------------
+        # Original LS-Imagine post-zoom Gaussian acceptance.
+        # ------------------------------------------------------------
         gaussian_gain_ok = (
             zoomed_gaussian
             >= self.gaussian_score
             + 2.0 * self.gaussian_buffer.std_dev()
         )
 
-        # ============================================================
-        # Gate 3: post-zoom semantic gain.
-        # This is the gate that prevents a semantically worse zoom from being
-        # marked is_zoomed=True and therefore entering ScoreStorage later.
-        # ============================================================
+        # Optional semantic diagnostics/gate retained.
         self.zoom_p95_gain = (
-            self.zoom_raw_p95 - self.current_raw_p95
+            self.zoom_raw_p95
+            - self.current_raw_p95
         )
 
         self.zoom_contrast_gain = (
-            self.zoom_raw_p95_p50 - self.current_raw_p95_p50
+            self.zoom_raw_p95_p50
+            - self.current_raw_p95_p50
         )
 
         if self.current_largest_cc_fraction > 1e-8:
@@ -1049,18 +1146,6 @@ class ConcentrationReward(ABC):
             is_zoomed = gaussian_gain_ok
 
         jump = is_zoomed and self.have_center
-
-        # print(
-        #     "[ZOOM SEMANTIC GAIN] "
-        #     f"p95_gain={self.zoom_p95_gain:+.4f}, "
-        #     f"contrast_gain={self.zoom_contrast_gain:+.4f}, "
-        #     f"cc={self.current_largest_cc_fraction:.4f}"
-        #     f"->{self.zoom_largest_cc_fraction:.4f}, "
-        #     f"cc_retention={self.zoom_cc_retention:.3f}, "
-        #     f"gaussian_ok={gaussian_gain_ok}, "
-        #     f"semantic_gain_ok={self.zoom_semantic_gain_ok}, "
-        #     f"accepted={is_zoomed}"
-        # )
 
         return (
             zoomed_reward,
