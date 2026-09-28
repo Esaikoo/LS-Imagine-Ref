@@ -1,5 +1,5 @@
 from gym import Wrapper
-
+import numpy as np
 
 class ConcentrationWrapper(Wrapper):
     """
@@ -25,6 +25,7 @@ class ConcentrationWrapper(Wrapper):
             mineclip_dense_reward=0.01,
             max_steps=1000,
             gaussian_reward_weight=1.0,
+            wm_heatmap_mode="spatial",
             **kwargs,
     ):
         super().__init__(env)
@@ -37,6 +38,22 @@ class ConcentrationWrapper(Wrapper):
         self.mineclip_dense_reward = mineclip_dense_reward
         self.gaussian_reward_weight = gaussian_reward_weight
 
+        # ------------------------------------------------------------
+        # Role-Decoupled WM heatmap input.
+        #
+        # spatial:
+        #     原来的完整二维 relevance map -> World Model
+        #
+        # frame_mean:
+        #     Natural Zoom 仍使用完整二维 relevance map；
+        #     只有送给 World Model 的 heatmap 被变成整帧均值。
+        # ------------------------------------------------------------
+        self.wm_heatmap_mode = str(wm_heatmap_mode).lower()
+
+        assert self.wm_heatmap_mode in ("spatial", "frame_mean"), (
+            f"Unsupported wm_heatmap_mode={self.wm_heatmap_mode}"
+        )
+
         self.episode = 0
         self.steps = 0
 
@@ -48,6 +65,48 @@ class ConcentrationWrapper(Wrapper):
         self.last_zoom_in_gaussian_score = 0
 
         self.max_steps = max_steps
+
+    def _to_world_model_heatmap(self, spatial_heatmap):
+        """
+        只转换送给 World Model / replay 的 heatmap。
+
+        Natural Zoom、Gaussian shaping、zoom acceptance
+        在调用这里之前已经使用了完整 spatial heatmap，
+        因此不会受 frame_mean 影响。
+        """
+        heatmap = np.asarray(
+            spatial_heatmap,
+            dtype=np.float32
+        )
+
+        if self.wm_heatmap_mode == "spatial":
+            return heatmap.copy()
+
+        # frame_mean:
+        # 保留每一帧整体 relevance 强度，
+        # 删除 heatmap 的二维空间位置。
+        frame_mean = np.float32(
+            np.mean(
+                heatmap,
+                dtype=np.float64
+            )
+        )
+
+        if self.steps < 3:
+            print(
+                "[ROLE-DECOUPLED] "
+                f"mode={self.wm_heatmap_mode}, "
+                f"input_mean={heatmap.mean():.6f}, "
+                f"input_std={heatmap.std():.6f}, "
+                f"wm_mean={frame_mean:.6f}, "
+                f"wm_std=0.000000"
+            )
+
+        return np.full(
+            heatmap.shape,
+            frame_mean,
+            dtype=np.float32
+        )
 
     def reset(self, **kwargs):
         self.episode += 1
@@ -158,18 +217,33 @@ class ConcentrationWrapper(Wrapper):
         )
 
         # ------------------------------------------------------------
-        # World-model heatmap keys remain unchanged.
+        # Role-Decoupled World-Model heatmap.
+        #
+        # 到这里之前：
+        #   Natural Zoom 已经使用了完整 spatial map。
+        #   P85 已经计算完成。
+        #   Gaussian/intrinsic shaping 也已经计算完成。
+        #
+        # 这里只改变进入 replay / World Model 的 heatmap。
         # ------------------------------------------------------------
-        obs['heatmap'] = self.concentration.get_heatmap(
+        current_spatial_heatmap = self.concentration.get_heatmap(
             is_zoomed=False
         )
 
+        obs['heatmap'] = self._to_world_model_heatmap(
+            current_spatial_heatmap
+        )
+
         if is_zoomed:
-            obs['heatmap_on_zoomed'] = self.concentration.get_heatmap(
+            zoomed_spatial_heatmap = self.concentration.get_heatmap(
                 is_zoomed=True
             )
+
+            obs['heatmap_on_zoomed'] = self._to_world_model_heatmap(
+                zoomed_spatial_heatmap
+            )
         else:
-            obs['heatmap_on_zoomed'] = obs['heatmap']
+            obs['heatmap_on_zoomed'] = obs['heatmap'].copy()
 
         return obs
 
@@ -277,15 +351,23 @@ class ConcentrationWrapper(Wrapper):
             # --------------------------------------------------------
             # World-model heatmaps: parameter-free raw-shifted map.
             # --------------------------------------------------------
-            obs['heatmap'] = self.concentration.get_heatmap(
+            current_spatial_heatmap = self.concentration.get_heatmap(
                 is_zoomed=False
             )
 
+            obs['heatmap'] = self._to_world_model_heatmap(
+                current_spatial_heatmap
+            )
+
             if is_zoomed:
-                obs['heatmap_on_zoomed'] = self.concentration.get_heatmap(
+                zoomed_spatial_heatmap = self.concentration.get_heatmap(
                     is_zoomed=True
                 )
+
+                obs['heatmap_on_zoomed'] = self._to_world_model_heatmap(
+                    zoomed_spatial_heatmap
+                )
             else:
-                obs['heatmap_on_zoomed'] = obs['heatmap']
+                obs['heatmap_on_zoomed'] = obs['heatmap'].copy()
 
         return obs, reward, done, info

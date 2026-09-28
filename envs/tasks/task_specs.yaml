@@ -16,6 +16,8 @@ harvest_log_in_plains:
   concentration_specs:
     prompts: ["Cut a tree"]
     progress_percentile: 85.0
+    # Role-Decoupled WM representation
+    wm_heatmap_mode: "frame_mean"
     # Gate 1
     zoom_cooldown_steps: 5
     # Gate 2
