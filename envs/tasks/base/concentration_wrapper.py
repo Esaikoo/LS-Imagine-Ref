@@ -50,7 +50,11 @@ class ConcentrationWrapper(Wrapper):
         # ------------------------------------------------------------
         self.wm_heatmap_mode = str(wm_heatmap_mode).lower()
 
-        assert self.wm_heatmap_mode in ("spatial", "frame_mean"), (
+        assert self.wm_heatmap_mode in (
+            "spatial",
+            "frame_mean",
+            "coarse_8x8",
+        ), (
             f"Unsupported wm_heatmap_mode={self.wm_heatmap_mode}"
         )
 
@@ -66,13 +70,84 @@ class ConcentrationWrapper(Wrapper):
 
         self.max_steps = max_steps
 
+    @staticmethod
+    def _coarse_average_pool_and_expand(
+            spatial_heatmap,
+            grid_h=8,
+            grid_w=8,
+    ):
+        """
+        [H,W,1]
+          -> 8x8 区域平均
+          -> nearest/block expand 回 [H,W,1]
+        """
+        heatmap = np.asarray(
+            spatial_heatmap,
+            dtype=np.float32
+        )
+
+        if heatmap.ndim == 2:
+            heatmap_2d = heatmap
+            keep_channel = False
+        elif (
+                heatmap.ndim == 3
+                and heatmap.shape[-1] == 1
+        ):
+            heatmap_2d = heatmap[..., 0]
+            keep_channel = True
+        else:
+            raise ValueError(
+                "Expected heatmap shape [H,W] or [H,W,1], "
+                f"got {heatmap.shape}"
+            )
+
+        H, W = heatmap_2d.shape
+
+        if H % grid_h != 0 or W % grid_w != 0:
+            raise ValueError(
+                f"Heatmap shape {(H, W)} must be divisible by "
+                f"coarse grid {(grid_h, grid_w)}."
+            )
+
+        block_h = H // grid_h
+        block_w = W // grid_w
+
+        coarse_grid = (
+            heatmap_2d
+            .reshape(
+                grid_h,
+                block_h,
+                grid_w,
+                block_w,
+            )
+            .mean(
+                axis=(1, 3),
+                dtype=np.float64,
+            )
+            .astype(np.float32)
+        )
+
+        expanded = np.repeat(
+            np.repeat(
+                coarse_grid,
+                block_h,
+                axis=0,
+            ),
+            block_w,
+            axis=1,
+        ).astype(np.float32)
+
+        if keep_channel:
+            expanded = expanded[..., None]
+
+        return expanded, coarse_grid
+
     def _to_world_model_heatmap(self, spatial_heatmap):
         """
         只转换送给 World Model / replay 的 heatmap。
 
         Natural Zoom、Gaussian shaping、zoom acceptance
-        在调用这里之前已经使用了完整 spatial heatmap，
-        因此不会受 frame_mean 影响。
+        在调用这里之前已经使用了完整 spatial heatmap。
         """
         heatmap = np.asarray(
             spatial_heatmap,
@@ -82,30 +157,57 @@ class ConcentrationWrapper(Wrapper):
         if self.wm_heatmap_mode == "spatial":
             return heatmap.copy()
 
-        # frame_mean:
-        # 保留每一帧整体 relevance 强度，
-        # 删除 heatmap 的二维空间位置。
-        frame_mean = np.float32(
-            np.mean(
-                heatmap,
-                dtype=np.float64
-            )
-        )
-
-        if self.steps < 3:
-            print(
-                "[ROLE-DECOUPLED] "
-                f"mode={self.wm_heatmap_mode}, "
-                f"input_mean={heatmap.mean():.6f}, "
-                f"input_std={heatmap.std():.6f}, "
-                f"wm_mean={frame_mean:.6f}, "
-                f"wm_std=0.000000"
+        if self.wm_heatmap_mode == "frame_mean":
+            frame_mean = np.float32(
+                np.mean(
+                    heatmap,
+                    dtype=np.float64
+                )
             )
 
-        return np.full(
-            heatmap.shape,
-            frame_mean,
-            dtype=np.float32
+            if self.steps < 3:
+                print(
+                    "[ROLE-DECOUPLED] "
+                    f"mode={self.wm_heatmap_mode}, "
+                    f"input_mean={heatmap.mean():.6f}, "
+                    f"input_std={heatmap.std():.6f}, "
+                    f"wm_mean={frame_mean:.6f}, "
+                    f"wm_std=0.000000"
+                )
+
+            return np.full(
+                heatmap.shape,
+                frame_mean,
+                dtype=np.float32
+            )
+
+        if self.wm_heatmap_mode == "coarse_8x8":
+            wm_heatmap, coarse_grid = (
+                self._coarse_average_pool_and_expand(
+                    heatmap,
+                    grid_h=8,
+                    grid_w=8,
+                )
+            )
+
+            if self.steps < 3:
+                print(
+                    "[ROLE-DECOUPLED] "
+                    f"mode={self.wm_heatmap_mode}, "
+                    f"input_mean={heatmap.mean():.6f}, "
+                    f"input_std={heatmap.std():.6f}, "
+                    f"coarse_mean={coarse_grid.mean():.6f}, "
+                    f"coarse_std={coarse_grid.std():.6f}, "
+                    f"coarse_min={coarse_grid.min():.6f}, "
+                    f"coarse_max={coarse_grid.max():.6f}, "
+                    f"wm_mean={wm_heatmap.mean():.6f}, "
+                    f"wm_std={wm_heatmap.std():.6f}"
+                )
+
+            return wm_heatmap
+
+        raise RuntimeError(
+            f"Unknown wm_heatmap_mode={self.wm_heatmap_mode}"
         )
 
     def reset(self, **kwargs):
