@@ -75,6 +75,11 @@ defaults:
   unimix_ratio: 0.01
   initial: 'learned'
 
+  # Task-Relevance Guided Reconstruction
+  relevance_recon_enabled: true
+  relevance_recon_alpha: 0.5
+  relevance_recon_gamma: 4.0
+
   # Training
   batch_size: 16
   batch_length: 32

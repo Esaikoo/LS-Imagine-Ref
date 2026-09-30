@@ -184,6 +184,207 @@ class WorldModel(nn.Module):
             accumulated_reward=config.accumulated_reward_head["loss_scale"],
         )
 
+    def _relevance_weighted_rgb_loss(
+            self,
+            pred,
+            target,
+            relevance,
+    ):
+        """
+        pred.mode(): [B, T, H, W, 3]
+        target:      [B, T, H, W, 3]
+        relevance:   [B, T, H, W, 1]
+
+        Returns:
+            loss: [B, T]
+        """
+
+        pred_image = pred.mode()
+
+        # Relevance map is used only as a fixed importance signal.
+        relevance = relevance.detach()
+
+        # Defensive shape handling.
+        if relevance.ndim == pred_image.ndim - 1:
+            relevance = relevance.unsqueeze(-1)
+
+        if relevance.shape[-1] != 1:
+            relevance = relevance.mean(
+                dim=-1,
+                keepdim=True,
+            )
+
+        # Relevance map is expected to be in [0, 1].
+        relevance = relevance.float().clamp(
+            min=1e-3,
+            max=1.0,
+        )
+
+        gamma = float(
+            self._config.relevance_recon_gamma
+        )
+
+        alpha = float(
+            self._config.relevance_recon_alpha
+        )
+
+        assert 0.0 <= alpha <= 1.0, (
+            f"relevance_recon_alpha must be in [0,1], got {alpha}"
+        )
+
+        assert gamma >= 0.0, (
+            f"relevance_recon_gamma must be >= 0, got {gamma}"
+        )
+
+        # 1. Increase spatial contrast.
+        importance = relevance.pow(gamma)
+
+        # 2. Normalize each frame so that the mean importance is 1.
+        #    Therefore a spatially uniform relevance map degenerates
+        #    exactly to ordinary RGB reconstruction.
+        importance = importance / importance.mean(
+            dim=(-3, -2),
+            keepdim=True,
+        )
+
+        # 3. Mix ordinary reconstruction and relevance-weighted reconstruction.
+        weight = (
+                (1.0 - alpha)
+                + alpha * importance
+        )
+
+        sq_error = (
+                pred_image - target
+        ).square()
+
+        weight = weight.to(sq_error.dtype)
+
+        weighted_error = (
+                sq_error * weight
+        )
+
+        # Same sum convention as the original image MSE loss.
+        loss = weighted_error.sum(
+            dim=(-3, -2, -1)
+        )
+
+        return loss
+
+    def _rgb_recon_diagnostics(
+            self,
+            pred,
+            target,
+            relevance,
+    ):
+        """
+        Diagnostic metrics only.
+        No gradients are used.
+
+        pred.mode(): [B, T, H, W, 3]
+        target:      [B, T, H, W, 3]
+        relevance:   [B, T, H, W, 1]
+        """
+
+        with torch.no_grad():
+
+            pred_image = pred.mode()
+
+            if relevance.ndim == pred_image.ndim - 1:
+                relevance = relevance.unsqueeze(-1)
+
+            if relevance.shape[-1] != 1:
+                relevance = relevance.mean(
+                    dim=-1,
+                    keepdim=True,
+                )
+
+            relevance = relevance.float()
+
+            # Pixel-wise RGB MSE:
+            # [B,T,H,W,3] -> [B,T,H,W,1]
+            pixel_mse = (
+                    pred_image - target
+            ).square().mean(
+                dim=-1,
+                keepdim=True,
+            )
+
+            # ---------------------------------
+            # 1. Ordinary RGB reconstruction MSE
+            # ---------------------------------
+            plain_mse = pixel_mse.mean()
+
+            # ---------------------------------
+            # 2. Relative relevance threshold
+            #    calculated independently per frame
+            # ---------------------------------
+            frame_mean = relevance.mean(
+                dim=(-3, -2),
+                keepdim=True,
+            )
+
+            high_mask = (
+                    relevance >= frame_mean
+            ).to(pixel_mse.dtype)
+
+            low_mask = 1.0 - high_mask
+
+            reduce_dims = (-3, -2, -1)
+
+            # Per-frame ordinary reconstruction MSE.
+            # Shape: [B, T]
+            plain_mse_per_frame = pixel_mse.mean(
+                dim=reduce_dims
+            )
+
+            # ---------------------------------
+            # 3. High-relevance reconstruction MSE
+            # ---------------------------------
+            high_error_sum = (
+                    pixel_mse * high_mask
+            ).sum(
+                dim=reduce_dims
+            )
+
+            high_count = high_mask.sum(
+                dim=reduce_dims
+            )
+
+            high_mse_per_frame = torch.where(
+                high_count > 0,
+                high_error_sum / high_count.clamp_min(1.0),
+                plain_mse_per_frame,
+            )
+
+            high_mse = high_mse_per_frame.mean()
+
+            # ---------------------------------
+            # 4. Low-relevance reconstruction MSE
+            # ---------------------------------
+            low_error_sum = (
+                    pixel_mse * low_mask
+            ).sum(
+                dim=reduce_dims
+            )
+
+            low_count = low_mask.sum(
+                dim=reduce_dims
+            )
+
+            low_mse_per_frame = torch.where(
+                low_count > 0,
+                low_error_sum / low_count.clamp_min(1.0),
+                plain_mse_per_frame,
+            )
+
+            low_mse = low_mse_per_frame.mean()
+
+        return {
+            "rgb_mse_plain": plain_mse,
+            "rgb_mse_high_rel": high_mse,
+            "rgb_mse_low_rel": low_mse,
+        }
+
     def _train(self, data_origin):
         
         data = self.preprocess(data_origin, zoomed=False)
@@ -227,11 +428,33 @@ class WorldModel(nn.Module):
                         preds.update(pred)
                     else:
                         preds[name] = pred
-                        
+
                 losses = {}
+                recon_diagnostics = {}
                 for name, pred in preds.items():
-                    loss = -pred.log_prob(data[name])
-                    assert loss.shape == embed.shape[:2], (name, loss.shape)
+                    if name == "image":
+                        recon_diagnostics = self._rgb_recon_diagnostics(
+                            pred=pred,
+                            target=data["image"],
+                            relevance=data["heatmap"],
+                        )
+                    if (
+                            name == "image"
+                            and self._config.relevance_recon_enabled
+                    ):
+                        loss = self._relevance_weighted_rgb_loss(
+                            pred=pred,
+                            target=data["image"],
+                            relevance=data["heatmap"],
+                        )
+                    else:
+                        loss = -pred.log_prob(
+                            data[name]
+                        )
+                    assert loss.shape == embed.shape[:2], (
+                        name,
+                        loss.shape
+                    )
                     losses[name] = loss
                     
                 scaled = {
@@ -287,24 +510,46 @@ class WorldModel(nn.Module):
                             preds_zoomed.update(pred_zoomed)
                         else:
                             preds_zoomed[name] = pred_zoomed
-                              
+
                     losses_zoomed = {}
                     for name, pred in preds_zoomed.items():
-                        if name == 'jumping_steps' or name == 'accumulated_reward':
-                            loss = -pred.log_prob(data_zoomed[name])
+                        if (
+                                name == "image"
+                                and self._config.relevance_recon_enabled
+                        ):
+                            loss = self._relevance_weighted_rgb_loss(
+                                pred=pred,
+                                target=data_zoomed["image"],
+                                relevance=data_zoomed["heatmap"],
+                            )
+                        elif (
+                                name == "jumping_steps"
+                                or name == "accumulated_reward"
+                        ):
+                            loss = -pred.log_prob(
+                                data_zoomed[name]
+                            )
                             loss *= is_calculated_mask
                             if loss.shape[1] != 1:
-                                loss = loss.mean(dim=1, keepdim=True)
-                            assert loss.shape == embed_zoomed.shape[:2], (name, loss.shape)
-                            losses_zoomed[name] = loss
-                            
+                                loss = loss.mean(
+                                    dim=1,
+                                    keepdim=True
+                                )
                         else:
-                            loss = -pred.log_prob(data_zoomed[name])
+                            loss = -pred.log_prob(
+                                data_zoomed[name]
+                            )
                             if loss.shape[1] != 1:
-                                loss = loss.mean(dim=1, keepdim=True)
-                            assert loss.shape == embed_zoomed.shape[:2], (name, loss.shape)
-                            losses_zoomed[name] = loss
-                        
+                                loss = loss.mean(
+                                    dim=1,
+                                    keepdim=True
+                                )
+                        assert loss.shape == embed_zoomed.shape[:2], (
+                            name,
+                            loss.shape
+                        )
+                        losses_zoomed[name] = loss
+
                     scaled_zoomed = {
                         key: value * self._scales.get(key, 1.0)
                         for key, value in losses_zoomed.items()
@@ -344,6 +589,8 @@ class WorldModel(nn.Module):
             metrics = self._model_opt(torch.mean(model_loss), self.parameters())
 
         metrics.update({f"{name}_loss": to_np(torch.mean(loss)) for name, loss in losses.items()})
+        for name, value in recon_diagnostics.items():
+            metrics[name] = to_np(value)
         if zoomed_num > 0:
             metrics.update({f"zoomed_{name}_loss": to_np(torch.mean(loss)) for name, loss in losses_zoomed.items()})
         metrics["kl_free"] = kl_free
