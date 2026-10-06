@@ -136,7 +136,7 @@ def check(args, report, cache, model):
     prefix.update(action=ep["action"][:2].copy(), features=expected[:2].cpu().numpy().copy(),
                   telemetry=[{"pose": dict(x=0.0, y=64.0, z=0.0, yaw=0.0, pitch=0.0), "inventory": {}, "health": 20.0} for _ in range(2)])
     gl.require(ctl.prefix_comparison(prefix, prefix)["passed"], "同一历史未能通过配对检查")
-    for key in ("position", "action", "reward", "state"):
+    for key in ("position", "action", "reward", "state", "rgb", "heatmap"):
         bad = copy.deepcopy(prefix)
         if key == "position":
             bad["telemetry"][0]["pose"]["x"] = 10
@@ -144,13 +144,25 @@ def check(args, report, cache, model):
             bad["action"][1] = np.roll(bad["action"][1], 1)
         elif key == "reward":
             bad["obs_reward"][1] += 1
-        else:
+        elif key == "state":
             bad["features"] += 10
-        gl.require(not ctl.prefix_comparison(prefix, bad)["passed"], f"{key} 变更未被配对检查识别")
+        else:
+            field = "image" if key == "rgb" else "heatmap"
+            bad[field][1] = ((bad[field][1].astype(np.uint16) + 64) % 256).astype(np.uint8)
+        comparison = ctl.prefix_comparison(prefix, bad)
+        first = 0 if key in ("position", "state") else 1
+        gl.require(not comparison["passed"] and comparison["first_mismatch_frame"] == first and comparison["failed_checks"],
+                   f"{key} 变更或首次不一致帧未被配对检查识别")
     for policy in ("mode", "sample"):
         p = np.array([0.2, 0.8])
         gl.require(ctl.select_action(p, policy, 0.5) == 1, "真实动作选择错误")
     gl.require(ctl.angle_error(179, -179) == 2, "朝向跨 180 度计算错误")
+    scenarios = [ctl.make_scenario(seed) for seed in (0, 1, 2**31 - 10001)]
+    gl.require([ctl.validate_scenario(scenario) for scenario in scenarios] == ["1", "2", str(2**31 - 10000)],
+               "世界种子映射不正确")
+    t02.rejection(report, "zero_world_seed_guard", lambda: ctl.validate_scenario(dict(scenarios[0], world_seed="0")), "世界种子")
+    t02.rejection(report, "legacy_scenario_guard", lambda: ctl.validate_scenario({"seed": 0}), "世界种子")
+    report.check("world_seed_contract", "PASS", "实验 seed=0 保留；世界种子明确为 1；所有 case 使用 seed+1，discovery/reference/evaluate 共用保存的映射")
     finished_session = object.__new__(ctl.Session)
     finished_session.done = True
     t02.rejection(report, "after_terminal_guard", lambda: finished_session.step(0), "真实结束后")
@@ -170,7 +182,7 @@ def run_reference(args, report, model, scenario, directory, prefix_actions=None,
 
     session = None
     try:
-        print(f"[ENV] reference seed={scenario['seed']} branch={branch}; fresh reset", flush=True)
+        print(f"[ENV] reference seed={scenario['seed']} world_seed={scenario['world_seed']} branch={branch}; fresh reset", flush=True)
         session = ctl.Session(model, scenario, directory / "environment", lambda: count_step(report, "reference"))
         uniforms = np.random.RandomState(scenario["seed"] + 101 + (branch or 0)).uniform(size=args.horizon)
         actions = []
@@ -230,7 +242,7 @@ def prepare(args, report, cache, model):
                 "prefix_steps": args.prefix_steps, "reference_mode": args.reference_mode,
                 "min_goal_distance": args.min_goal_distance, "pair_limits": ctl.PAIR_LIMITS,
                 "requested_seeds": args.seeds, "cases": [], "reference_env_steps": 0,
-                "protocol": "fresh_task_fixed_pose_seed_clear_weather_frozen_time_no_fast_reset",
+                "protocol": ctl.ENVIRONMENT_PROTOCOL, "world_seed_policy": ctl.WORLD_SEED_POLICY,
                 "scope": "real diagnostic goals, not training data or task-success labels"}
     report.data["environment_protocol"] = manifest["protocol"]
     tiles = []
@@ -241,8 +253,9 @@ def prepare(args, report, cache, model):
         # subsequently start from this same explicitly specified pose.
         discovery = None
         try:
-            print(f"[ENV] discover seed={seed}; fresh reset", flush=True)
-            discovery = ctl.Session(model, {"seed": seed}, case_dir / "discovery_environment", lambda: count_step(report, "reference"))
+            discovery_scenario = ctl.make_scenario(seed)
+            print(f"[ENV] discover seed={seed} world_seed={discovery_scenario['world_seed']}; fresh reset", flush=True)
+            discovery = ctl.Session(model, discovery_scenario, case_dir / "discovery_environment", lambda: count_step(report, "reference"))
             start = discovery.tap.current["pose"]
             gl.require(start is not None, "MineDojo 未提供位置/朝向，无法建立可控起点")
             baseline.write_json(case_dir / "spawn.json", discovery.tap.current)
@@ -254,12 +267,17 @@ def prepare(args, report, cache, model):
                     discovery.close()
             discovery = None
             gc.collect()
-        scenario = {"seed": seed, "start_position": start}
+        scenario = ctl.make_scenario(seed, start)
+        baseline.write_json(case_dir / "scenario.json", scenario)
         left = run_reference(args, report, model, scenario, case_dir / "reference_0", branch=0)
         right = run_reference(args, report, model, scenario, case_dir / "reference_1", left["prefix_actions"], branch=1)
         comparison = ctl.prefix_comparison(left["prefix"], right["prefix"])
         baseline.write_json(case_dir / "prefix_comparison.json", comparison)
-        gl.require(comparison["passed"], f"seed={seed} 参考历史不一致；见 prefix_comparison.json；不能用该起点做配对结论")
+        if not comparison["passed"]:
+            print(f"[PAIR MISMATCH] seed={seed} world_seed={scenario['world_seed']} first_frame={comparison['first_mismatch_frame']} "
+                  f"failed_checks={comparison['failed_checks']} rgb_mae={comparison['rgb_mae']:.4f} "
+                  f"state_relative_l2={comparison['state_relative_l2']:.6f}", flush=True)
+        gl.require(comparison["passed"], f"seed={seed} world_seed={scenario['world_seed']} 参考历史不一致；见 prefix_comparison.json；不能用该起点做配对结论")
         gl.require(left["steps"] == right["steps"] == args.horizon, "参考分支提前终止；保留视频，但不建立不同执行预算的配对目标")
         goals = np.stack([left["endpoint_goal"], right["endpoint_goal"]])
         separation = float(ctl.distances(goals[:1], goals[1:])[0, 0])
@@ -275,7 +293,7 @@ def prepare(args, report, cache, model):
         np.savez_compressed(case_dir / "goals.npz", goals=goals,
             images=np.stack([ref["trajectory"]["image"][-1] for ref in (left, right)]),
             heatmaps=np.stack([ref["trajectory"]["heatmap"][-1] for ref in (left, right)]))
-        files = [case_dir / "goals.npz", case_dir / "spawn.json"]
+        files = [case_dir / "goals.npz", case_dir / "spawn.json", case_dir / "scenario.json"]
         for branch in (0, 1):
             files += [case_dir / f"reference_{branch}" / name for name in ("trajectory.npz", "events.json", "video.mp4")]
         manifest["cases"].append({"seed": seed, "directory": case_dir.name, "scenario": scenario,
@@ -289,7 +307,7 @@ def prepare(args, report, cache, model):
             tile.paste(Image.fromarray(ref["trajectory"]["image"][-1]).resize((128, 128)), (128, 20))
             tile.paste(Image.fromarray(ref["trajectory"]["heatmap"][-1]).convert("RGB").resize((128, 128)), (256, 20))
             tiles.append(tile)
-        print(f"[CASE] seed={seed} matched_prefix=1 goal_separation={separation:.5f} classes={classes}", flush=True)
+        print(f"[CASE] seed={seed} world_seed={scenario['world_seed']} matched_prefix=1 goal_separation={separation:.5f} classes={classes}", flush=True)
     manifest["reference_env_steps"] = report.data["reference_env_steps"]
     manifest["benchmark_id"] = benchmark_id(manifest)
     baseline.write_json(report.directory / "benchmark.json", manifest)
@@ -313,6 +331,8 @@ def load_benchmark(args, cache, report):
     manifest = read_json(directory / "benchmark.json")
     build = read_json(directory / "report.json")
     accepted(build, "prepare")
+    gl.require(manifest.get("protocol") == ctl.ENVIRONMENT_PROTOCOL and manifest.get("world_seed_policy") == ctl.WORLD_SEED_POLICY,
+               "benchmark 世界种子协议已变更，需要重新 prepare；不能复用旧的随机零种子目标")
     gl.require(manifest["format"] == ctl.FORMAT and manifest["benchmark_id"] == benchmark_id(manifest) and
                build.get("benchmark_id") == manifest["benchmark_id"] and
                manifest["bundle_id"] == cache.bundle["bundle_id"] and manifest["library_id"] == cache.bundle["library"]["library_id"] and
@@ -323,6 +343,10 @@ def load_benchmark(args, cache, report):
     gl.require(1 <= manifest["horizon"] <= cache.bundle["horizon"] and len(manifest["cases"]) > 0, "benchmark 长度或样本数错误")
     gl.require(manifest["requested_seeds"] == [case["seed"] for case in manifest["cases"]], "benchmark 丢弃了预先指定种子")
     for case in manifest["cases"]:
+        ctl.validate_scenario(case["scenario"])
+        scenario_path = directory / case["directory"] / "scenario.json"
+        gl.require(read_json(scenario_path) == case["scenario"] and
+                   str(scenario_path.relative_to(directory)) in case["files"], "benchmark 世界种子记录与已保存 scenario 不一致")
         gl.require(len(case["prefix_actions"]) == manifest["prefix_steps"] and case["scenario"]["seed"] == case["seed"] and
                    case["goal_separation"] >= manifest["min_goal_distance"] and
                    min(case["initial_distances"]) >= manifest["min_goal_distance"], "benchmark 起点、执行预算或目标区分度异常")
@@ -343,7 +367,7 @@ def run_trial(args, report, model, case, benchmark, goals, target, mode, directo
     session = None
     comparison = None
     try:
-        print(f"[ENV] eval seed={case['seed']} target={target} mode={mode}; fresh reset", flush=True)
+        print(f"[ENV] eval seed={case['seed']} world_seed={case['scenario']['world_seed']} target={target} mode={mode}; fresh reset", flush=True)
         session = ctl.Session(model, case["scenario"], directory / "environment", lambda: count_step(report, "evaluation"))
         for action in case["prefix_actions"]:
             session.step(int(action))

@@ -19,11 +19,35 @@ import long_horizon as lh
 
 
 FORMAT = "ls_imagine_goal_control_benchmark_v1"
+WORLD_SEED_POLICY = "case_seed_plus_one_v1"
+ENVIRONMENT_PROTOCOL = "fresh_task_fixed_pose_nonzero_world_seed_clear_weather_frozen_time_no_fast_reset_v2"
 MODES = ("goal", "zero_goal", "shuffled_goal", "original")
 OBS_KEYS = ("image", "heatmap", "obs_reward", "is_first", "is_last", "is_terminal")
 PAIR_LIMITS = {"rgb_mae": 1.0, "rgb_p99": 8.0, "heatmap_mae": 0.25,
                "state_relative_l2": 1e-4, "position": 0.05, "angle": 0.25,
                "reward": 1e-6}
+
+
+def make_scenario(seed, start_position=None):
+    """Keep experiment RNG seed separate from Malmo's nonzero world seed.
+
+    BiomeGenerator/DefaultWorldGenerator treat numeric world seed zero as a
+    request to retain a randomly generated seed. Map every case bijectively
+    to seed+1, and persist that mapping for discovery, references and trials.
+    """
+    gl.require(type(seed) is int and 0 <= seed < 2**31 - 10000, "T05 实验种子必须为合法非负整数")
+    scenario = {"seed": seed, "world_seed": str(seed + 1), "world_seed_policy": WORLD_SEED_POLICY}
+    if start_position is not None:
+        scenario["start_position"] = copy.deepcopy(start_position)
+    return scenario
+
+
+def validate_scenario(scenario):
+    expected = make_scenario(scenario["seed"])
+    gl.require(scenario.get("world_seed_policy") == WORLD_SEED_POLICY and
+               scenario.get("world_seed") == expected["world_seed"],
+               "T05 世界种子必须明确保存为 seed+1；world_seed=0 会随机生成世界，旧 scenario 需要重新 prepare")
+    return scenario["world_seed"]
 
 
 def load_model(payload, cache, device):
@@ -155,15 +179,46 @@ def prefix_comparison(reference, actual, limits=PAIR_LIMITS):
     for key in ("is_first", "is_last", "is_terminal"):
         result["flags_equal"] &= bool(np.array_equal(reference[key], actual[key]))
     result["actions_equal"] = bool(np.array_equal(reference["action"], actual["action"]))
+    boolean_checks = ("inventory_equal", "health_equal", "flags_equal", "actions_equal")
+    result["failed_checks"] = [key for key, limit in limits.items() if result[key] > limit]
+    result["failed_checks"] += [key for key in boolean_checks if not result[key]]
+    if result["missing_telemetry"]:
+        result["failed_checks"].append("missing_telemetry")
     result["passed"] = bool(not result["missing_telemetry"] and all(result[key] <= limit for key, limit in limits.items()) and
-                            all(result[key] for key in ("inventory_equal", "health_equal", "flags_equal", "actions_equal")))
+                            all(result[key] for key in boolean_checks))
+    # Preserve the original aggregate checks and thresholds, and expose the
+    # first diverging observation rather than only the maximum over 33 frames.
+    state_errors = np.linalg.norm(ref_feat - feat, axis=1) / np.maximum(np.linalg.norm(ref_feat, axis=1), 1e-8)
+    frames = []
+    for index, (left, right) in enumerate(zip(reference["telemetry"], actual["telemetry"])):
+        delta = pose_difference(left["pose"], right["pose"])
+        frame = {"frame": index, "is_reset": index == 0, "rgb_mae": float(rgb[index].mean()),
+                 "rgb_p99": float(np.percentile(rgb[index], 99)), "heatmap_mae": float(heat[index].mean()),
+                 "state_relative_l2": float(state_errors[index]),
+                 "reward": float(np.abs(reference["obs_reward"][index] - actual["obs_reward"][index]).max()),
+                 "position": 0.0 if delta is None else delta["position"],
+                 "angle": 0.0 if delta is None else max(delta["yaw"], delta["pitch"]),
+                 "inventory_equal": left["inventory"] == right["inventory"], "health_equal": left["health"] == right["health"],
+                 "flags_equal": all(np.array_equal(reference[key][index], actual[key][index]) for key in ("is_first", "is_last", "is_terminal")),
+                 "actions_equal": bool(np.array_equal(reference["action"][index], actual["action"][index])),
+                 "missing_telemetry": delta is None or any(item[key] is None for item in (left, right) for key in ("inventory", "health"))}
+        frame["failed_checks"] = [key for key, limit in limits.items() if frame[key] > limit]
+        frame["failed_checks"] += [key for key in boolean_checks if not frame[key]]
+        if frame["missing_telemetry"]:
+            frame["failed_checks"].append("missing_telemetry")
+        frame["passed"] = bool(not frame["missing_telemetry"] and all(frame[key] <= limit for key, limit in limits.items()) and
+                               all(frame[key] for key in boolean_checks))
+        frames.append(frame)
+    result["per_frame"] = frames
+    result["first_mismatch_frame"] = next((frame["frame"] for frame in frames if not frame["passed"]), None)
     return result
 
 
 def environment_fingerprint(root):
     """Bind real heatmap execution to the repository code and actual weights."""
     from importlib import metadata
-    paths = sorted((Path(root) / "envs").rglob("*.py")) + [Path(root) / "envs/tasks/task_specs.yaml", Path(root) / "weights/mineclip_attn.pth"]
+    paths = sorted((Path(root) / "envs").rglob("*.py")) + [Path(root) / "envs/tasks/task_specs.yaml", Path(root) / "weights/mineclip_attn.pth",
+                                                          Path(root) / "goal_control.py", Path(root) / "scripts/t05_goal_control.py"]
     result = {str(path.relative_to(root)): bc.file_hash(path) for path in paths}
     for package in ("minedojo", "mineclip", "torch", "opencv-python"):
         try:
@@ -179,6 +234,7 @@ def make_environment(bundle, scenario, log_dir):
     These kwargs are supported by HarvestMeta as well as MineDojoSim.
     Do not pass sim-only kwargs (e.g. start_time) through HarvestMeta.
     """
+    world_seed = validate_scenario(scenario)
     import gym
     from envs.tasks import get_specs
     from envs.tasks import minedojo as factory
@@ -195,7 +251,7 @@ def make_environment(bundle, scenario, log_dir):
         gaussian_reward_weight=config["gaussian_reward_weight"], gaussian_sigma_weight=config["gaussian_sigma_weight"])
     success = task_specs["success_specs"]
     task_specs["clip_specs"]["target_object"] = success["all"]["item"]["type"] if "all" in success else success["any"]["item"]["type"]
-    sim_specs.update(world_seed=str(scenario["seed"]), seed=scenario["seed"], fast_reset=False,
+    sim_specs.update(world_seed=world_seed, seed=scenario["seed"], fast_reset=False,
                      initial_weather="clear", allow_time_passage=False)
     if scenario.get("start_position") is not None:
         sim_specs["start_position"] = copy.deepcopy(scenario["start_position"])
