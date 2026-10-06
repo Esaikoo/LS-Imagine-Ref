@@ -6,6 +6,8 @@ T04 的缓存、100/2000 次训练及恢复工程验收已通过。它还没有�
 
 2026-10-07 用户反馈早期 400 次模型及新快照恢复验收通过；T05 prepare 在同位置/同动作但不同画面时失败。已修复 `world_seed="0"` 的随机世界问题，见 [T05 种子修复与重跑说明](t05_seed_recovery.md)。只需重跑 check/prepare，不重训 T04。新 case 实验 seed=s，实际世界种子为 s+1，两个编号会分别保存及打印。
 
+最新反馈：非零种子版仍有画面差异；离线诊断图集验收通过，并确认 T05 遗漏了原任务 ScreenshotWrapper 的 HUD 预处理。已本地恢复原预处理、只禁用截图文件输出；当前按 [视觉预处理修复说明](t05_visual_preprocessing_recovery.md) 重新 check/prepare，旧 check/benchmark 不复用，T04 不重训。环境配对及目标控制尚未验收。
+
 ## 本次实现
 
 - `goal_segments.py` 新增单帧真实状态更新：沿用 T03 的 FP32 posterior mode；输入是当前真实 RGB/heatmap/reward 和产生这帧的 incoming action。reset 清空历史，每步继续推进 RSSM。

@@ -20,7 +20,8 @@ import long_horizon as lh
 
 FORMAT = "ls_imagine_goal_control_benchmark_v1"
 WORLD_SEED_POLICY = "case_seed_plus_one_v1"
-ENVIRONMENT_PROTOCOL = "fresh_task_fixed_pose_nonzero_world_seed_clear_weather_frozen_time_no_fast_reset_v2"
+ENVIRONMENT_PROTOCOL = "fresh_task_fixed_pose_nonzero_world_seed_clear_weather_frozen_time_no_fast_reset_task_visual_preprocessing_v3"
+VISUAL_PREPROCESSING_POLICY = "preserve_task_screenshot_wrapper_disable_file_output_v1"
 MODES = ("goal", "zero_goal", "shuffled_goal", "original")
 OBS_KEYS = ("image", "heatmap", "obs_reward", "is_first", "is_last", "is_terminal")
 PAIR_LIMITS = {"rgb_mae": 1.0, "rgb_p99": 8.0, "heatmap_mae": 0.25,
@@ -48,6 +49,19 @@ def validate_scenario(scenario):
                scenario.get("world_seed") == expected["world_seed"],
                "T05 世界种子必须明确保存为 seed+1；world_seed=0 会随机生成世界，旧 scenario 需要重新 prepare")
     return scenario["world_seed"]
+
+
+def visual_preprocessing_specs(task_specs):
+    """Disable screenshot files without removing the task's RGB processing.
+
+    ScreenshotWrapper also removes HUD/hand pixels before MineCLIP and WM
+    see them. Dropping this wrapper changes inputs relative to T04 replay.
+    Keep its presence, HUD setting and all non-output options unchanged.
+    """
+    specs = copy.deepcopy(task_specs.get("screenshot_specs"))
+    if specs:
+        specs.update(reset_flag=False, step_flag=False)
+    return specs
 
 
 def load_model(payload, cache, device):
@@ -217,7 +231,7 @@ def prefix_comparison(reference, actual, limits=PAIR_LIMITS):
 def environment_fingerprint(root):
     """Bind real heatmap execution to the repository code and actual weights."""
     from importlib import metadata
-    paths = sorted((Path(root) / "envs").rglob("*.py")) + [Path(root) / "envs/tasks/task_specs.yaml", Path(root) / "weights/mineclip_attn.pth",
+    paths = sorted((Path(root) / "envs").rglob("*.py")) + [Path(root) / "envs/tasks/task_specs.yaml", Path(root) / "envs/tasks/base/HUD_mask.png", Path(root) / "weights/mineclip_attn.pth",
                                                           Path(root) / "goal_control.py", Path(root) / "scripts/t05_goal_control.py"]
     result = {str(path.relative_to(root)): bc.file_hash(path) for path in paths}
     for package in ("minedojo", "mineclip", "torch", "opencv-python"):
@@ -239,6 +253,7 @@ def make_environment(bundle, scenario, log_dir):
     from envs.tasks import get_specs
     from envs.tasks import minedojo as factory
     from envs.tasks.base.ls_imagine_wrapper import LSImagineWrapper
+    from envs.tasks.base.screenshot_wrapper import ScreenshotWrapper
 
     config = bundle["config"]
     suite, _, task = config["task"].partition("_")
@@ -246,7 +261,7 @@ def make_environment(bundle, scenario, log_dir):
     task_id, task_specs, sim_specs = copy.deepcopy(get_specs(task, target_item=config["target_item"]))
     task_specs["fast_reset"] = None
     task_specs["log_dir"] = str(log_dir)
-    task_specs["screenshot_specs"] = None
+    task_specs["screenshot_specs"] = visual_preprocessing_specs(task_specs)
     task_specs["concentration_specs"].update(max_steps=config["episode_max_steps"],
         gaussian_reward_weight=config["gaussian_reward_weight"], gaussian_sigma_weight=config["gaussian_sigma_weight"])
     success = task_specs["success_specs"]
@@ -263,6 +278,29 @@ def make_environment(bundle, scenario, log_dir):
     finally:
         if saved_spec is not None:
             factory.ALL_TASKS_SPECS[task_id] = saved_spec
+
+    screenshot_specs = task_specs["screenshot_specs"]
+    remove_hud = bool(screenshot_specs) and not bool(screenshot_specs.get("HUD", False))
+    try:
+        if screenshot_specs:
+            screenshot = env
+            while not isinstance(screenshot, ScreenshotWrapper):
+                gl.require(hasattr(screenshot, "env"), "T05 缺少任务原有 ScreenshotWrapper；不能改变训练时的 RGB 预处理")
+                screenshot = screenshot.env
+            gl.require(bool(screenshot.HUD) == bool(screenshot_specs.get("HUD", False)) and
+                       not screenshot.reset_flag and not screenshot.step_flag,
+                       "T05 必须保留任务 HUD 设置，仅关闭截图文件输出")
+            if remove_hud:
+                gl.require(screenshot.mask is not None and screenshot.mask.shape == screenshot.get_resolution(),
+                           "T05 HUD mask 缺失或尺寸不匹配")
+    except BaseException:
+        env.close()
+        raise
+    visual = {"policy": VISUAL_PREPROCESSING_POLICY, "screenshot_wrapper": bool(screenshot_specs),
+              "remove_hud": remove_hud, "screenshot_file_output": False,
+              "screenshot_specs": copy.deepcopy(screenshot_specs)}
+    print(f"[ENV] visual_preprocessing screenshot_wrapper={int(bool(screenshot_specs))} "
+          f"remove_hud={int(remove_hud)} screenshot_file_output=0", flush=True)
 
     class Tap(gym.Wrapper):
         def capture(self, obs):
@@ -288,7 +326,8 @@ def make_environment(bundle, scenario, log_dir):
     tap = Tap(wrapped.env)
     wrapped.env = tap
     gl.require(env.action_space.n == config["num_actions"], "T05 动作空间不兼容")
-    return env, tap, {"task_id": task_id, "task_specs": task_specs, "sim_specs": sim_specs}
+    return env, tap, {"task_id": task_id, "task_specs": task_specs, "sim_specs": sim_specs,
+                      "visual_preprocessing": visual}
 
 
 class Session:

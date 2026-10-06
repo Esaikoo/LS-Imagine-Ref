@@ -66,6 +66,9 @@ def load_inputs(args, report):
     else:
         checked = read_json(baseline.project_path(args.check_dir) / "report.json")
         accepted(checked, "check")
+        gl.require(checked.get("environment_protocol") == ctl.ENVIRONMENT_PROTOCOL and
+                   checked.get("visual_preprocessing_policy") == ctl.VISUAL_PREPROCESSING_POLICY,
+                   "T05 环境/RGB 预处理协议已更新，请用当前代码重新运行 offline check")
         gl.require(checked.get("input_identity") == identity, "T05 check 记录与当前 checkpoint 内容不匹配")
     model = ctl.load_model(payload, cache, args.device)
     gl.require(model.options["conditioning"] == "goal", "主 checkpoint 必须是 goal BC；no_goal 只能作为独立对照")
@@ -91,6 +94,28 @@ def check(args, report, cache, model):
     import goal_control as ctl
     import goal_library as gl
 
+    # This check only reads YAML and pure configuration helpers. It neither
+    # imports the environment factory nor starts MineDojo/MineCLIP.
+    task = model.bundle["config"]["task"].partition("_")[2]
+    catalogue = baseline.yaml_read(ROOT / "envs/tasks/task_specs.yaml")
+    original = copy.deepcopy(catalogue.get(task, {}).get("screenshot_specs"))
+    visual = ctl.visual_preprocessing_specs({"screenshot_specs": original})
+    gl.require(bool(visual) == bool(original), "T05 不能删除任务的 ScreenshotWrapper")
+    if original:
+        gl.require(all(visual[key] == value for key, value in original.items() if key not in ("reset_flag", "step_flag")) and
+                   visual["reset_flag"] is False and visual["step_flag"] is False,
+                   "T05 只能关闭截图输出，必须保留任务 RGB 预处理选项")
+    probe = dict(HUD=True, reset_flag=True, step_flag=True, save_freq=9, save_dir="diagnostic_marker")
+    recovered = ctl.visual_preprocessing_specs({"screenshot_specs": probe})
+    gl.require(probe["reset_flag"] and probe["step_flag"] and recovered is not probe and recovered["HUD"] and
+               recovered["save_freq"] == 9 and recovered["save_dir"] == "diagnostic_marker" and
+               recovered["reset_flag"] is False and recovered["step_flag"] is False and
+               ctl.visual_preprocessing_specs({"screenshot_specs": None}) is None,
+               "T05 RGB 预处理覆盖了任务设置或修改了源配置")
+    report.data.update(environment_protocol=ctl.ENVIRONMENT_PROTOCOL,
+                       visual_preprocessing_policy=ctl.VISUAL_PREPROCESSING_POLICY,
+                       screenshot_specs=visual)
+    report.check("visual_preprocessing_contract", "PASS", "保留任务 ScreenshotWrapper/HUD 设置，只关闭截图文件输出；未启动环境")
     dataset, _ = t04.accepted_dataset(Path(cache.metadata["dataset_dir"]), Path(cache.metadata["t03_verify_dir"]))
     gl.require(dataset.content_id == cache.metadata["dataset_id"], "T03 与缓存来源不同")
     rng = bc.capture_rng(args.device)
@@ -243,6 +268,7 @@ def prepare(args, report, cache, model):
                 "min_goal_distance": args.min_goal_distance, "pair_limits": ctl.PAIR_LIMITS,
                 "requested_seeds": args.seeds, "cases": [], "reference_env_steps": 0,
                 "protocol": ctl.ENVIRONMENT_PROTOCOL, "world_seed_policy": ctl.WORLD_SEED_POLICY,
+                "visual_preprocessing_policy": ctl.VISUAL_PREPROCESSING_POLICY,
                 "scope": "real diagnostic goals, not training data or task-success labels"}
     report.data["environment_protocol"] = manifest["protocol"]
     tiles = []
@@ -271,6 +297,9 @@ def prepare(args, report, cache, model):
         baseline.write_json(case_dir / "scenario.json", scenario)
         left = run_reference(args, report, model, scenario, case_dir / "reference_0", branch=0)
         right = run_reference(args, report, model, scenario, case_dir / "reference_1", left["prefix_actions"], branch=1)
+        baseline.write_json(case_dir / "visual_preprocessing.json", {
+            "reference_0": left["specs"]["visual_preprocessing"],
+            "reference_1": right["specs"]["visual_preprocessing"]})
         comparison = ctl.prefix_comparison(left["prefix"], right["prefix"])
         baseline.write_json(case_dir / "prefix_comparison.json", comparison)
         if not comparison["passed"]:
@@ -293,7 +322,7 @@ def prepare(args, report, cache, model):
         np.savez_compressed(case_dir / "goals.npz", goals=goals,
             images=np.stack([ref["trajectory"]["image"][-1] for ref in (left, right)]),
             heatmaps=np.stack([ref["trajectory"]["heatmap"][-1] for ref in (left, right)]))
-        files = [case_dir / "goals.npz", case_dir / "spawn.json", case_dir / "scenario.json"]
+        files = [case_dir / "goals.npz", case_dir / "spawn.json", case_dir / "scenario.json", case_dir / "visual_preprocessing.json"]
         for branch in (0, 1):
             files += [case_dir / f"reference_{branch}" / name for name in ("trajectory.npz", "events.json", "video.mp4")]
         manifest["cases"].append({"seed": seed, "directory": case_dir.name, "scenario": scenario,
@@ -331,8 +360,9 @@ def load_benchmark(args, cache, report):
     manifest = read_json(directory / "benchmark.json")
     build = read_json(directory / "report.json")
     accepted(build, "prepare")
-    gl.require(manifest.get("protocol") == ctl.ENVIRONMENT_PROTOCOL and manifest.get("world_seed_policy") == ctl.WORLD_SEED_POLICY,
-               "benchmark 世界种子协议已变更，需要重新 prepare；不能复用旧的随机零种子目标")
+    gl.require(manifest.get("protocol") == ctl.ENVIRONMENT_PROTOCOL and manifest.get("world_seed_policy") == ctl.WORLD_SEED_POLICY and
+               manifest.get("visual_preprocessing_policy") == ctl.VISUAL_PREPROCESSING_POLICY,
+               "benchmark 环境或 RGB 预处理协议已变更，需要重新 prepare；不能复用旧参考目标")
     gl.require(manifest["format"] == ctl.FORMAT and manifest["benchmark_id"] == benchmark_id(manifest) and
                build.get("benchmark_id") == manifest["benchmark_id"] and
                manifest["bundle_id"] == cache.bundle["bundle_id"] and manifest["library_id"] == cache.bundle["library"]["library_id"] and
