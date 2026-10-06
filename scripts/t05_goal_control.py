@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import sys
 import time
-import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -651,7 +650,11 @@ def main():
     directory = baseline.project_path(args.output_dir) if args.output_dir else baseline.project_path(args.output_root) / (args.command + "_" + datetime.now().strftime("%Y%m%dT%H%M%S_%f"))
     if any(directory == path or path in directory.parents or directory in path.parents for path in protected):
         parser.error("输出目录必须独立于原运行、回放、缓存、输入 checkpoint/验收/参考目标目录")
-    directory.mkdir(parents=True, exist_ok=False)
+    try:
+        directory.mkdir(parents=True, exist_ok=False)
+    except OSError as error:
+        print(f"[FAIL] output_directory: 无法创建 {directory}: {error}；请检查磁盘可用空间及 inode，或指定其他文件系统上的 --output-dir", file=sys.stderr, flush=True)
+        return 2
     report = Report(directory, args)
     print(f"OUTPUT_DIR={directory}", flush=True)
     os.chdir(ROOT)
@@ -670,6 +673,8 @@ def main():
         report.data["runtime"]["torch"] = str(torch.__version__)
         before = {str(path): baseline.file_signature(path) for path in files}
         report.data["source_inputs_before"] = before
+        report.save()
+        report.require_writable()
         for entry in source["episodes"]:
             gl.require(baseline.file_signature(Path(entry["path"])) == entry["signature"], "T03 原 replay 大小/修改时间改变")
         gl.require(baseline.file_signature(Path(source["checkpoint"]["path"])) == source["checkpoint"], "原初始化 checkpoint 已改变")
@@ -683,17 +688,17 @@ def main():
         gl.require(versions == {id(p): p._version for p in model.parameters()} and ctl.model_identity(model) == model_id, "T05 修改了模型参数或目标库")
         report.check("no_training", "PASS", f"低层/原 actor/WM/目标库内容及参数版本未变；optimizer_updates=0；新增真实动作步={report.data['new_env_steps']}")
     except (Exception, KeyboardInterrupt) as error:
-        (directory / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-        report.check("execution", "FAIL", f"{type(error).__name__}: {error}；已完成轨迹尽量保留，见 error.txt")
+        baseline.record_exception(report, error)
     finally:
         if rng is not None:
             bc.restore_rng(rng, args.device)
         if before is not None:
             try:
                 after = {str(path): baseline.file_signature(path) for path in files}
-                report.check("source_inputs_unchanged", "PASS" if before == after else "FAIL", "原 checkpoint/回放及输入产物大小/修改时间未变（非内容哈希）；新结果只在独立目录")
             except OSError as error:
                 report.check("source_inputs_unchanged", "FAIL", str(error))
+            else:
+                report.check("source_inputs_unchanged", "PASS" if before == after else "FAIL", "原 checkpoint/回放及输入产物大小/修改时间未变（非内容哈希）；新结果只在独立目录")
     return report.finish()
 
 

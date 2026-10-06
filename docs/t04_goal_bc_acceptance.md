@@ -140,7 +140,9 @@ python scripts/t04_goal_bc.py verify \
 
 `--steps` 是累计更新目标；恢复时未指定的训练参数自动继承 checkpoint。显式改变 batch、学习率、条件模式、隐藏维度、种子等会拒绝精确恢复。恢复要求同一缓存 ID、冻结模型/目标库和相同计算环境信息（PyTorch、设备类型，GPU 时还包括 CUDA/cuDNN、型号与计算能力，CPU 时包括线程数）；日志间隔可以变化。这仍是离线 BC，没有新增真实交互，不是 2000 环境步，也不是 1M 训练。
 
-T04 `latest.pt` 保存新 worker/candidate、独立优化器、计数、采样器/RNG，以及冻结 encoder/RSSM、原 actor 和完整目标库。它使用独立 T04 格式，不含原 WM decoder/value 或旧优化器，不能传给原训练入口/T00 当作完整 agent。真实目标执行循环、高层与宏模型由 T05 及后续接入；原默认 flat LS 路径保持现有行为。
+T04 `latest.pt` 保存新 worker/candidate、独立优化器、计数、采样器/RNG。新快照通过相对路径及 SHA256/内容 ID 共享缓存中的 `frozen_bundle.pt`（冻结 encoder/RSSM、原 actor 和完整目标库），旧内嵌格式仍可读取。迁移时必须保留共享依赖及相对目录关系。它使用独立 T04 格式，不含原 WM decoder/value 或旧优化器，不能传给原训练入口/T00 当作完整 agent。真实目标执行循环、高层与宏模型由 T05 及后续接入；原默认 flat LS 路径保持现有行为。
+
+保存时磁盘写满请先按 [T04 磁盘恢复说明](t04_disk_recovery.md) 处理空间、运行 CPU 存储检查，并从完整 checkpoint 在新目录恢复；不要直接重跑到同一失败目录或把 `.tmp` 当作模型。
 
 ## 反馈和中文提交备注
 

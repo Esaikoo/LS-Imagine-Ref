@@ -29,7 +29,7 @@ PAIR_LIMITS = {"rgb_mae": 1.0, "rgb_p99": 8.0, "heatmap_mae": 0.25,
 def load_model(payload, cache, device):
     """Strict inference load without constructing/restoring any optimizer."""
     gl.require(payload.get("checkpoint_format") == bc.CHECKPOINT_FORMAT and
-               payload.get("stage") == "t04_offline_bc" and payload.get("mode") == "goal_worker" and
+               payload.get("stage") == "t04_offline_bc" and payload.get("experiment_mode") == "goal_worker" and
                payload.get("worker_architecture") == "expanded_actor_v1" and
                payload.get("candidate_semantics") == "current_state_future_class_forecast" and
                not payload.get("verification_artifact"), "T05 需要真实 T04 checkpoint，不能用原 agent 或合成验收文件")

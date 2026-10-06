@@ -5,11 +5,15 @@ the T01 expanded actor and T03 causal encoder, not the flat training loop.
 """
 
 import copy
+import errno
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import random
+import shutil
+import sys
 
 import numpy as np
 import torch
@@ -25,13 +29,40 @@ import networks
 BUNDLE_FORMAT = "ls_imagine_frozen_bc_bundle_v1"
 CACHE_FORMAT = "ls_imagine_bc_cache_v1"
 CHECKPOINT_FORMAT = "ls_imagine_goal_bc_checkpoint_v1"
+CHECKPOINT_STORAGE = "external_frozen_bundle_v1"
+DISK_RESERVE_BYTES = 64 * 1024 * 1024
 
 
-def torch_load(path):
+def _torch_load(path):
     kwargs = {"map_location": "cpu"}
     if "weights_only" in inspect.signature(torch.load).parameters:
         kwargs["weights_only"] = False
     return torch.load(Path(path), **kwargs)
+
+
+def torch_load(path):
+    """Read legacy embedded snapshots or resolve a checked shared dependency."""
+    path = Path(path)
+    payload = _torch_load(path)
+    if not isinstance(payload, dict) or payload.get("checkpoint_format") != CHECKPOINT_FORMAT:
+        return payload
+    storage = payload.get("checkpoint_storage")
+    if storage is None:
+        gl.require("frozen_bundle_ref" not in payload, "checkpoint 冻结依赖声明不完整")
+        return payload
+    gl.require(storage == CHECKPOINT_STORAGE and "frozen_bundle" not in payload,
+               "checkpoint 存储格式不兼容或冻结模型重复声明")
+    reference = payload["frozen_bundle_ref"]
+    gl.require(isinstance(reference, dict) and isinstance(reference.get("path"), str) and
+               reference["path"] and not Path(reference["path"]).is_absolute(), "冻结依赖需要相对路径")
+    dependency = (path.parent / reference["path"]).resolve()
+    if not dependency.is_file():
+        raise FileNotFoundError(f"checkpoint 依赖缺失：{dependency}；请保留 T04 缓存中的 frozen_bundle.pt，迁移时保持相对目录关系")
+    gl.require(file_hash(dependency) == reference["sha256"], "checkpoint 冻结依赖文件 SHA256 不匹配")
+    bundle = _torch_load(dependency)
+    validate_bundle(bundle)
+    gl.require(bundle["bundle_id"] == reference["bundle_id"], "checkpoint 冻结依赖内容 ID 不匹配")
+    return dict(payload, frozen_bundle=bundle)
 
 
 def cpu_tree(value):
@@ -46,13 +77,82 @@ def cpu_tree(value):
     return copy.deepcopy(value)
 
 
+def tensor_storage_bytes(value):
+    """Count tensor storages once, including views' complete saved storage."""
+    seen = set()
+
+    def count(item):
+        if torch.is_tensor(item):
+            storage = item.untyped_storage() if hasattr(item, "untyped_storage") else item.storage()
+            key = (str(item.device), storage.data_ptr(), storage.nbytes())
+            if key in seen:
+                return 0
+            seen.add(key)
+            return storage.nbytes()
+        if isinstance(item, np.ndarray):
+            return item.nbytes
+        if isinstance(item, dict):
+            return sum(count(child) for child in item.values())
+        if isinstance(item, (tuple, list)):
+            return sum(count(child) for child in item)
+        return 0
+
+    return count(value)
+
+
+def require_disk_space(directory, data_bytes, reserve_bytes=DISK_RESERVE_BYTES):
+    free = shutil.disk_usage(directory).free
+    required = int(data_bytes) + reserve_bytes
+    if free < required:
+        raise OSError(errno.ENOSPC,
+            f"磁盘空间不足：{directory}，可用 {free / 2**20:.1f} MiB，预计需要至少 {required / 2**20:.1f} MiB "
+            "（含临时写入及日志余量）；请清理空间或指定其他文件系统上的 --output-dir")
+    return {"free_bytes": free, "required_bytes": required, "reserve_bytes": reserve_bytes}
+
+
 def save_atomic(payload, path, overwrite=False):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     gl.require(not temporary.exists() and (overwrite or not path.exists()), "拒绝覆盖已有产物或未完成临时文件")
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, temporary)
-    temporary.replace(path)
+    require_disk_space(path.parent, tensor_storage_bytes(payload))
+    # Exclusive creation makes ownership explicit: never remove a pre-existing
+    # .tmp file. A failed write leaves the previous destination untouched.
+    owned = False
+    try:
+        with temporary.open("xb", buffering=0) as stream:
+            owned = True
+            torch.save(payload, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    except BaseException:
+        if owned:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                print(f"[WARN] temporary_cleanup: {temporary}: {cleanup_error}", file=sys.stderr, flush=True)
+        raise
+
+
+def frozen_bundle_reference(cache):
+    path = (cache.directory / "frozen_bundle.pt").resolve()
+    return {"source_path": path, "sha256": file_hash(path), "bundle_id": cache.bundle["bundle_id"]}
+
+
+def compact_checkpoint(payload, path, reference):
+    """Keep all mutable training state, sharing only the immutable bundle."""
+    gl.require(payload.get("checkpoint_format") == CHECKPOINT_FORMAT and
+               payload["frozen_bundle"]["bundle_id"] == reference["bundle_id"], "checkpoint 与冻结依赖不同")
+    result = {key: value for key, value in payload.items() if key not in ("frozen_bundle", "frozen_bundle_ref")}
+    result["checkpoint_storage"] = CHECKPOINT_STORAGE
+    result["frozen_bundle_ref"] = {"path": os.path.relpath(reference["source_path"], Path(path).resolve().parent),
+                                  "sha256": reference["sha256"], "bundle_id": reference["bundle_id"]}
+    return result
+
+
+def save_checkpoint(payload, path, reference, overwrite=False):
+    save_atomic(compact_checkpoint(payload, path, reference), path, overwrite=overwrite)
 
 
 def file_hash(path):

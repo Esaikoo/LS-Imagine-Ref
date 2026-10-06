@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import traceback
+import tempfile
 from datetime import datetime, timezone
 
 
@@ -31,11 +32,41 @@ def project_path(value):
     return (path if path.is_absolute() else ROOT / path).resolve()
 
 
+def write_text_atomic(path, content):
+    """Leave the previous report intact if a new write runs out of space."""
+    path = Path(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None and temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError as error:
+                print(f"[WARN] temporary_cleanup: {temporary}: {error}", file=sys.stderr, flush=True)
+
+
 def write_json(path, data):
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+    write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+
+
+def record_exception(report, error):
+    detail = traceback.format_exc()
+    # stderr remains usable when neither error.txt nor report.json can be saved.
+    print(detail, file=sys.stderr, flush=True)
+    try:
+        write_text_atomic(report.directory / "error.txt", detail)
+        location = "详情见 error.txt"
+    except OSError as log_error:
+        location = "error.txt 无法写入，详情见终端"
+        print(f"[FAIL] error_log: {log_error}；{location}", file=sys.stderr, flush=True)
+    report.check("execution", "FAIL", f"{type(error).__name__}: {error}；{location}")
 
 
 def write_csv(path, rows):
@@ -196,7 +227,23 @@ class Report:
         self.save()
 
     def save(self):
-        write_json(self.directory / "report.json", self.data)
+        try:
+            write_json(self.directory / "report.json", self.data)
+            return True
+        except OSError as error:
+            detail = f"报告无法写入：{error}；以本次终端日志为准，已有 report.json 可能仍是上一次状态"
+            previous = self.data.get("report_write_error")
+            self.data["report_write_error"] = detail
+            self.data["status"] = "failed"
+            if previous is None:
+                self.data["checks"].append({"name": "report_output", "level": "FAIL", "detail": detail})
+            if previous != detail:
+                print(f"[FAIL] report_output: {detail}", file=sys.stderr, flush=True)
+            return False
+
+    def require_writable(self):
+        if self.data.get("report_write_error"):
+            raise OSError(self.data["report_write_error"])
 
     def finish(self):
         levels = {item["level"] for item in self.data["checks"]}

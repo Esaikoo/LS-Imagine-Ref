@@ -13,7 +13,6 @@ from pathlib import Path
 import random
 import sys
 import time
-import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -232,6 +231,17 @@ def train(args, report):
     report.data.update(cache_id=cache.cache_id, bundle_id=frozen_id, options=options, start_step=trainer.step)
     report.check("optimizers", "PASS", "只有独立 worker/candidate 优化器；原 WM、目标编码器及原 actor 冻结")
     report.check("scope", "WARN", "离线真实回放训练；new_env_steps=0；候选输出是未来类别概率，真实目标控制待 T05")
+    reference = bc.frozen_bundle_reference(cache)
+    # Budget three complete mutable snapshots plus one atomic replacement.
+    # Adam will allocate two moments per parameter after the first update.
+    mutable_bytes = bc.tensor_storage_bytes([trainer.model.worker.state_dict(), trainer.model.candidate.state_dict()])
+    snapshot_bytes = 3 * mutable_bytes + bc.tensor_storage_bytes([bc.capture_rng(args.device), trainer.sampler.get_state()]) + 1024**2
+    storage_plan = bc.require_disk_space(report.directory, 4 * snapshot_bytes)
+    report.data["checkpoint_storage"] = dict(storage_plan, format=bc.CHECKPOINT_STORAGE,
+        snapshot_estimated_bytes=snapshot_bytes, shared_bundle_path=str(reference["source_path"]),
+        shared_bundle_sha256=reference["sha256"])
+    report.check("storage_preflight", "PASS", f"预计单份快照 {snapshot_bytes / 2**20:.1f} MiB；已检查三份快照及一次临时写入空间；共享缓存冻结模型")
+    report.require_writable()
     initial_metrics = evaluate_and_save(trainer, report)
     # Select the two modules independently. These are complete, resumable T04
     # snapshots, not mixtures of weights/optimizers from different updates.
@@ -250,7 +260,7 @@ def train(args, report):
                 payload = trainer.payload()
                 payload["selection"] = selection
                 path = report.directory / ("best_" + name + ".pt")
-                bc.save_atomic(payload, path, overwrite=True)
+                bc.save_checkpoint(payload, path, reference, overwrite=True)
                 best[name] = dict(selection, path=str(path))
                 baseline.write_json(report.directory / "best_checkpoints.json", best)
 
@@ -264,14 +274,14 @@ def train(args, report):
             final_metrics = evaluate_and_save(trainer, report)
             save_best(final_metrics)
         if trainer.step % args.save_every == 0 or trainer.step == args.steps:
-            bc.save_atomic(trainer.payload(), report.directory / "latest.pt", overwrite=True)
+            bc.save_checkpoint(trainer.payload(), report.directory / "latest.pt", reference, overwrite=True)
     gl.require(versions == {id(p): p._version for module in (trainer.model.state_encoder, trainer.model.library, trainer.model.original_actor)
                            for p in module.parameters()} and trainer.model.frozen_identity() == frozen_id, "训练更新了冻结模块")
     report.data.update(counters=trainer.counters(), checkpoint=str(report.directory / "latest.pt"),
                        initial_metrics=initial_metrics, final_metrics=final_metrics, best_checkpoints=best)
     report.check("training", "PASS", f"worker/candidate 各更新 {trainer.step} 次；损失与梯度有限；新环境步数 0")
     report.check("frozen_modules", "PASS", "原 encoder/RSSM、目标库和原 actor 参数版本及内容哈希未变")
-    report.check("checkpoint", "PASS", "独立 T04 latest.pt 保存新优化器、计数、采样器、RNG 与冻结依赖；完整恢复请运行 verify")
+    report.check("checkpoint", "PASS", "独立 T04 latest.pt 保存新优化器、计数、采样器、RNG；冻结依赖共享缓存文件并校验 SHA256/内容 ID；完整恢复请运行 verify")
     report.check("best_checkpoints", "PASS", "分别按留出 worker NLL/candidate CE 保存完整最佳快照；选择窗口及更新步数见 best_checkpoints.json")
 
 
@@ -354,8 +364,12 @@ def verify(args, report):
     bad_worker[first] = bad_worker[first][:1]
     t02.rejection(report, "shape_guard", lambda: trainer.restore(dict(payload, worker=bad_worker)), "权重不兼容")
     roundtrip = trainer.payload(verification_artifact=True)
-    bc.save_atomic(roundtrip, report.directory / "roundtrip_verification.pt")
+    reference = bc.frozen_bundle_reference(cache)
+    bc.save_checkpoint(roundtrip, report.directory / "roundtrip_verification.pt", reference)
     reloaded = bc.torch_load(report.directory / "roundtrip_verification.pt")
+    gl.require(reloaded.get("checkpoint_storage") == bc.CHECKPOINT_STORAGE and
+               reloaded["frozen_bundle"]["bundle_id"] == cache.bundle["bundle_id"], "共享冻结依赖加载不一致")
+    report.check("shared_frozen_bundle", "PASS", "新快照不重复保存冻结权重；相对路径、文件 SHA256 与 bundle ID 验证后加载；旧内嵌格式仍可读取")
     other = bc.Trainer(cache, payload["options"], args.device)
     other.restore(reloaded, allow_verification=True)
     again = other.payload(verification_artifact=True)
@@ -459,7 +473,11 @@ def main():
     directory = baseline.project_path(args.output_dir) if args.output_dir else baseline.project_path(args.output_root) / (args.command + "_" + datetime.now().strftime("%Y%m%dT%H%M%S_%f"))
     if any(directory == path or path in directory.parents or directory in path.parents for path in protected):
         parser.error("输出目录必须独立于原运行、源回放、T00/T02/T03、缓存及恢复输入目录")
-    directory.mkdir(parents=True, exist_ok=False)
+    try:
+        directory.mkdir(parents=True, exist_ok=False)
+    except OSError as error:
+        print(f"[FAIL] output_directory: 无法创建 {directory}: {error}；请检查磁盘可用空间及 inode，或指定其他文件系统上的 --output-dir", file=sys.stderr, flush=True)
+        return 2
     report = Report(directory, args)
     print(f"OUTPUT_DIR={directory}", flush=True)
     os.chdir(ROOT)
@@ -471,6 +489,8 @@ def main():
         report.data["runtime"]["torch"] = str(torch.__version__)
         before = {str(path): baseline.file_signature(path) for path in source_files}
         report.data["source_inputs_before"] = before
+        report.save()
+        report.require_writable()
         for entry in meta["episodes"]:
             if baseline.file_signature(Path(entry["path"])) != entry["signature"]:
                 raise ValueError("T03 源 replay 大小/修改时间改变")
@@ -478,16 +498,16 @@ def main():
             raise ValueError("T03 原初始化 checkpoint 大小/修改时间改变")
         {"prepare": prepare, "train": train, "verify": verify}[args.command](args, report)
     except (Exception, KeyboardInterrupt) as error:
-        (directory / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-        report.check("execution", "FAIL", f"{type(error).__name__}: {error}；见 error.txt")
+        baseline.record_exception(report, error)
     finally:
         if report.data.get("source_inputs_before"):
             try:
                 after = {str(path): baseline.file_signature(path) for path in source_files}
                 report.data["source_inputs_after"] = after
-                report.check("source_inputs_unchanged", "PASS" if before == after else "FAIL", "原模型、回放及输入产物大小/修改时间未变（非内容哈希）；输出在独立目录")
             except OSError as error:
                 report.check("source_inputs_unchanged", "FAIL", str(error))
+            else:
+                report.check("source_inputs_unchanged", "PASS" if before == after else "FAIL", "原模型、回放及输入产物大小/修改时间未变（非内容哈希）；输出在独立目录")
     return report.finish()
 
 
