@@ -8,6 +8,8 @@ T04 的缓存、100/2000 次训练及恢复工程验收已通过。它还没有�
 
 最新反馈：非零种子版仍有画面差异；离线诊断图集验收通过，并确认 T05 遗漏了原任务 ScreenshotWrapper 的 HUD 预处理。已本地恢复原预处理、只禁用截图文件输出；当前按 [视觉预处理修复说明](t05_visual_preprocessing_recovery.md) 重新 check/prepare，旧 check/benchmark 不复用，T04 不重训。环境配对及目标控制尚未验收。
 
+后续反馈：HUD修复生效，RGB最大MAE仅0.4034，heatmap/RSSM严格配对仍失败。当前先按 [随机重复验收说明](t05_repeated_control_acceptance.md) 运行新增入口的离线check/adopt，再根据同状态目标敏感度决定重复行为评估。本文保留原严格配对协议，其失败未被改写为通过；新协议也不自动批准控制收益或T06。
+
 ## 本次实现
 
 - `goal_segments.py` 新增单帧真实状态更新：沿用 T03 的 FP32 posterior mode；输入是当前真实 RGB/heatmap/reward 和产生这帧的 incoming action。reset 清空历史，每步继续推进 RSSM。

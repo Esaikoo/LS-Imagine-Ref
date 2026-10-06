@@ -271,6 +271,7 @@ def prepare(args, report, cache, model):
                 "visual_preprocessing_policy": ctl.VISUAL_PREPROCESSING_POLICY,
                 "scope": "real diagnostic goals, not training data or task-success labels"}
     report.data["environment_protocol"] = manifest["protocol"]
+    report.data["environment_fingerprint"] = manifest["environment_fingerprint"]
     tiles = []
     for seed in args.seeds:
         case_dir = report.directory / f"case_{seed}"
@@ -405,11 +406,24 @@ def run_trial(args, report, model, case, benchmark, goals, target, mode, directo
         reference = ctl.read_trajectory(baseline.project_path(args.benchmark_dir) / case["directory"] / "reference_0")
         reference = {key: value[:prefix_steps + 1] for key, value in reference.items()}
         comparison = ctl.prefix_comparison(reference, session.arrays(), benchmark["pair_limits"])
-        report.data.setdefault("pair_checks", []).append(dict(seed=case["seed"], target=target, mode=mode, **comparison))
+        repeated = benchmark.get("comparison_protocol") is not None
+        start_comparison = None
+        if repeated:
+            import goal_control_stats as stats
+            gl.require(benchmark["comparison_protocol"] == stats.PROTOCOL, "未知重复评估协议，不能退回严格配对或静默接受")
+            reference_events = read_json(baseline.project_path(args.benchmark_dir) / case["directory"] / "reference_0/events.json")
+            prefix_events = reference_events[:prefix_steps + 1]
+            native_equal = len(prefix_events) == len(session.events) and all("native_actions" in event for event in prefix_events) and stats.native_actions_equal(
+                [event["native_actions"] for event in prefix_events], [event["native_actions"] for event in session.events])
+            start_comparison = stats.start_check(comparison, native_equal)
+        eligible = start_comparison["passed"] if repeated else comparison["passed"]
+        report.data.setdefault("pair_checks", []).append(dict(seed=case["seed"], target=target, mode=mode,
+            repeat=getattr(args, "repeat", None), start_comparison=start_comparison, **comparison))
         report.save()
-        if not comparison["passed"]:
+        if not eligible:
             return {"seed": case["seed"], "target": target, "mode": mode, "paired": False, "pair_check": comparison,
-                    "reason": "actual reset/prefix mismatch; no behavioral comparison"}
+                    "start_eligible": False, "execution_valid": False, "start_comparison": start_comparison,
+                    "directory": directory.name, "reason": "actual reset/prefix mismatch; no behavioral comparison"}
         assigned = goals[1 - target] if mode == "shuffled_goal" else goals[target]
         goal_reference = ctl.read_trajectory(baseline.project_path(args.benchmark_dir) / case["directory"] / f"reference_{target}")
         # Same predeclared uniform sequence across conditions AND target
@@ -435,7 +449,9 @@ def run_trial(args, report, model, case, benchmark, goals, target, mode, directo
         trajectory["goal_features"] = np.stack([ctl.encode_goal(model, row) for row in session.rows])
         metrics = ctl.trial_metrics(trajectory, goals, target, prefix_steps, goal_reference["telemetry"][-1])
         control_events = session.events[prefix_steps + 1:]
-        metrics.update(seed=case["seed"], target=target, mode=mode, paired=True,
+        metrics.update(seed=case["seed"], target=target, mode=mode, paired=not repeated,
+            start_eligible=True, execution_valid=True, start_comparison=start_comparison,
+            comparison_protocol=benchmark.get("comparison_protocol", "strict_identical_history"),
             assigned_target_class=case["goal_classes"][target],
             actual_end_class=int(model.library.assign(trajectory["goal_features"][-1]).item()),
             issued_goal=1 - target if mode == "shuffled_goal" else target,
@@ -453,6 +469,19 @@ def run_trial(args, report, model, case, benchmark, goals, target, mode, directo
             else:
                 replay_check = {"passed": False, "reason": "reference execution length changed"}
             metrics.update(reference_replay_check=replay_check, reference_replay_valid=bool(replay_check["passed"]))
+            if repeated:
+                expected_actions = goal_reference["action"][prefix_steps + 1:prefix_steps + horizon + 1].argmax(-1).tolist()
+                saved_events = read_json(baseline.project_path(args.benchmark_dir) / case["directory"] / f"reference_{target}/events.json")
+                expected_native = [e["native_actions"] for e in saved_events[prefix_steps + 1:prefix_steps + horizon + 1]]
+                actual_native = [e["native_actions"] for e in session.events[prefix_steps + 1:]]
+                metrics["reference_macro_actions_equal"] = actions == expected_actions[:len(actions)]
+                metrics["reference_native_actions_equal"] = stats.native_actions_equal(actual_native, expected_native[:len(actions)])
+                metrics["reference_actions_equal"] = metrics["reference_macro_actions_equal"] and metrics["reference_native_actions_equal"]
+                metrics["reference_budget_completed"] = len(actions) == horizon
+                # Runtime wrappers can depend on post-start inventory/state.
+                # Keep native differences as calibration diagnostics instead
+                # of selecting repeats by their realized future outcome.
+                metrics["execution_valid"] = metrics["reference_macro_actions_equal"]
         trace = {"model_id": ctl.model_identity(model), "target_index": target, "assigned_goal": assigned.tolist(),
                  "execution_policy": "recorded_actions" if mode == "reference_replay" else args.execution_policy,
                  "probability_semantics": "prescribed_action" if mode == "reference_replay" else "policy_distribution",
