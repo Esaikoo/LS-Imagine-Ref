@@ -5,6 +5,7 @@ standalone artifact embeds the visual weights, projection and goal anchors.
 """
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -19,6 +20,31 @@ import networks
 
 
 FORMAT = "ls_imagine_goal_library_v1"
+NUMERIC_POLICY = "float32_no_amp_no_tf32_v1"
+
+
+@contextmanager
+def encoder_precision(device):
+    """Keep goal identities independent of an enclosing training AMP context.
+
+    TF32/AMP are useful for training, but their reduced precision must not
+    change the frozen features used as persistent goal vectors. Restore the
+    caller's settings after inference, including when inference raises.
+    """
+    device = torch.device(device)
+    with torch.autocast(device_type=device.type, enabled=False):
+        if device.type != "cuda":
+            yield
+            return
+        previous_precision = torch.get_float32_matmul_precision()
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            with torch.backends.cudnn.flags(benchmark=False, deterministic=True, allow_tf32=False):
+                yield
+        finally:
+            # Restoring only allow_tf32=True would turn a caller's "medium"
+            # matmul policy into "high". Preserve the complete policy.
+            torch.set_float32_matmul_precision(previous_precision)
 
 
 def require(condition, message):
@@ -68,6 +94,7 @@ def encoder_spec(config, observation_shapes, goal_dim, pool_size):
     channels = cnn_config["cnn_depth"] * 2 ** (stages - 1)
     return {"input_keys": list(visual), "shapes": visual, "goal_dim": goal_dim, "pool_size": pool_size,
             "raw_dim": channels * pool_size**2, "projection": "center_randomized_pca_l2_v1",
+            "numeric_policy": NUMERIC_POLICY,
             "cnn": {"depth": cnn_config["cnn_depth"], "act": cnn_config["act"], "norm": cnn_config["norm"],
                     "kernel_size": cnn_config["kernel_size"], "minres": cnn_config["minres"]}}
 
@@ -106,8 +133,9 @@ class FrozenGoalEncoder(nn.Module):
         inputs = torch.cat([values[key] for key in self.spec["input_keys"]], -1) - 0.5
         leading = inputs.shape[:-3]
         inputs = inputs.reshape(-1, *inputs.shape[-3:]).permute(0, 3, 1, 2)
-        maps = self.cnn.layers(inputs)
-        pooled = F.adaptive_avg_pool2d(maps, self.spec["pool_size"]).flatten(1)
+        with encoder_precision(device):
+            maps = self.cnn.layers(inputs)
+            pooled = F.adaptive_avg_pool2d(maps, self.spec["pool_size"]).flatten(1)
         require(pooled.shape[-1] == self.spec["raw_dim"], "目标 CNN 输出维度与已保存结构不一致")
         return pooled.reshape(*leading, self.spec["raw_dim"])
 
@@ -115,10 +143,11 @@ class FrozenGoalEncoder(nn.Module):
     def project(self, raw):
         raw = torch.as_tensor(raw, dtype=torch.float32, device=self.mean.device)
         require(raw.shape[-1] == self.spec["raw_dim"] and bool(torch.isfinite(raw).all()), "目标原始特征维度或数值异常")
-        projected = (raw - self.mean) @ self.components
-        norms = torch.linalg.vector_norm(projected, dim=-1, keepdim=True)
-        require(bool((norms > 1e-8).all()), "目标特征坍缩为零；请检查回放多样性和降维维度")
-        return projected / norms
+        with encoder_precision(self.mean.device):
+            projected = (raw - self.mean) @ self.components
+            norms = torch.linalg.vector_norm(projected, dim=-1, keepdim=True)
+            require(bool((norms > 1e-8).all()), "目标特征坍缩为零；请检查回放多样性和降维维度")
+            return projected / norms
 
     def forward(self, observation):
         return self.project(self.raw_features(observation))
@@ -251,7 +280,8 @@ class GoalLibrary(nn.Module):
         value = torch.as_tensor(features, dtype=torch.float32, device=self.centers.device)
         require(value.shape[-1] == self.goals.shape[1] and bool(torch.isfinite(value).all()), "目标特征维度或数值错误")
         require(bool((torch.linalg.vector_norm(value, dim=-1) > 1e-8).all()), "不能分配零目标特征")
-        return (F.normalize(value, dim=-1) @ self.centers.T).argmax(-1)
+        with encoder_precision(self.centers.device):
+            return (F.normalize(value, dim=-1) @ self.centers.T).argmax(-1)
 
     def goal(self, ids):
         ids = torch.as_tensor(ids, device=self.goals.device)
@@ -283,6 +313,8 @@ class GoalLibrary(nn.Module):
 def validate_payload(payload, goal_dim=None, goal_count=None):
     require(isinstance(payload, dict) and payload.get("format") == FORMAT, "未知目标库格式")
     state, spec = payload["state_dict"], payload["encoder_spec"]
+    require(spec.get("numeric_policy") == NUMERIC_POLICY,
+            "目标库缺少当前 FP32 数值约定；请用修复后的 T02 build 重新构建，不复用旧缓存")
     require(spec["projection"] == "center_randomized_pca_l2_v1" and set(spec["input_keys"]) == {"image", "heatmap"}, "未知目标编码接口")
     dimension = spec["goal_dim"]
     require(type(dimension) is int and dimension > 0 and type(spec["raw_dim"]) is int and spec["raw_dim"] >= dimension,

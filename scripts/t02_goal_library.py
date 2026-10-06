@@ -40,6 +40,38 @@ def rejection(report, name, operation, message):
         raise AssertionError(f"{name} 没有拒绝错误输入")
 
 
+def vector_difference(report, name, actual, expected, *, check=False):
+    """Persist the error magnitude before failing, rather than just allclose."""
+    import numpy as np
+    import torch
+    import goal_library as gl
+
+    actual = actual.detach().cpu().numpy() if torch.is_tensor(actual) else np.asarray(actual)
+    expected = expected.detach().cpu().numpy() if torch.is_tensor(expected) else np.asarray(expected)
+    gl.require(actual.shape == expected.shape and actual.ndim == 2,
+               f"{name} 对照形状错误: {actual.shape} / {expected.shape}")
+    gl.require(np.isfinite(actual).all() and np.isfinite(expected).all(), f"{name} 特征非有限")
+    delta = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
+    actual_norm = np.linalg.norm(actual.astype(np.float64), axis=1)
+    expected_norm = np.linalg.norm(expected.astype(np.float64), axis=1)
+    cosine = np.sum(actual.astype(np.float64) * expected.astype(np.float64), axis=1) / np.maximum(actual_norm * expected_norm, 1e-20)
+    passed = bool(np.allclose(actual, expected, atol=3e-5, rtol=3e-5))
+    details = {"shape": list(actual.shape), "max_abs_error": float(delta.max()),
+               "mean_abs_error": float(delta.mean()), "max_cos_distance": float(np.max(1 - np.clip(cosine, -1, 1))),
+               "min_actual_norm": float(actual_norm.min()), "min_expected_norm": float(expected_norm.min()),
+               "per_row_max_abs_error": delta.max(axis=1).tolist(),
+               "atol": 3e-5, "rtol": 3e-5, "allclose": passed}
+    report.data.setdefault("numerical_checks", {})[name] = details
+    baseline.write_json(report.directory / "numerical_checks.json", report.data["numerical_checks"])
+    message = f"最大绝对误差 {details['max_abs_error']:.6g}；最大 cosine 距离 {details['max_cos_distance']:.6g}"
+    if check:
+        report.check(name, "PASS" if passed else "FAIL", message)
+        gl.require(passed, f"{name} 特征不一致：{message}；见 numerical_checks.json")
+    else:
+        print(f"[NUMERICS] {name}: {message}", flush=True)
+    return details
+
+
 def resolve_baseline(args, report):
     source = baseline.project_path(args.baseline_dir)
     accepted = json.loads((source / "report.json").read_text(encoding="utf-8"))
@@ -271,6 +303,8 @@ def build(args, report):
     metadata = {"task": config["task"], "max_steps": config["episode_max_steps"], "representatives": references,
                 "pca": pca_stats, "fit_options": {"seed": args.seed, "pca_iterations": args.pca_iterations,
                 "restarts": args.restarts, "cluster_iterations": args.cluster_iterations, "goal_count": args.goal_count},
+                "feature_extraction": {"device": str(torch.device(args.device)), "batch_size": args.batch_size,
+                                       "numeric_policy": gl.NUMERIC_POLICY},
                 "checkpoint": baseline.file_signature(baseline.project_path(args.checkpoint)),
                 "policy": "real observation anchors; no action/reward/RSSM/future input", "trained_worker": False}
     library = gl.GoalLibrary(encoder.cpu(), clustering["centers"], features[indices], images, heatmaps, metadata)
@@ -300,14 +334,19 @@ def build(args, report):
     if diagnostics["validation_coverage"] < args.goal_count:
         report.check("validation_coverage", "WARN", f"留出 episode 覆盖 {diagnostics['validation_coverage']}/{args.goal_count} 类；检查稀有类")
     # Actual serialization round-trip, not an in-memory state_dict alias.
-    restored = gl.load_library(artifact)
+    # Serialization is checked on the extraction device. Comparing a CUDA
+    # cache to a CPU convolution is a separate cross-backend comparison.
+    restored = gl.load_library(artifact, args.device)
     anchor_obs = {"image": images, "heatmap": heatmaps}
-    actual = restored(anchor_obs).cpu().numpy()
-    error = float(np.max(np.abs(actual - features[indices])))
-    gl.require(np.allclose(actual, features[indices], atol=3e-5, rtol=3e-5), "真实代表帧编码与已保存目标向量不同")
-    gl.require(torch.equal(restored.assign(actual), torch.arange(args.goal_count)), "代表帧的类别编号没有保持一致")
+    actual_raw = restored.encoder.raw_features(anchor_obs)
+    vector_difference(report, "anchor_raw_features", actual_raw, raw[indices])
+    projected_cache = restored.encoder.project(np.array(raw[indices], copy=True))
+    vector_difference(report, "anchor_cached_projection", projected_cache, features[indices])
+    actual = restored.encoder.project(actual_raw)
+    comparison = vector_difference(report, "roundtrip_features", actual, features[indices], check=True)
+    gl.require(torch.equal(restored.assign(actual), torch.arange(args.goal_count, device=args.device)), "代表帧的类别编号没有保持一致")
     gl.require(restored.payload()["library_id"] == payload["library_id"], "保存/加载后的目标库 ID 改变")
-    report.check("roundtrip", "PASS", f"保存/加载后真实代表帧特征与编号一致；最大误差 {error:.3g}")
+    report.check("roundtrip", "PASS", f"保存/加载后真实代表帧特征与编号一致；设备 {args.device}；最大误差 {comparison['max_abs_error']:.3g}")
     report.check("manual_review", "WARN", "程序构建完成；请检查 representatives.png 和 examples.png，语义质量尚未验收")
 
 
@@ -325,9 +364,30 @@ def verify(args, report):
     second = gl.GoalLibrary.from_payload(payload, args.device)
     observation = {"image": library.images, "heatmap": library.heatmaps}
     features = library(observation)
-    gl.require(torch.allclose(features, library.goals, atol=3e-5, rtol=3e-5), "代表帧编码与目标特征不同")
+    vector_difference(report, "representative_features", features, library.goals, check=True)
     gl.require(torch.equal(library.assign(features), torch.arange(len(library.goals), device=args.device)), "代表帧编号不一致")
     gl.require(torch.allclose(features, second(observation), atol=1e-6, rtol=1e-6), "两次独立加载的目标编码不同")
+    previous_precision = torch.get_float32_matmul_precision()
+    previous_cudnn = torch.backends.cudnn.allow_tf32
+    try:
+        if library.encoder.mean.device.type == "cuda":
+            torch.set_float32_matmul_precision("medium")
+            torch.backends.cudnn.allow_tf32 = True
+        ambient_matmul = torch.backends.cuda.matmul.allow_tf32
+        ambient_precision = torch.get_float32_matmul_precision()
+        ambient_cudnn = torch.backends.cudnn.allow_tf32
+        with torch.autocast(device_type=library.encoder.mean.device.type, enabled=True):
+            amp_features = library(observation)
+            amp_labels = library.assign(amp_features)
+        gl.require(amp_features.dtype == torch.float32 and torch.equal(features, amp_features),
+                   "外层 AMP/TF32 改变了冻结目标特征")
+        gl.require(torch.equal(amp_labels, library.assign(features)), "外层 AMP/TF32 改变了目标编号")
+        gl.require(torch.backends.cuda.matmul.allow_tf32 == ambient_matmul and torch.backends.cudnn.allow_tf32 == ambient_cudnn and
+                   torch.get_float32_matmul_precision() == ambient_precision, "冻结目标编码未恢复调用方精度设置")
+    finally:
+        torch.set_float32_matmul_precision(previous_precision)
+        torch.backends.cudnn.allow_tf32 = previous_cudnn
+    report.check("numeric_policy", "PASS", "CNN/PCA/类别分配使用 FP32；外层 AMP/TF32 不改变目标特征与编号；调用方设置恢复")
     library.train(True)
     gl.require(not library.training and not any(parameter.requires_grad for parameter in library.parameters()), "目标库被意外改为可训练")
     extra = dict(observation, action=torch.randn(len(library.goals), 12, device=args.device),
@@ -396,10 +456,11 @@ def verify(args, report):
             episode = gl.read_episode(entry["path"], library.metadata["max_steps"])
             positions = [records[index]["frame"] for index in chosen]
             observations = {key: episode[key][positions] for key in ("image", "heatmap")}
-            actual = library(observations).cpu().numpy()
+            actual_raw = library.encoder.raw_features(observations)
+            actual = library.encoder.project(actual_raw).cpu().numpy()
             expected = cached["features"][chosen]
             max_error = max(max_error, float(np.max(np.abs(actual - expected))))
-            gl.require(np.allclose(actual, expected, atol=3e-5, rtol=3e-5), "从源真实帧重新编码与特征缓存不同")
+            vector_difference(report, f"replay_features_{chosen[0]}", actual, expected, check=True)
         report.check("real_replay_reencode", "PASS", f"抽查 {len(indices)} 个真实帧，缓存与重编码一致；最大误差 {max_error:.3g}")
     report.check("scope", "PASS", "目标库工程验收；没有环境交互或策略训练，语义用途仍需检查图集")
 
