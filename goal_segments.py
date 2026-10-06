@@ -206,6 +206,44 @@ class FrozenStateEncoder(nn.Module):
         return super().train(False)
 
     @torch.no_grad()
+    def step(self, observation, incoming, state=None):
+        """One *real* observation; incoming is the action that produced it.
+
+        The returned state belongs to this episode only. Reset requires a
+        zero incoming action and discards any previous episode's state.
+        Uses exactly the preprocessing/posterior convention of rollout().
+        """
+        image = np.asarray(observation["image"])
+        heatmap = np.asarray(observation["heatmap"])
+        incoming = np.asarray(incoming, dtype=np.float32)
+        reward = np.asarray(observation["obs_reward"], dtype=np.float32).reshape(1, 1)
+        first = bool(observation["is_first"])
+        gl.require(image.dtype == np.uint8 and image.shape == (64, 64, 3) and
+                   heatmap.dtype == np.uint8 and heatmap.shape == (64, 64), "在线状态需要真实 uint8 image/heatmap")
+        gl.require(incoming.shape == (self.action_dim,) and np.isfinite(incoming).all() and
+                   np.isfinite(reward).all(), "在线 incoming action/obs_reward 异常")
+        if first:
+            gl.require(np.all(incoming == 0), "reset 的 incoming action 必须为零")
+            state = None
+        else:
+            gl.require(state is not None and np.all((incoming == 0) | (incoming == 1)) and
+                       incoming.sum() == 1, "非 reset 状态需要本局历史及真实 onehot incoming action")
+        device = next(self.parameters()).device
+        self.dynamics._device = str(device)
+        devices = [device.index] if device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices), gl.encoder_precision(device):
+            obs = {"image": torch.as_tensor(image[None], device=device).float() / 255,
+                   "heatmap": torch.as_tensor(heatmap[None, ..., None], device=device).float() / 255,
+                   "obs_reward": torch.as_tensor(reward, device=device)}
+            action = torch.as_tensor(incoming[None], device=device)
+            action = torch.cat((action, action.new_zeros((1, 1))), -1)
+            state, _ = self.dynamics.obs_step(state, action, self.encoder(obs),
+                                            torch.tensor([float(first)], device=device), sample=False)
+            features = self.dynamics.get_feat(state)
+        gl.require(bool(torch.isfinite(features).all()), "在线 RSSM 状态非有限")
+        return state, features
+
+    @torch.no_grad()
     def rollout(self, episode, stop):
         gl.require(type(stop) is int and 0 <= stop < len(episode["image"]), "因果历史终点越界")
         gl.require(episode["is_first"][0] and not episode["is_first"][1:stop + 1].any(), "因果历史必须从真实 reset 开始")

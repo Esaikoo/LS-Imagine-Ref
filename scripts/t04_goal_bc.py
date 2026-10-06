@@ -233,6 +233,28 @@ def train(args, report):
     report.check("optimizers", "PASS", "只有独立 worker/candidate 优化器；原 WM、目标编码器及原 actor 冻结")
     report.check("scope", "WARN", "离线真实回放训练；new_env_steps=0；候选输出是未来类别概率，真实目标控制待 T05")
     initial_metrics = evaluate_and_save(trainer, report)
+    # Select the two modules independently. These are complete, resumable T04
+    # snapshots, not mixtures of weights/optimizers from different updates.
+    # A resumed invocation establishes its own selection window, including
+    # the starting checkpoint; older runs did not preserve intermediate files.
+    best = {}
+
+    def save_best(metrics):
+        for name, metric in (("worker", "worker_nll"), ("candidate", "candidate_ce")):
+            value = float(metrics["validation"][metric])
+            if name not in best or value < best[name]["value"]:
+                selection = {"module": name, "metric": "validation." + metric,
+                             "value": value, "step": trainer.step,
+                             "selection_start_step": report.data["start_step"],
+                             "scope": "evaluations_in_this_invocation"}
+                payload = trainer.payload()
+                payload["selection"] = selection
+                path = report.directory / ("best_" + name + ".pt")
+                bc.save_atomic(payload, path, overwrite=True)
+                best[name] = dict(selection, path=str(path))
+                baseline.write_json(report.directory / "best_checkpoints.json", best)
+
+    save_best(initial_metrics)
     while trainer.step < args.steps:
         values = trainer.update()
         append_json(report.directory / "training.jsonl", values)
@@ -240,15 +262,17 @@ def train(args, report):
             print(f"[TRAIN] step={trainer.step}/{args.steps} worker_nll={values['worker_nll']:.4f} candidate_ce={values['candidate_ce']:.4f}", flush=True)
         if trainer.step % args.eval_every == 0 or trainer.step == args.steps:
             final_metrics = evaluate_and_save(trainer, report)
+            save_best(final_metrics)
         if trainer.step % args.save_every == 0 or trainer.step == args.steps:
             bc.save_atomic(trainer.payload(), report.directory / "latest.pt", overwrite=True)
     gl.require(versions == {id(p): p._version for module in (trainer.model.state_encoder, trainer.model.library, trainer.model.original_actor)
                            for p in module.parameters()} and trainer.model.frozen_identity() == frozen_id, "训练更新了冻结模块")
     report.data.update(counters=trainer.counters(), checkpoint=str(report.directory / "latest.pt"),
-                       initial_metrics=initial_metrics, final_metrics=final_metrics)
+                       initial_metrics=initial_metrics, final_metrics=final_metrics, best_checkpoints=best)
     report.check("training", "PASS", f"worker/candidate 各更新 {trainer.step} 次；损失与梯度有限；新环境步数 0")
     report.check("frozen_modules", "PASS", "原 encoder/RSSM、目标库和原 actor 参数版本及内容哈希未变")
     report.check("checkpoint", "PASS", "独立 T04 latest.pt 保存新优化器、计数、采样器、RNG 与冻结依赖；完整恢复请运行 verify")
+    report.check("best_checkpoints", "PASS", "分别按留出 worker NLL/candidate CE 保存完整最佳快照；选择窗口及更新步数见 best_checkpoints.json")
 
 
 def verify(args, report):
