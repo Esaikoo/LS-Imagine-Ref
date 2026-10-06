@@ -1,7 +1,7 @@
 """T00: inspect a saved LS-Imagine agent, or evaluate it without training.
 
 Run from any working directory; relative CLI paths refer to the project root.
-The inspect command deliberately does not import expr, MineDojo or MineCLIP.
+The inspect/export-videos commands do not import expr, MineDojo or MineCLIP.
 """
 
 import argparse
@@ -36,6 +36,122 @@ def write_json(path, data):
         json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+
+
+def write_csv(path, rows):
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_video(path, frames):
+    """Use the common 0.3.0/0.4.9 API, without imageio's audio kwargs."""
+    import numpy as np
+    import imageio_ffmpeg
+
+    frames = np.asarray(frames)
+    if frames.ndim != 4 or not len(frames) or frames.shape[-1] != 3 or frames.dtype != np.uint8:
+        raise ValueError("视频帧必须为非空 uint8 [T,H,W,3] RGB 数组")
+    height, width = frames.shape[1:3]
+    if height % 2 or width % 2 or min(height, width) < 2:
+        raise ValueError("H.264 视频宽高必须为大于等于 2 的偶数")
+    if path.exists():
+        raise FileExistsError(f"不会覆盖已有视频: {path}")
+    writer = imageio_ffmpeg.write_frames(
+        str(path), (width, height), fps=16, codec="libx264", macro_block_size=1,
+        ffmpeg_timeout=30.0,
+    )
+    try:
+        writer.send(None)
+        for frame in frames:
+            writer.send(np.ascontiguousarray(frame).tobytes())
+    finally:
+        writer.close()
+    # Older write_frames versions may not raise on a failed encoder exit.
+    # Decode the small 64x64 output to verify its dimensions and every frame.
+    reader = imageio_ffmpeg.read_frames(str(path))
+    try:
+        metadata = next(reader)
+        count = 0
+        for frame in reader:
+            if len(frame) != width * height * 3:
+                raise RuntimeError("编码视频解码后的帧大小不匹配")
+            count += 1
+    finally:
+        reader.close()
+    if tuple(metadata["size"]) != (width, height) or count != len(frames):
+        raise RuntimeError(f"编码视频尺寸或帧数不匹配: size={metadata['size']}, frames={count}/{len(frames)}")
+    return {"frames": count, "size": [width, height], "fps": 16}
+
+
+def video_preflight(report):
+    import numpy as np
+    import imageio_ffmpeg
+    from importlib import metadata
+
+    try:
+        imageio_version = metadata.version("imageio")
+    except metadata.PackageNotFoundError:
+        imageio_version = None
+    report.data["video_backend"] = {
+        "imageio_version": imageio_version,
+        "imageio_ffmpeg_version": imageio_ffmpeg.__version__,
+        "ffmpeg_executable": imageio_ffmpeg.get_ffmpeg_exe(),
+        "writer": "imageio_ffmpeg.write_frames; no audio kwargs",
+    }
+    frames = np.zeros((2, 64, 64, 3), dtype=np.uint8)
+    frames[0, :, :, 0] = 255
+    frames[1, :, :, 1] = 255
+    report.data["video_preflight"] = write_video(report.directory / "video_preflight.mp4", frames)
+    report.check("video_preflight", "PASS", "2 帧 MP4 编码及完整解码通过；尚未加载 checkpoint 或启动 MineDojo")
+
+
+def episode_row(path, index, seed, video, max_steps=None, seconds=None):
+    import numpy as np
+
+    with np.load(path, allow_pickle=False) as episode:
+        missing = {"reward", "success"} - set(episode.files)
+        if missing:
+            raise ValueError(f"回放缺少真实评估字段 {sorted(missing)}: {path}")
+        rewards = episode["reward"]
+        successes = episode["success"]
+        if len(rewards) < 2 or len(successes) != len(rewards) or not np.isfinite(rewards).all():
+            raise ValueError(f"回放的 reward/success 长度或数值异常: {path}")
+        if not np.isin(successes, (0, 1)).all():
+            raise ValueError(f"回放的 success 必须是 0/1 或布尔标记: {path}")
+        stop = max_steps + 1 if max_steps is not None else len(rewards)
+        success = bool(np.any(successes[:stop]))
+        first = None
+        if success and "first_success_step" in episode.files:
+            first = float(episode["first_success_step"][-1])
+            if not np.isfinite(first) or first < 0:
+                raise ValueError(f"首次成功时间异常: {path}")
+            if max_steps is not None:
+                first = min(first, max_steps)
+        return {
+            "episode": index, "process_seed": seed, "success": int(success),
+            "return": float(rewards[:stop].sum()), "length": len(rewards) - 1,
+            "first_success_step": first,
+            "zoom_frames": int(np.count_nonzero(episode["is_zoomed"])) if "is_zoomed" in episode.files else None,
+            "seconds": seconds, "replay": str(path), "video": str(video),
+            "video_status": "pending", "video_error": None,
+        }
+
+
+def encode_episode(row, frames, report):
+    """Preserve behavioral results even if one video's encoding fails."""
+    try:
+        write_video(Path(row["video"]), frames)
+        row["video_status"] = "saved"
+    except Exception as error:
+        row["video_status"] = "failed"
+        row["video_error"] = f"{type(error).__name__}: {error}"
+        error_path = Path(row["video"]).with_suffix(".error.txt")
+        error_path.write_text(traceback.format_exc(), encoding="utf-8")
+        report.check(f"episode_{row['episode']}_video", "FAIL", f"{row['video_error']}；回放与成功结果已保留；见 {error_path}")
 
 
 def file_signature(path):
@@ -89,7 +205,11 @@ class Report:
         )
         self.data["elapsed_seconds"] = round(time.perf_counter() - self.started, 3)
         self.save()
-        label = "T00_CHECKPOINT_INSPECT" if self.data["command"] == "inspect" else "T00_BASELINE_EVAL"
+        label = {
+            "inspect": "T00_CHECKPOINT_INSPECT",
+            "evaluate": "T00_BASELINE_EVAL",
+            "export-videos": "T00_VIDEO_EXPORT",
+        }[self.data["command"]]
         failed = self.data["status"] == "failed"
         print(f"[{'FAIL' if failed else 'PASS'}] {label}; report={self.directory / 'report.json'}", flush=True)
         return 2 if failed else 0
@@ -341,11 +461,13 @@ def failed_checks(report):
 
 
 def evaluate(args, config_dict, state, report):
+    # Keep the command examples explicit; also default to headless on servers.
+    os.environ.setdefault("MINEDOJO_HEADLESS", "1")
+    report.data["minedojo_headless"] = os.environ["MINEDOJO_HEADLESS"]
     import collections
     import functools
     import numpy as np
     import torch
-    import imageio.v2 as imageio
     import expr
     import tools
     from envs.tasks import get_specs
@@ -432,25 +554,15 @@ def evaluate(args, config_dict, state, report):
             self.saved_files.add(path)
             index = len(self.rows) + 1
             video = report.directory / "videos" / f"episode_{index:03d}.mp4"
-            with imageio.get_writer(str(video), fps=16, codec="libx264") as writer:
-                for frame in np.asarray(value)[0]:
-                    writer.append_data(frame.astype(np.uint8))
-            with np.load(path, allow_pickle=False) as episode:
-                success = bool(np.any(episode["success"][:config.episode_max_steps + 1]))
-                first = min(float(episode["first_success_step"][-1]), config.episode_max_steps) if success else None
-                row = {
-                    "episode": index, "process_seed": args.seed, "success": int(success),
-                    "return": float(episode["reward"][:config.episode_max_steps + 1].sum()),
-                    "length": len(episode["reward"]) - 1, "first_success_step": first,
-                    "zoom_frames": int(np.count_nonzero(episode["is_zoomed"])),
-                    "seconds": checked.completed[-1]["seconds"], "replay": str(path), "video": str(video),
-                }
+            row = episode_row(
+                path, index, args.seed, video, max_steps=config.episode_max_steps,
+                seconds=checked.completed[-1]["seconds"],
+            )
             self.rows.append(row)
-            with (report.directory / "episodes.csv").open("w", newline="", encoding="utf-8") as stream:
-                writer = csv.DictWriter(stream, fieldnames=list(row))
-                writer.writeheader()
-                writer.writerows(self.rows)
-            print(f"[EPISODE {index}/{args.episodes}] success={row['success']} length={row['length']} return={row['return']:.3f} video={video.name}", flush=True)
+            write_csv(report.directory / "episodes.csv", self.rows)
+            encode_episode(row, np.asarray(value)[0], report)
+            write_csv(report.directory / "episodes.csv", self.rows)
+            print(f"[EPISODE {index}/{args.episodes}] success={row['success']} length={row['length']} return={row['return']:.3f} video={video.name} video_status={row['video_status']}", flush=True)
 
         def write(self, **kwargs):
             write_json(report.directory / "eval_metrics.json", self.scalars)
@@ -503,7 +615,7 @@ def evaluate(args, config_dict, state, report):
         if len(logger.rows) != args.episodes:
             raise RuntimeError(f"要求 {args.episodes} 局，实际保存 {len(logger.rows)} 局")
         success_count = sum(row["success"] for row in logger.rows)
-        successful_times = [row["first_success_step"] for row in logger.rows if row["success"]]
+        successful_times = [row["first_success_step"] for row in logger.rows if row["success"] and row["first_success_step"] is not None]
         summary = {
             "episodes": len(logger.rows), "success_count": success_count,
             "success_rate": success_count / len(logger.rows),
@@ -515,15 +627,76 @@ def evaluate(args, config_dict, state, report):
             "checkpoint": str(project_path(args.checkpoint)), "task": args.task, "process_seed": args.seed,
             "policy": "original LS_Imagine, training=False, actor.mode(), no heatmap ablation",
             "collector_reset_on_done": True,
+            "videos_saved": sum(row["video_status"] == "saved" for row in logger.rows),
+            "videos_failed": sum(row["video_status"] == "failed" for row in logger.rows),
             "small_sample_note": "用于加载和行为验收；少量局数不能确认成功率复现",
         }
         write_json(report.directory / "summary.json", summary)
         report.data["baseline_summary"] = summary
         report.check("no_training", "PASS", "optimizer_updates=0；agent_training_step=0；参数版本未变化")
         report.check("evaluation", "PASS", f"完成 {len(logger.rows)} 局，成功 {success_count} 局，success_rate={summary['success_rate']:.4f}")
+        report.check("videos", "PASS" if not summary["videos_failed"] else "FAIL", f"视频保存 {summary['videos_saved']} 个，失败 {summary['videos_failed']} 个；全部回放和行为结果已保留")
     finally:
         if env is not None:
             env.close()
+
+
+def export_videos(args, report):
+    """Recover only existing data; do not load an agent or resume evaluation."""
+    import numpy as np
+
+    source = project_path(args.eval_dir)
+    if not source.is_dir():
+        raise FileNotFoundError(f"评估目录不存在: {source}")
+    episode_dir = source / "eval_eps" if (source / "eval_eps").is_dir() else source
+    source_run = source if episode_dir != source else source.parent
+    source_report_path = source_run / "report.json"
+    source_report = json.loads(source_report_path.read_text(encoding="utf-8")) if source_report_path.is_file() else {}
+    original_args = source_report.get("arguments", {})
+    requested = original_args.get("episodes")
+    seed = original_args.get("seed")
+    files = sorted(episode_dir.glob("*.npz"))
+    if not files:
+        raise FileNotFoundError(f"未找到已保存的 npz 回放: {episode_dir}")
+    config_path = source_run / "resolved_config.json"
+    original_config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+    max_steps = original_config.get("episode_max_steps")
+    report.data["source_evaluation"] = {
+        "directory": str(source_run), "report_path": str(source_report_path),
+        "status": source_report.get("status"), "requested_episodes": requested,
+        "checkpoint": original_args.get("checkpoint"), "process_seed": seed,
+    }
+    report.data["environment_started"] = False
+    report.data["checkpoint_loaded"] = False
+    video_dir = report.directory / "videos"
+    video_dir.mkdir()
+    rows = []
+    for index, path in enumerate(files, 1):
+        before = file_signature(path)
+        row = episode_row(path, index, seed, video_dir / f"episode_{index:03d}.mp4", max_steps=max_steps)
+        rows.append(row)
+        write_csv(report.directory / "episodes.csv", rows)
+        with np.load(path, allow_pickle=False) as episode:
+            encode_episode(row, episode["image"], report)
+        write_csv(report.directory / "episodes.csv", rows)
+        if before != file_signature(path):
+            raise RuntimeError(f"导出期间源回放大小或修改时间改变: {path}")
+        print(f"[EXPORT {index}/{len(files)}] success={row['success']} video_status={row['video_status']} source={path.name}", flush=True)
+    saved = sum(row["video_status"] == "saved" for row in rows)
+    summary = {
+        "exported_episodes": len(rows), "videos_saved": saved, "videos_failed": len(rows) - saved,
+        "success_count": sum(row["success"] for row in rows),
+        "source_requested_episodes": requested,
+        "source_report_status": source_report.get("status"),
+        "environment_steps_added": 0, "baseline_evaluation_performed": False,
+        "note": "仅导出已有回放；未验证原评估是否完整结束或训练计数是否为 0",
+    }
+    write_json(report.directory / "summary.json", summary)
+    report.data["export_summary"] = summary
+    if isinstance(requested, int) and len(rows) != requested:
+        report.check("partial_evaluation", "WARN", f"原计划 {requested} 局，目前只恢复 {len(rows)} 局；不能视为完整基线验收")
+    report.check("videos", "PASS" if saved == len(rows) else "FAIL", f"成功导出 {saved}/{len(rows)} 个视频；未改写原评估目录和回放")
+    report.check("scope", "PASS", "只导出已有回放，不加载 checkpoint、不启动 MineDojo、不补跑缺少的 episode")
 
 
 def parser():
@@ -544,17 +717,25 @@ def parser():
             item.add_argument("--device", default="cuda:0")
             item.add_argument("--seed", type=int, default=0)
             item.add_argument("--episodes", type=int, default=3)
+    item = sub.add_parser("export-videos", help="从已保存的评估回放重新生成视频，不启动 MineDojo")
+    item.add_argument("--eval-dir", required=True, help="已有评估输出目录，或其 eval_eps 子目录")
+    item.add_argument("--output-root", default="relevance_map/t00_outputs")
     return command
 
 
 def main():
     args = parser().parse_args()
-    if args.replay_samples < 0 or (args.command == "evaluate" and args.episodes < 1):
+    if args.command != "export-videos" and (args.replay_samples < 0 or (args.command == "evaluate" and args.episodes < 1)):
         raise SystemExit("--replay-samples 必须非负，--episodes 必须为正数")
     output_root = project_path(args.output_root)
-    source_run = project_path(args.checkpoint).parent
+    if args.command == "export-videos":
+        source_run = project_path(args.eval_dir)
+        if source_run.name == "eval_eps":
+            source_run = source_run.parent
+    else:
+        source_run = project_path(args.checkpoint).parent
     if output_root == source_run or source_run in output_root.parents:
-        raise SystemExit("输出目录不能位于原 checkpoint 的运行目录内；请指定独立的 --output-root")
+        raise SystemExit("输出目录不能位于原 checkpoint 或评估运行目录内；请指定独立的 --output-root")
     output = output_root / (args.command + "_" + datetime.now().strftime("%Y%m%dT%H%M%S_%f"))
     output.mkdir(parents=True, exist_ok=False)
     report = Report(output, args)
@@ -563,14 +744,19 @@ def main():
     os.chdir(ROOT)
     try:
         runtime_info(report)
-        config, _ = resolve_config(args, report)
-        state = load_checkpoint(args, config, report)
-        inspect_replay(args, report)
-        check_assets(report)
-        if args.command == "evaluate" and not failed_checks(report):
-            evaluate(args, config, state, report)
-        if args.command == "inspect":
-            report.check("scope", "PASS", "完成 CPU 文件/结构检查；没有启动 MineDojo，没有执行策略。完整加载需运行 evaluate")
+        if args.command in ("evaluate", "export-videos"):
+            video_preflight(report)
+        if args.command == "export-videos":
+            export_videos(args, report)
+        else:
+            config, _ = resolve_config(args, report)
+            state = load_checkpoint(args, config, report)
+            inspect_replay(args, report)
+            check_assets(report)
+            if args.command == "evaluate" and not failed_checks(report):
+                evaluate(args, config, state, report)
+            if args.command == "inspect":
+                report.check("scope", "PASS", "完成 CPU 文件/结构检查；没有启动 MineDojo，没有执行策略。完整加载需运行 evaluate")
     except (Exception, KeyboardInterrupt) as error:
         (output / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
         report.check("execution", "FAIL", f"{type(error).__name__}: {error}；详情见 error.txt")

@@ -1,6 +1,6 @@
 # T00：checkpoint 检查与原策略基线验收
 
-本地实现日期：2026-10-06。**尚未运行脚本、测试、训练或服务器评估，服务器验收待用户执行。**
+本地实现及修复日期：2026-10-06。**助手未运行脚本、测试、训练或服务器评估。用户已反馈文件检查和完整加载通过，视频保存失败；本次修复及完整评估待用户验收。**
 
 T00 回答三个问题：旧 checkpoint 能否读取、与当前模型结构是否兼容、原策略能否在真实环境里执行并保存结果。这里不训练新模型，也不判断新方案是否提高成功率。
 
@@ -21,6 +21,8 @@ T00_CHECKPOINT=/root/rivermind-data/mine/projects/tb_logs/LS-Imagine-Ref/minedoj
 ```
 
 目录位于现有 Git 忽略范围。相对参数路径以项目根目录为基准。可以指定 `--output-root /其他独立目录`；工具会拒绝把结果放在原 checkpoint 的运行目录内。
+
+**凡会启动 MineDojo 的服务器命令，显式使用 `MINEDOJO_HEADLESS=1` 前缀。** 检查与离线视频导出不启动环境，无需该前缀。`evaluate` 也在导入环境前把未设置的 `MINEDOJO_HEADLESS` 默认设为 `1`。
 
 ## 2. 先检查文件，不启动 Minecraft
 
@@ -95,7 +97,7 @@ OUTPUT_DIR=.../inspect_<时间戳>
 inspect 没有 FAIL 后执行：
 
 ```bash
-python scripts/t00_baseline.py evaluate \
+MINEDOJO_HEADLESS=1 python scripts/t00_baseline.py evaluate \
   --checkpoint "$T00_CHECKPOINT" \
   --task minedojo_harvest_log_in_plains \
   --device cuda:0 \
@@ -104,6 +106,8 @@ python scripts/t00_baseline.py evaluate \
 ```
 
 这里会启动 Minecraft/MineDojo，加载外部 MineCLIP，构建当前原始 `LS_Imagine`，检查**完整保存名称和形状**，再 `strict=True` 加载。原训练使用 `torch.compile` 时只规范化保存前缀；本次评估关闭编译以避免首次编译成本。
+
+在读取 checkpoint 和启动环境前，先在 CPU 上编码并完整解码一个 2 帧 MP4，打印 `[PASS] video_preflight`；若失败，立即报告错误，避免运行完整 episode 后才发现视频问题。检查视频保存在输出目录根部的 `video_preflight.mp4`，不计入各局视频数量。
 
 策略使用已有评估逻辑 `training=False` 和 `actor.mode()`；保留当前 heatmap、NACLIP progress、Natural Zoom、WM 和环境包装流程。不会执行预训练、随机预填充、梯度更新或 imagination 训练，也不会恢复优化器状态。模型构造时打印的 `Optimizer ... has ... variables` 是原类的初始化信息，不意味着发生训练。
 
@@ -114,12 +118,14 @@ python scripts/t00_baseline.py evaluate \
 **正常验收应看到：**
 
 ```text
+[PASS] video_preflight: 2 帧 MP4 编码及完整解码通过；尚未加载 checkpoint 或启动 MineDojo
 [PASS] strict_load: 完整权重严格加载；动作维度 12；没有跳过层
-[EPISODE 1/3] success=... length=... return=... video=episode_001.mp4
-[EPISODE 2/3] success=... length=... return=... video=episode_002.mp4
-[EPISODE 3/3] success=... length=... return=... video=episode_003.mp4
+[EPISODE 1/3] success=... length=... return=... video=episode_001.mp4 video_status=saved
+[EPISODE 2/3] success=... length=... return=... video=episode_002.mp4 video_status=saved
+[EPISODE 3/3] success=... length=... return=... video=episode_003.mp4 video_status=saved
 [PASS] no_training: optimizer_updates=0；agent_training_step=0；参数版本未变化
 [PASS] evaluation: 完成 3 局，成功 ... 局，success_rate=...
+[PASS] videos: 视频保存 3 个，失败 0 个；全部回放和行为结果已保留
 [PASS] source_checkpoint_unchanged: ...
 [PASS] T00_BASELINE_EVAL; report=.../report.json
 ```
@@ -127,15 +133,15 @@ python scripts/t00_baseline.py evaluate \
 同时检查以下结果：
 
 - `load_compatibility.json` 的 `missing_keys` 和 `unexpected_keys` 为 `[]`，`shape_mismatches` 为 `{}`。
-- `summary.json` 中 `episodes=3`、`optimizer_updates=0`、`agent_training_step=0`。这里的 `0` 是本次评估未增加训练计数，不是说旧模型没训练过。
-- `episodes.csv` 有 3 行结果，每行包含真实 `success`、回报、局长、首次成功时间（失败局为空）、zoom 帧数、视频路径和 replay 路径。
+- `summary.json` 中 `episodes=3`、`optimizer_updates=0`、`agent_training_step=0`、`videos_saved=3`、`videos_failed=0`。训练计数的 `0` 是本次评估未增加训练计数，不是说旧模型没训练过。
+- `episodes.csv` 有 3 行结果，每行包含真实 `success`、回报、局长、首次成功时间（失败局为空）、zoom 帧数、视频路径和 replay 路径，且 `video_status=saved`。
 - `videos/` 有 3 个能播放的 MP4，`eval_eps/` 有 3 个对应的 npz。视频使用原策略输入的 64×64 RGB 帧、16 fps；能观察动作、场景变化与各局重置。
 - 本任务每局最多 1000 次外层 `env.step`；若更早结束会记录实际长度。没有环境 error、非法动作或持续执行已终止 episode 的情况。
 - 原 checkpoint 的大小、修改时间未变化；输出保存在新的评估目录中。
 
-成功必须来自环境的 `info["success"]`，不会把 MineCLIP 高分或正 intrinsic reward 当作完成任务。MP4 编码失败、环境报告错误、缺少 success、超出终止步数或完整权重不兼容都会返回 FAIL，并保留错误信息及已经产生的独立结果。
+成功必须来自环境的 `info["success"]`，不会把 MineCLIP 高分或正 intrinsic reward 当作完成任务。MP4 编码失败、环境报告错误、缺少 success、超出终止步数或完整权重不兼容都会使最终状态为 FAIL。每局先保存回放和成功结果，再编码视频；单局视频失败时记录 `video_status=failed` 和 `video_error`、保存对应 `videos/episode_XXX.error.txt`，并继续收集剩余局数。即使行为评估完成，视频未通过仍不能算完整验收。
 
-评估另外保存 `effective_task_specs.json`、`eval_metrics.json`、`summary.json`、`load_compatibility.json`；`report.json` 记录环境/agent 初始化时间、评估耗时和本次配置。
+评估另外保存 `effective_task_specs.json`、`eval_metrics.json`、`summary.json`、`load_compatibility.json`；`report.json` 记录视频后端版本、FFmpeg 路径、headless 设置、环境/agent 初始化时间、评估耗时和本次配置。
 
 **3 局成功率只可能为 0、1/3、2/3 或 1，不能要求它等于图中的约 80%。** 训练图的 `train_success` 与这里的原策略评估口径也不同。T00 的功能验收看加载、执行、重置和数据记录是否正确；0/3 不会被工具伪装成程序错误，但需结合视频排查旧策略/当前配置是否匹配，再决定是否继续做 T01。
 
@@ -193,10 +199,39 @@ python scripts/t00_baseline.py inspect \
 
 ## 6. 反馈内容与提交备注
 
-反馈正常检查目录中的 `report.json`、`replay_summary.json`，以及评估目录中的 `report.json`、`summary.json`、`episodes.csv`。如失败，补充 `error.txt`（如有）、`load_compatibility.json`（如有）和终端末尾输出。不需要传输整个 checkpoint。
+反馈正常检查目录中的 `report.json`、`replay_summary.json`，以及评估目录中的 `report.json`、`summary.json`、`episodes.csv`。如失败，补充 `error.txt`、`videos/episode_XXX.error.txt`、`load_compatibility.json`（如有）和终端末尾输出。不需要传输整个 checkpoint。
 
 中文 Git 提交备注（仅文本，助手未执行提交或推送）：
 
 ```text
 实现T00：新增checkpoint检查与原策略基线评估工具及服务器验收说明
+```
+
+## 7. 本次 audio_path 错误的修复与恢复
+
+用户 2026-10-06 的结果确认：checkpoint 文件及关键形状检查通过，完整权重严格加载通过，旧训练/评估回放可用。失败发生在第一局结束后的 MP4 写入阶段。
+
+项目原依赖组合是 `imageio==2.33.0` 和 `imageio-ffmpeg==0.3.0`。前者的视频插件向后端传递音频参数，后者的 `write_frames` 不接受这些参数，产生 `unexpected keyword argument 'audio_path'`。可核对[旧版后端源码](https://github.com/imageio/imageio-ffmpeg/blob/v0.3.0/imageio_ffmpeg/_io.py)和[新版视频插件源码](https://github.com/imageio/imageio/blob/v2.33.0/imageio/plugins/ffmpeg.py)。
+
+本次把依赖固定到 `imageio-ffmpeg==0.4.9`，供新安装环境使用。T00 本身改为直接调用新旧后端共有的无音频接口，不再经过该插件，也不再传递 `audio_path/audio_codec`。服务器可先拉取新代码执行下面的无环境导出验证，不需要先重装整个训练环境。
+
+`tools.simulate` 在调用视频保存前已经写入 npz，因此这次失败的第一局回放可以用于恢复。新入口只读取已有数据，不加载 checkpoint，不启动 MineDojo，不新增环境步，也不改写失败目录：
+
+```bash
+cd /root/rivermind-data/mine/projects/LS-Imagine-Ref
+
+python scripts/t00_baseline.py export-videos \
+  --eval-dir relevance_map/t00_outputs/evaluate_20261006T083601_549438
+```
+
+正常预期：`[PASS] video_preflight`、`[EXPORT 1/1] ... video_status=saved`、`[PASS] T00_VIDEO_EXPORT`。在新的 `export-videos_<时间戳>/` 目录得到 `episodes.csv`、`summary.json`、`report.json` 和能播放的 `videos/episode_001.mp4`。若实际有更多 npz，会逐个导出并记录实际数量；导出的序号按回放文件名排序。
+
+原计划 3 局、但只保存 1 局时，会出现 `partial_evaluation` WARN。**导出通过只确认已有数据和编码可用，不补跑剩余局数，也不替代完整 3 局及无训练检查。** 原失败报告保持不变。
+
+导出通过后，按第 3 节的 `MINEDOJO_HEADLESS=1 ... evaluate --episodes 3` 命令重新完成基线验收。文件检查和严格加载已有通过记录，无需为了本次视频修复重复执行 inspect，更不需要重新训练 1M。
+
+本次修复的中文 Git 提交备注（仅文本，助手未执行提交或推送）：
+
+```text
+修复T00视频依赖兼容：增加编码预检查、回放视频恢复与无界面运行约定
 ```
