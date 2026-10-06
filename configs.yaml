@@ -30,6 +30,8 @@ defaults:
   goal_count: 16
   macro_max_steps: 16
   goal_learning_rate: 3e-5
+  # T02 immutable observation encoder/goal library (empty on the baseline).
+  goal_library_path: ''
 
   # Environment
   task: 'minedojo'

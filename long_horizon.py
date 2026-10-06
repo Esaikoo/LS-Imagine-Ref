@@ -1,4 +1,4 @@
-"""T01 experiment scaffolding and explicit checkpoint migration.
+"""Experiment scaffolding, explicit checkpoint migration and goal metadata.
 
 Goal-conditioned execution/training is connected in later TODO steps. T01
 provides initialized modules and checkpoint contracts, never a flat fallback
@@ -33,7 +33,7 @@ def mode(config):
 def require_flat_execution(config):
     if mode(config) != "flat_ls":
         raise NotImplementedError(
-            "T01 新模式已支持模块初始化及保存/恢复；真实目标控制需要 T02/T04，"
+            "T01/T02 新模式已支持模块初始化、目标库及保存/恢复；真实目标控制需要 T03/T04，"
             "分层训练还需要宏模型与高层策略。请先运行 scripts/t01_checkpoint_check.py。"
         )
     if getattr(config, "freeze_wm", False):
@@ -91,9 +91,12 @@ def configure_experiment(agent, config):
     agent._experiment_optimizers = {}
     agent._goal_library = None
     agent._goal_encoder_id = None
+    agent._goal_library_id = None
     agent._worker_version = 0
     agent._initialization_source = None
     if current_mode == "flat_ls":
+        if getattr(config, "goal_library_path", ""):
+            raise ValueError("flat_ls 不使用目标库；请在目标策略模式配置 goal_library_path")
         return  # No new parameters, initializers or RNG draws on the baseline.
     if config.compile:
         raise ValueError("T01 新模式需要 compile=False，以便明确检查模块及优化器")
@@ -114,6 +117,9 @@ def configure_experiment(agent, config):
         agent._experiment_optimizers[name] = torch.optim.Adam(module.parameters(), lr=config.goal_learning_rate)
     if config.freeze_wm:
         agent._wm.requires_grad_(False)
+    if getattr(config, "goal_library_path", ""):
+        import goal_library
+        goal_library.attach(agent, goal_library.load_library(config.goal_library_path))
 
 
 def canonical(name):
@@ -155,7 +161,7 @@ def identity(config):
         "logdir", "traindir", "evaldir", "offline_traindir", "offline_evaldir",
         "results_dir", "name", "steps", "eval_every", "eval_episode_num",
         "device", "compile", "init_checkpoint", "checkpoint_load",
-        "use_wandb", "wandb_key", "video_pred_log",
+        "use_wandb", "wandb_key", "video_pred_log", "goal_library_path",
     }
     return {key: value for key, value in values.items() if key not in runtime}
 
@@ -230,6 +236,12 @@ def initialize_from_checkpoint(agent, checkpoint, source_path):
     base = {key: value for key, value in target.items() if not key.startswith("_experiment_modules.")}
     source = normalize(checkpoint["agent_state_dict"])
     result = require_compatible(base, source)
+    if agent._goal_library is not None:
+        import goal_library
+        if agent._goal_library.get("format") == goal_library.FORMAT:
+            weights = goal_library.cnn_weights(checkpoint["agent_state_dict"])
+            if goal_library.tensor_digest(weights) != agent._goal_library["source_encoder_hash"]:
+                raise ValueError("目标库与初始化 checkpoint 的视觉 CNN 不同，请使用匹配的目标库")
     combined = dict(target)
     combined.update(source)
     agent.load_state_dict({name: combined[canonical(name)] for name in current}, strict=True)
@@ -246,7 +258,8 @@ def initialize_from_checkpoint(agent, checkpoint, source_path):
         "path": str(Path(source_path).resolve()), "legacy_training_step": None,
         "optimizer_states_imported": False,
     }
-    agent._goal_library = agent._goal_encoder_id = None
+    if agent._goal_library is None:
+        agent._goal_encoder_id = agent._goal_library_id = None
     agent._worker_version = 0
     return result
 
@@ -282,6 +295,7 @@ def save_checkpoint(agent, path, *, verification_artifact=False, metadata=None, 
         "config": json_config(agent._config), "identity": identity(agent._config),
         "experiment": {"mode": agent.experiment_mode, "stage": "t01_scaffold", "freeze_wm": getattr(agent._config, "freeze_wm", False),
                        "goal_encoder_id": agent._goal_encoder_id, "goal_library": agent._goal_library,
+                       "goal_library_id": getattr(agent, "_goal_library_id", None),
                        "worker_version": agent._worker_version, "worker_architecture": "expanded_actor_v1",
                        "initialization_source": agent._initialization_source},
         "training_state": counters(agent), "rng_state": capture_rng(agent),
@@ -355,6 +369,17 @@ def restore_checkpoint(agent, checkpoint, *, allow_verification=False):
         raise ValueError("模式或低层结构版本不兼容")
     if agent._goal_encoder_id is not None and agent._goal_encoder_id != saved_experiment["goal_encoder_id"]:
         raise ValueError("目标编码器标识不同，不能复用目标编号")
+    if getattr(agent, "_goal_library_id", None) is not None and agent._goal_library_id != saved_experiment.get("goal_library_id"):
+        raise ValueError("目标库标识不同，不能复用目标编号")
+    library_payload = saved_experiment["goal_library"]
+    if library_payload is not None and library_payload.get("format") == "ls_imagine_goal_library_v1":
+        import goal_library
+        goal_library.validate_payload(library_payload, agent._config.goal_dim, agent._config.goal_count)
+        if library_payload["metadata"]["task"] != agent._config.task:
+            raise ValueError("checkpoint 目标库任务不同")
+        if (library_payload["encoder_id"] != saved_experiment["goal_encoder_id"] or
+                library_payload["library_id"] != saved_experiment.get("goal_library_id")):
+            raise ValueError("checkpoint 目标库元数据标识不匹配")
     current = agent.state_dict()
     saved = normalize(checkpoint["agent_state_dict"])
     require_compatible(normalize(current), saved)
@@ -394,6 +419,7 @@ def restore_checkpoint(agent, checkpoint, *, allow_verification=False):
     agent._task_behavior.jump_prob = training["jump_prob"]
     agent._goal_library = saved_experiment["goal_library"]
     agent._goal_encoder_id = saved_experiment["goal_encoder_id"]
+    agent._goal_library_id = saved_experiment.get("goal_library_id")
     agent._worker_version = saved_experiment["worker_version"]
     agent._initialization_source = saved_experiment["initialization_source"]
     rng = checkpoint["rng_state"]
