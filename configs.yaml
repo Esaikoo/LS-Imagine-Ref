@@ -21,6 +21,16 @@ defaults:
   debug: False
   video_pred_log: True
 
+  # T01 experiment/checkpoint contracts. flat_ls remains the default policy.
+  experiment_mode: 'flat_ls'
+  init_checkpoint: ''
+  checkpoint_load: 'initialize'
+  freeze_wm: False
+  goal_dim: 128
+  goal_count: 16
+  macro_max_steps: 16
+  goal_learning_rate: 3e-5
+
   # Environment
   task: 'minedojo'
   size: [64, 64]
@@ -149,6 +159,16 @@ minedojo:
   imag_gradient: 'reinforce'
   break_speed: 100.0
   time_limit: 36000
+
+goal_worker:
+  experiment_mode: 'goal_worker'
+  compile: False
+  freeze_wm: True
+
+hierarchical:
+  experiment_mode: 'hierarchical'
+  compile: False
+  freeze_wm: True
 
 debug:
   debug: True

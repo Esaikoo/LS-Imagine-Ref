@@ -13,6 +13,7 @@ from datetime import datetime
 import exploration as expl
 import models
 import tools
+import long_horizon
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
 
@@ -50,8 +51,10 @@ class LS_Imagine(nn.Module):
             random=lambda: expl.Random(config, act_space),
             plan2explore=lambda: expl.Plan2Explore(config, self._wm, reward),
         )[config.expl_behavior]().to(self._config.device)
+        long_horizon.configure_experiment(self, config)
 
     def __call__(self, obs, reset, state=None, training=True):
+        long_horizon.require_flat_execution(self._config)
         step = self._step
         if training:
             steps = (
@@ -184,6 +187,20 @@ def make_env(config, mode, id):
 
 def main(config): # config is namespace
 
+    long_horizon.require_flat_execution(config)
+    if config.checkpoint_load not in ("initialize", "resume"):
+        raise ValueError("checkpoint_load 必须为 initialize 或 resume")
+    source_checkpoint = None
+    if config.init_checkpoint:
+        source_checkpoint = long_horizon.read_checkpoint(config.init_checkpoint)
+        if source_checkpoint.get("verification_artifact"):
+            raise ValueError("T01 合成验收 checkpoint 不能用于真实训练")
+        if config.checkpoint_load == "resume":
+            if source_checkpoint.get("checkpoint_format") != long_horizon.FORMAT:
+                raise ValueError("旧 checkpoint 缺少计数器，请使用 checkpoint_load=initialize")
+            if not config.offline_traindir:
+                raise ValueError("resume 需要 offline_traindir 指向已有 replay，避免重新预填充改变恢复后的交互计数")
+
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
@@ -306,11 +323,16 @@ def main(config): # config is namespace
 
     agent.requires_grad_(requires_grad=False)
     
-    if (logdir / "latest.pt").exists():
-        checkpoint = torch.load(logdir / "latest.pt")
-        agent.load_state_dict(checkpoint["agent_state_dict"])
-        tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
-        agent._should_pretrain._once = False
+    if source_checkpoint is not None:
+        if config.checkpoint_load == "initialize":
+            long_horizon.initialize_from_checkpoint(agent, source_checkpoint, config.init_checkpoint)
+        else:
+            long_horizon.restore_checkpoint(agent, source_checkpoint)
+        del source_checkpoint
+    elif (logdir / "latest.pt").exists():
+        checkpoint = long_horizon.read_checkpoint(logdir / "latest.pt")
+        long_horizon.restore_checkpoint(agent, checkpoint)
+        del checkpoint
 
     
     # make sure eval will be executed once after config.steps
@@ -354,12 +376,7 @@ def main(config): # config is namespace
             is_training=True,
         )
 
-        items_to_save = {
-            "agent_state_dict": agent.state_dict(),
-            "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
-        }
-        
-        torch.save(items_to_save, logdir / "latest.pt")
+        long_horizon.save_checkpoint(agent, logdir / "latest.pt", overwrite=True)
 
     for env in train_envs + eval_envs:
         try:
