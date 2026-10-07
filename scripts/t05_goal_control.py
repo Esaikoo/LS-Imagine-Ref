@@ -608,7 +608,8 @@ def evaluate(args, report, cache, model):
         no_goal = ctl.load_model(payload, cache, args.device)
         gl.require(no_goal.options["conditioning"] == "no_goal", "独立无目标对照必须使用 --conditioning no_goal 训练")
         other_options = dict(no_goal.options, conditioning="goal")
-        gl.require(other_options == model.options and payload["counters"]["step"] == report.data["input_identity"]["counters"]["step"],
+        gl.require(bc.normalize_training_options(other_options) == bc.normalize_training_options(model.options) and
+                   payload["counters"]["step"] == report.data["input_identity"]["counters"]["step"],
                    "公平 no_goal BC 对照需要相同训练配置和更新预算")
         report.data["no_goal_identity"] = {"checkpoint": baseline.file_signature(path), "sha256": bc.file_hash(path), "model_id": ctl.model_identity(no_goal)}
         del payload

@@ -98,6 +98,7 @@ def load_no_goal(args, cache, model, report):
         return None
     path = baseline.project_path(args.no_goal_checkpoint)
     payload = t04.training_checkpoint(path)
+    bc.validate_checkpoint_sampling(payload)
     verified = t05.read_json(baseline.project_path(args.no_goal_verify_dir) / "report.json")
     t05.accepted(verified, "verify")
     step = report.data["input_identity"]["counters"]["step"]
@@ -106,7 +107,8 @@ def load_no_goal(args, cache, model, report):
                payload.get("cache_id") == cache.cache_id and payload["frozen_bundle"]["bundle_id"] == cache.bundle["bundle_id"],
                "独立无目标对照结构、来源或缓存不同")
     gl.require(payload["options"]["conditioning"] == "no_goal" and
-               dict(payload["options"], conditioning="goal") == model.options and
+               bc.normalize_training_options(dict(payload["options"], conditioning="goal")) ==
+               bc.normalize_training_options(model.options) and
                payload["counters"] == report.data["input_identity"]["counters"] and
                verified.get("cache_id") == cache.cache_id and verified.get("bundle_id") == cache.bundle["bundle_id"] and
                verified.get("counters") == payload["counters"] and
@@ -192,6 +194,10 @@ def query_model(args, report, cache, model, episodes, frames, no_goal):
         changed = stats["correct_vs_swap_mode_changed"]["mean"]
         print(f"[GOAL SENSITIVITY] split={split} episodes={stats['episodes']} queries={stats['rows']} "
               f"swap_mode_change={changed} zero_nll_gap={stats['zero_minus_correct_nll']['mean']:.6f}", flush=True)
+        if no_goal is not None:
+            print(f"[NO GOAL BC] split={split} correct_nll={stats['correct_nll']['mean']:.6f} "
+                  f"independent_no_goal_nll={stats['no_goal_bc_nll']['mean']:.6f} "
+                  f"no_goal_minus_correct_nll={stats['no_goal_bc_minus_correct_nll']['mean']:.6f}", flush=True)
     report.check("heldout_goal_queries", "PASS", f"{len(rows)} 个去重真实查询；替换目标同 split/相同步数/不同 episode；按局与按条目分别汇总，不训练替换标签")
     return rows, summary
 

@@ -24,6 +24,8 @@ import goal_library as gl
 import goal_segments as gs
 import long_horizon as lh
 import networks
+from goal_sampling import (WorkerRowSampler, normalize_training_options,
+                           checkpoint_sampling_protocol, validate_checkpoint_sampling)
 
 
 BUNDLE_FORMAT = "ls_imagine_frozen_bc_bundle_v1"
@@ -343,7 +345,10 @@ def backend_info(device):
 
 class Trainer:
     def __init__(self, cache, options, device):
-        self.cache, self.options, self.device = cache, copy.deepcopy(options), device
+        options = normalize_training_options(options)
+        self.cache, self.options, self.device = cache, options, device
+        self.worker_sampler = WorkerRowSampler(cache.tables["remaining"], cache.tables["worker_train"],
+                                               cache.bundle["horizon"], options["worker_sampling"])
         gl.require(options["conditioning"] in ("goal", "no_goal"), "未知 BC 条件模式")
         gl.require(all(np.isfinite(options[key]) and options[key] > 0 for key in
                        ("batch_size", "candidate_hidden", "learning_rate", "candidate_learning_rate", "grad_clip")), "训练超参数必须有限且为正")
@@ -368,7 +373,7 @@ class Trainer:
     def update(self):
         self.model.train(True)
         size = self.options["batch_size"]
-        wr = self.sampler.choice(self.cache.worker_rows["train"], size=size, replace=True)
+        wr = self.worker_sampler.draw(self.sampler, size)
         cr = self.sampler.choice(self.cache.candidate_rows["train"], size=size, replace=True)
         features, goals, remaining, actions = self.cache.worker_batch(wr, self.device)
         current, classes = self.cache.candidate_batch(cr, self.device)
@@ -389,7 +394,8 @@ class Trainer:
         self.step += 1
         return {"step": self.step, "worker_nll": float(worker_loss.detach()),
                 "candidate_ce": float(candidate_loss.detach()), "worker_grad_norm": norms["worker"],
-                "candidate_grad_norm": norms["candidate"]}
+                "candidate_grad_norm": norms["candidate"],
+                "worker_remaining_histogram": self.worker_sampler.histogram(wr).tolist()}
 
     def counters(self):
         return {"step": self.step, "worker_updates": self.step, "candidate_updates": self.step,
@@ -403,6 +409,7 @@ class Trainer:
                 "worker": cpu_tree(self.model.worker.state_dict()), "candidate": cpu_tree(self.model.candidate.state_dict()),
                 "optimizers": {name: cpu_tree(opt.state_dict()) for name, opt in self.optimizers.items()},
                 "counters": self.counters(), "sampler_state": self.sampler.get_state(),
+                "worker_sampling_protocol": checkpoint_sampling_protocol(self.options),
                 "rng_state": capture_rng(self.device), "backend": backend_info(self.device),
                 "verification_artifact": bool(verification_artifact)}
 
@@ -414,7 +421,9 @@ class Trainer:
         gl.require(payload["cache_id"] == self.cache.cache_id, "训练缓存 ID 不同，不能精确 resume")
         validate_bundle(payload["frozen_bundle"])
         gl.require(payload["frozen_bundle"]["bundle_id"] == self.cache.bundle["bundle_id"], "冻结模型/目标库 ID 不同")
-        gl.require(payload["options"] == self.options, "训练超参数不同，不能精确 resume")
+        gl.require(normalize_training_options(payload["options"]) == self.options,
+                   "训练超参数或采样方式不同，不能精确 resume")
+        validate_checkpoint_sampling(payload)
         gl.require(payload["backend"] == backend_info(self.device), "精确 resume 需要相同设备类型、PyTorch 及 CUDA/cuDNN/设备信息")
         counters = payload["counters"]
         step = counters["step"]
@@ -467,6 +476,9 @@ def evaluate(model, cache, split="validation", batch_size=256, max_worker_rows=N
                                 "worker_accuracy", "original_accuracy", "worker_entropy", "goal_sensitivity_l1")}
     action_hist = np.zeros(cache.metadata["action_dim"], dtype=np.int64)
     prediction_hist = np.zeros_like(action_hist)
+    remaining_counts = np.zeros(model.worker.horizon + 1, dtype=np.int64)
+    remaining_nll = {name: np.zeros_like(remaining_counts, dtype=np.float64)
+                     for name in ("worker", "original", "zero_goal", "shuffled_goal", "prototype_goal")}
     rng = np.random.RandomState(23)
     for start in range(0, len(rows), batch_size):
         chosen = rows[start:start + batch_size]
@@ -482,8 +494,12 @@ def evaluate(model, cache, split="validation", batch_size=256, max_worker_rows=N
                 "shuffled_goal": model.action_dist(features, shuffled, remaining),
                 "prototype_goal": model.action_dist(features, prototype, remaining)}
             onehot = F.one_hot(actions, cache.metadata["action_dim"]).float()
+            budgets = cache.tables["remaining"][chosen]
+            remaining_counts += np.bincount(budgets, minlength=len(remaining_counts))
             for name, distribution in distributions.items():
-                sums[name + "_nll"] += float(-distribution.log_prob(onehot).sum())
+                losses = -distribution.log_prob(onehot)
+                sums[name + "_nll"] += float(losses.sum())
+                remaining_nll[name] += np.bincount(budgets, weights=losses.cpu().numpy(), minlength=len(remaining_counts))
             for name in ("worker", "original"):
                 sums[name + "_accuracy"] += int((distributions[name].probs.argmax(-1) == actions).sum())
             sums["worker_entropy"] += float(distributions["worker"].entropy().sum())
@@ -491,6 +507,11 @@ def evaluate(model, cache, split="validation", batch_size=256, max_worker_rows=N
         action_hist += np.bincount(actions.cpu().numpy(), minlength=len(action_hist))
         prediction_hist += np.bincount(distributions["worker"].probs.argmax(-1).cpu().numpy(), minlength=len(action_hist))
     result = {key: value / len(rows) for key, value in sums.items()}
+    result["per_remaining"] = {str(h): dict(labels=int(remaining_counts[h]),
+        **{name + "_nll": float(values[h] / remaining_counts[h]) for name, values in remaining_nll.items()})
+        for h in range(1, len(remaining_counts)) if remaining_counts[h]}
+    for name in remaining_nll:
+        result[name + "_nll_remaining_macro"] = float(np.mean([row[name + "_nll"] for row in result["per_remaining"].values()]))
     result.update(worker_labels=len(rows), action_label_histogram=action_hist.tolist(), action_prediction_histogram=prediction_hist.tolist())
     cr = cache.candidate_rows[split]
     labels = cache.tables["candidate_goal"][cr]

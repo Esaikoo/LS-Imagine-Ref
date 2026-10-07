@@ -163,9 +163,12 @@ def prepare(args, report):
 
 
 def training_options(args, resume):
+    from goal_sampling import normalize_training_options
+
     defaults = dict(seed=0, batch_size=256, candidate_hidden=512, learning_rate=3e-5,
-                    candidate_learning_rate=3e-4, grad_clip=100.0, conditioning="goal")
-    result = dict(resume["options"] if resume is not None else defaults)
+                    candidate_learning_rate=3e-4, grad_clip=100.0, conditioning="goal",
+                    worker_sampling="uniform_rows")
+    result = normalize_training_options(resume["options"] if resume is not None else defaults)
     for key in defaults:
         value = getattr(args, key)
         if value is not None:
@@ -229,6 +232,22 @@ def train(args, report):
     frozen_id = trainer.model.frozen_identity()
     gl.require(frozen_id == cache.bundle["bundle_id"], "初始化冻结模块与源 bundle 不一致")
     report.data.update(cache_id=cache.cache_id, bundle_id=frozen_id, options=options, start_step=trainer.step)
+    sampling_plan = trainer.worker_sampler.plan()
+    observed_remaining = np.zeros(cache.bundle["horizon"], dtype=np.int64)
+
+    def save_sampling():
+        seen = (trainer.step - report.data["start_step"]) * options["batch_size"]
+        gl.require(int(observed_remaining.sum()) == seen, "本轮实际采样数与更新预算不同")
+        record = dict(sampling_plan, start_step=report.data["start_step"], end_step=trainer.step,
+                      observed_labels_this_invocation=seen,
+                      observed_counts=observed_remaining.tolist(),
+                      observed_fractions=(observed_remaining / seen).tolist() if seen else None,
+                      observation_scope="this invocation only; excludes updates before resume")
+        baseline.write_json(report.directory / "sampling.json", record)
+        report.data["worker_sampling"] = record
+
+    save_sampling()
+    report.check("worker_sampling_plan", "PASS", f"{options['worker_sampling']}；只抽真实训练条目，候选和留出评价规则保持固定；实际比例见 sampling.json")
     report.check("optimizers", "PASS", "只有独立 worker/candidate 优化器；原 WM、目标编码器及原 actor 冻结")
     report.check("scope", "WARN", "离线真实回放训练；new_env_steps=0；候选输出是未来类别概率，真实目标控制待 T05")
     reference = bc.frozen_bundle_reference(cache)
@@ -267,7 +286,10 @@ def train(args, report):
     save_best(initial_metrics)
     while trainer.step < args.steps:
         values = trainer.update()
+        observed_remaining += np.asarray(values["worker_remaining_histogram"], dtype=np.int64)
         append_json(report.directory / "training.jsonl", values)
+        if trainer.step % args.log_every == 0 or trainer.step % args.eval_every == 0 or trainer.step % args.save_every == 0 or trainer.step == args.steps:
+            save_sampling()
         if trainer.step % args.log_every == 0 or trainer.step == args.steps:
             print(f"[TRAIN] step={trainer.step}/{args.steps} worker_nll={values['worker_nll']:.4f} candidate_ce={values['candidate_ce']:.4f}", flush=True)
         if trainer.step % args.eval_every == 0 or trainer.step == args.steps:
@@ -280,6 +302,7 @@ def train(args, report):
     report.data.update(counters=trainer.counters(), checkpoint=str(report.directory / "latest.pt"),
                        initial_metrics=initial_metrics, final_metrics=final_metrics, best_checkpoints=best)
     report.check("training", "PASS", f"worker/candidate 各更新 {trainer.step} 次；损失与梯度有限；新环境步数 0")
+    report.check("worker_sampling_counts", "PASS", f"本轮实际采样 {int(observed_remaining.sum())} 条；完整 remaining 直方图已记录，不包含 resume 前的条目")
     report.check("frozen_modules", "PASS", "原 encoder/RSSM、目标库和原 actor 参数版本及内容哈希未变")
     report.check("checkpoint", "PASS", "独立 T04 latest.pt 保存新优化器、计数、采样器、RNG；冻结依赖共享缓存文件并校验 SHA256/内容 ID；完整恢复请运行 verify")
     report.check("best_checkpoints", "PASS", "分别按留出 worker NLL/candidate CE 保存完整最佳快照；选择窗口及更新步数见 best_checkpoints.json")
@@ -359,6 +382,15 @@ def verify(args, report):
                                ("counter_guard", dict(payload, counters=dict(payload["counters"], new_env_steps=1)), "训练计数"),
                                ("artifact_guard", dict(payload, verification_artifact=True), "合成验收")):
         t02.rejection(report, name, lambda bad=bad: trainer.restore(bad), message)
+    current_sampling = bc.normalize_training_options(payload["options"])["worker_sampling"]
+    other_sampling = "uniform_remaining" if current_sampling == "uniform_rows" else "uniform_rows"
+    bad_options = dict(payload["options"], worker_sampling=other_sampling)
+    t02.rejection(report, "sampling_mode_guard",
+                  lambda: trainer.restore(dict(payload, options=bad_options)), "采样方式")
+    t02.rejection(report, "sampling_protocol_guard",
+                  lambda: trainer.restore(dict(payload, worker_sampling_protocol="unknown")), "采样协议")
+    report.data["worker_sampling"] = trainer.worker_sampler.plan()
+    report.check("sampling_contract", "PASS", f"{current_sampling}；旧快照缺省沿用 uniform_rows；禁止精确恢复时切换采样方式")
     bad_worker = dict(payload["worker"])
     first = "actor.layers.Actor_linear0.weight"
     bad_worker[first] = bad_worker[first][:1]
@@ -373,7 +405,7 @@ def verify(args, report):
     other = bc.Trainer(cache, payload["options"], args.device)
     other.restore(reloaded, allow_verification=True)
     again = other.payload(verification_artifact=True)
-    for key in ("worker", "candidate", "optimizers", "counters", "sampler_state", "rng_state"):
+    for key in ("worker", "candidate", "optimizers", "counters", "sampler_state", "rng_state", "worker_sampling_protocol"):
         gl.require(t01.same(roundtrip[key], again[key]), f"保存/恢复 {key} 不一致")
     rows = cache.worker_rows["validation"][:32]
     features, goals, remaining, _ = cache.worker_batch(rows, args.device)
@@ -392,9 +424,10 @@ def verify(args, report):
     versions = {id(p): p._version for model in (trainer.model, other.model)
                 for module in (model.state_encoder, model.library, model.original_actor) for p in module.parameters()}
     rng = bc.capture_rng(args.device)
-    trainer.update()
+    left_update = trainer.update()
     bc.restore_rng(rng, args.device)
-    other.update()
+    right_update = other.update()
+    gl.require(left_update["worker_remaining_histogram"] == right_update["worker_remaining_histogram"], "恢复后下一次采样直方图不同")
     for name, left, right in (("worker", trainer.model.worker, other.model.worker), ("candidate", trainer.model.candidate, other.model.candidate)):
         gl.require(t01.same(left.state_dict(), right.state_dict()) and
                    t01.same(trainer.optimizers[name].state_dict(), other.optimizers[name].state_dict()), f"恢复后下一次 {name} 更新不一致")
@@ -428,6 +461,8 @@ def main():
     for name in ("learning-rate", "candidate-learning-rate", "grad-clip"):
         train_parser.add_argument("--" + name, type=float)
     train_parser.add_argument("--conditioning", choices=("goal", "no_goal"))
+    train_parser.add_argument("--worker-sampling", choices=("uniform_rows", "uniform_remaining"),
+                              help="默认/旧快照为 uniform_rows；uniform_remaining 均匀选剩余步数后再均匀选真实条目；resume 不可切换")
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("--cache-dir", required=True)
     verify_parser.add_argument("--checkpoint", required=True, help="T04 训练输出的 latest.pt")

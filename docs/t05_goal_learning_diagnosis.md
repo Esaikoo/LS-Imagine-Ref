@@ -1,8 +1,10 @@
 # T05：低层目标学习的离线诊断
 
-2026-10-07 本地实现；服务器待验收。助手仅静态阅读、修改和差异核对，没有本地执行 Python、测试、训练或环境，也未提交/推送。
+2026-10-07 本地实现；用户反馈 `goal_learning_20261006T181732` 已通过服务器工程验收。助手仅静态阅读、修改和差异核对，没有本地执行 Python、测试、训练或环境，也未提交/推送。
 
 ## 当前进度
+
+最新诊断：留出832个查询的目标替换mode变化约2.88%、零目标NLL差约0.00503；目标路径弱但非零。剩余16步标签在原训练池中只占约0.735%。下一步先做独立no_goal 400次对照，再验证remaining均衡采样，具体当前命令以 [独立无目标与均衡采样说明](t05_sampling_and_no_goal.md) 的A1–A4为准。下面保留已完成诊断的原入口与解释，当前不用重复首轮analyze。
 
 用户反馈 `repeated_check_20261006T174205` 和 `repeated_adopt_20261006T174237` 均通过工程验收。目标探针比较了同一世界两条真实参考中的 32 个缓存状态：更换目标平均概率 L1=0.011754，只有 1/32 个状态改变 mode 动作；目标 0 与零目标的 mode 动作 32/32 相同，目标 1 则 31/32 相同。两个真实目标的表示距离为 0.44455。工程接口可以使用，但目标控制能力没有通过。
 
@@ -40,7 +42,7 @@
 
 模型参数保持冻结，只有新建局部输入参与求导，不调用优化器，不写入参数 `.grad`，不更新权重。梯度只描述当前模型的当前留出损失，不能还原 400 次训练中的梯度过程；贡献较小也不自动证明应该放大目标，因为后续 LayerNorm/非线性会影响行为。
 
-## 现在只运行这一条诊断
+## 已完成的首轮诊断命令
 
 在服务器拉取本次代码后执行。它不启动 MineDojo，因此无需 `MINEDOJO_HEADLESS=1`。
 
@@ -94,7 +96,9 @@ python scripts/t05_goal_learning_diagnose.py analyze \
 - 若离线目标使用证据仍与继续 BC 难以区分，补独立 no_goal 对照。它不能用同一个 goal worker 置零替代。
 - 有更多目标学习线索后再决定是否恢复现有随机重复环境评估。真实行为尚未验收前，T06 继续保持未开始。
 
-## 独立 no_goal 对照的备用命令：先反馈本轮报告再决定
+## 独立 no_goal 对照：第一轮诊断后的下一步
+
+完整顺序及新增CPU采样检查见 [当前服务器执行说明](t05_sampling_and_no_goal.md)。本段命令同样保留原uniform_rows方式，暂不运行均衡组。
 
 以下适用于当前 400 次、seed=0、batch=256 等已知配置；命令从原 actor 初始化，**不传 `--resume`**。训练是离线 BC，不启动 MineDojo。累计更新预算和数据保持一致，不做 2000 次或 1M。
 
@@ -103,7 +107,7 @@ T04_NO_GOAL="$PWD/relevance_map/t04_outputs/train_no_goal_$(date +%Y%m%dT%H%M%S)
 
 python scripts/t04_goal_bc.py train \
   --cache-dir "$T04_CACHE" --output-dir "$T04_NO_GOAL" \
-  --device cuda:0 --conditioning no_goal --steps 400 \
+  --device cuda:0 --conditioning no_goal --worker-sampling uniform_rows --steps 400 \
   --seed 0 --batch-size 256 --candidate-hidden 512 \
   --learning-rate 3e-5 --candidate-learning-rate 3e-4 --grad-clip 100 \
   --eval-every 100 --log-every 100 --save-every 100

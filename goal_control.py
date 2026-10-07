@@ -75,6 +75,7 @@ def load_model(payload, cache, device):
     bc.validate_bundle(payload["frozen_bundle"])
     gl.require(payload["frozen_bundle"]["bundle_id"] == cache.bundle["bundle_id"], "T05 冻结模型/目标库不同")
     options, counters = payload["options"], payload["counters"]
+    bc.validate_checkpoint_sampling(payload)
     step = counters["step"]
     gl.require(type(step) is int and step > 0 and counters == dict(step=step, worker_updates=step,
         candidate_updates=step, worker_version=step, worker_labels_seen=step * options["batch_size"],
