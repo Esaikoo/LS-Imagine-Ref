@@ -61,8 +61,11 @@ def compare(reference, actual, events_reference, events_actual, plan):
     import goal_start_stability as starts
     import goal_warmed_control as warmed
 
-    left, ev_left = warmed.prefix(reference, events_reference, plan)
-    right, ev_right = warmed.prefix(actual, events_actual, plan)
+    # Offline files contain lists/scalars; a live Session can contain NumPy
+    # arrays inside native actions. Compare copies in the same JSON value
+    # representation used by save_session, retaining every actual value.
+    left, ev_left = warmed.prefix(reference, warmed.comparison_events(events_reference), plan)
+    right, ev_right = warmed.prefix(actual, warmed.comparison_events(events_actual), plan)
     rows = stability.history_statistics(left, right, ev_left, ev_right)
     summary = starts.summarize_history(rows, plan["stability_plan"]["tail_frames"])
     strict = ctl.prefix_comparison(left, right)
@@ -150,7 +153,7 @@ def load_inputs(args, report):
         gl.require(checked.get("comparison_protocol") == warmed.PROTOCOL and checked.get("evaluation_code") == code_identity() and
                    checked.get("input_identity") == report.data["input_identity"] and checked.get("reference_plan") == reference_plan and
                    checked.get("provenance") == provenance and checked.get("environment_fingerprint") == report.data["environment_fingerprint"] and
-                   {"new_reference_contract", "residual_execution_contract", "no_training", "source_inputs_unchanged"} <= {
+                   {"new_reference_contract", "live_saved_event_contract", "residual_execution_contract", "no_training", "source_inputs_unchanged"} <= {
                        row["name"] for row in checked["checks"] if row["level"] == "PASS"}, "需要同一新预热设计的check；旧check不能代替")
     report.check("accepted_stability_probe", "PASS", "复用已通过双次probe，核对真实历史和当前模型/环境；不新增环境预检")
     report.check("fixed_reference_scripts", "PASS", "仅复用两个原真实16步动作脚本；新目标必须来自新预热执行的真实终点")
@@ -194,6 +197,46 @@ def check(args, report, cache, runtime, plan):
     bad["action"] = arrays["action"].copy()
     bad["is_first"][32] = True
     t02.rejection(report, "warmup_reset_guard", lambda: warmed.validate_reference_history(bad, events, plan, 0), "伪reset")
+    live = [dict(frame=frame, error=None,
+                 native_actions=[] if frame == 0 else [dict(camera=np.array([0., 1.], np.float32),
+                     attack=np.int64(1), extras=(np.bool_(True), np.array([2, 3], np.int64)))],
+                 telemetry=dict(pose=dict(x=0., y=64., z=0., yaw=0., pitch=0.),
+                                inventory=dict(log=np.int64(0)), health=np.float32(20.)))
+            for frame in range(size)]
+    # Exercise the deployment comparison itself, not only a saved-vs-saved
+    # helper. Round-trip through JSON emulates actual recorded event files.
+    import json
+    saved = json.loads(json.dumps(warmed.comparison_events(live), allow_nan=False))
+    for left_events, right_events in ((saved, live), (live, saved), (live, live), (saved, saved)):
+        result, strict, compared, _ = compare(arrays, arrays, left_events, right_events, plan)
+        starts.require(result["passed"] and strict["passed"] and all(
+            row["native_actions_equal"] is True for row in compared), "实时/JSON事件同值比较错误")
+    variants = []
+    altered = copy.deepcopy(live)
+    altered[1]["native_actions"][0]["camera"][1] = 2.
+    variants.append(altered)
+    altered = copy.deepcopy(live)
+    altered[1]["native_actions"][0]["attack"] = np.int64(0)
+    variants.append(altered)
+    altered = copy.deepcopy(live)
+    altered[1]["native_actions"].append(copy.deepcopy(altered[1]["native_actions"][0]))
+    variants.append(altered)
+    for changed_events in variants:
+        result, _, _, _ = compare(arrays, arrays, saved, changed_events, plan)
+        starts.require(not result["passed"] and "native_actions_equal" in result["failed_checks"],
+                       "实时动作数值/长度/缺失差异未拒绝")
+    altered = copy.deepcopy(live)
+    del altered[1]["native_actions"]
+    t02.rejection(report, "missing_native_event_guard", lambda: compare(arrays, arrays, saved, altered, plan), "原生")
+    altered = copy.deepcopy(live)
+    altered[1]["telemetry"]["inventory"]["log"] = np.int64(1)
+    result, _, _, _ = compare(arrays, arrays, saved, altered, plan)
+    starts.require(not result["passed"] and "inventory_equal" in result["failed_checks"], "遥测内容差异未拒绝")
+    starts.require(isinstance(live[1]["native_actions"][0]["camera"], np.ndarray) and
+                   np.array_equal(live[1]["native_actions"][0]["camera"], np.array([0., 1.], np.float32)) and
+                   isinstance(live[1]["native_actions"][0]["attack"], np.integer) and
+                   isinstance(live[1]["native_actions"][0]["extras"], tuple), "比较修改了原实时事件")
+    report.check("live_saved_event_contract", "PASS", "实时NumPy/JSON事件双向同值比较通过；数值/长度/缺失/遥测差异仍拒绝，原事件未改")
     baseline.write_json(report.directory / "reference_plan.json", plan)
     report.check("new_reference_contract", "PASS", "预热64->65真实下一动作、固定脚本和新终点来源正确；内存marker不写入数据")
     report.check("scope", "WARN", "离线新入口验收；新参考和真实控制尚未执行，仍为T05")

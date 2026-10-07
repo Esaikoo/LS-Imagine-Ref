@@ -14,6 +14,29 @@ EVALUATION_FORMAT = "ls_imagine_warmed_residual_control_evaluation_v1"
 PROTOCOL = "warmed_residual_six_conditions_full_physical_recent_rgb_v1"
 
 
+def comparison_events(events):
+    """Copy live/saved events into save_session's JSON value representation.
+
+    Lists containing NumPy arrays cannot be compared with Python ==.
+    Preserve values, action ordering and missing fields; do not alter the
+    real events, observations or arrays used by the policy.
+    """
+    def plain(value):
+        if isinstance(value, np.ndarray):
+            return plain(value.tolist())
+        if isinstance(value, np.generic):
+            return plain(value.item())
+        if isinstance(value, dict):
+            return {str(key): plain(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [plain(item) for item in value]
+        return value
+
+    starts.require(isinstance(events, (list, tuple)) and all(isinstance(event, dict) for event in events),
+                   "比较需要逐帧真实事件列表")
+    return plain(events)
+
+
 def make_reference_plan(stability_plan, branch_actions, horizon, minimum, design):
     starts.validate_plan(stability_plan)
     plan = dict(protocol=PROTOCOL, stability_plan=stability_plan,

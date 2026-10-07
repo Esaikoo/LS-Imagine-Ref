@@ -2,6 +2,8 @@
 
 2026-10-07。本地已实现 `goal_warmed_control.py / scripts/t05_warmed_control.py check/prepare/evaluate`，服务器验收待运行。助手仅静态阅读、编辑和核对差异，未运行Python、测试、模型或环境，未提交/推送。旧工具和其代码指纹保持不变。当前仍为T05，T06未开始。
 
+后续反馈：`warmed_control_check_20261007T060441`通过，但prepare第二条参考起点比较发生实时NumPy动作与JSON列表的类型错误。本地已修复并增加`live_saved_event_contract`，请按 [事件比较修复与重跑命令](t05_warmed_event_comparison_recovery.md) 重新运行新入口check和prepare；旧probe/模型不重跑，旧不完整prepare不能用于evaluate。
+
 ## 本轮具体做什么
 
 沿用已通过的 `start_probe_20261007T051726`，不重跑audit/check/probe。冻结残差worker第200步及所有原模型；不再训练BC、不重建T04缓存。
@@ -43,7 +45,7 @@ python scripts/t05_warmed_control.py check \
   --repetitions 3 --randomization-seed 0 --execution-policy mode
 ```
 
-第一步应以`[PASS] T05_WARMED_CONTROL_CHECK`结束；`accepted_stability_probe / fixed_reference_scripts / residual_execution_contract / new_reference_contract / no_training / source_inputs_unchanged`应为PASS。`accepted_probe_history_0/1`重算误差应在既有数值容差内。guard的PASS表示错误输入被正确拒绝。内存marker不会写入真实数据，新增环境步为0。
+第一步应以`[PASS] T05_WARMED_CONTROL_CHECK`结束；`accepted_stability_probe / fixed_reference_scripts / residual_execution_contract / live_saved_event_contract / new_reference_contract / no_training / source_inputs_unchanged`应为PASS。`accepted_probe_history_0/1`重算误差应在既有数值容差内。guard的PASS表示错误输入被正确拒绝；混合类型检查覆盖实时NumPy与保存JSON，不能只检查两侧都从文件读取。内存marker不会写入真实数据，新增环境步为0。
 
 只有第一步通过才执行第二步：
 
