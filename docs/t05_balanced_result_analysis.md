@@ -65,7 +65,7 @@
 
 若小预测头仍无目标收益，则本次探针没有检出可用信息；不能据此证明信息不存在。下一步重点检查目标表示和真实行为覆盖，而不是反复放大目标输入或延长BC。一次小模型结果也不能单独确定数据与结构的因果责任。
 
-用户随后授权实现。本地新增 `goal_information_probe.py / scripts/t05_goal_information_probe.py`，提供 check、双组固定400次训练及独立 verify；使用独立探针格式，不接入真实worker。运行和验收见 [小型目标信息探针说明](t05_goal_information_probe_acceptance.md)。代码仅静态核对，服务器验收待运行。旧30trial与T06继续暂缓；A/B已完成的产物保留。
+用户随后授权实现。本地新增 `goal_information_probe.py / scripts/t05_goal_information_probe.py`，提供 check、双组固定400次训练及独立 verify；使用独立探针格式，不接入真实worker。运行和验收见 [小型目标信息探针说明](t05_goal_information_probe_acceptance.md)。助手只做静态核对；用户后续seed=0服务器三步已通过，最新结果见 [探针结果与多种子复核](t05_information_probe_result_analysis.md)。旧30trial与T06继续暂缓；A/B已完成的产物保留。
 
 ## 中文 Git 提交备注
 
