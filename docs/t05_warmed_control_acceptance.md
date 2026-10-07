@@ -1,8 +1,10 @@
 # T05：固定预热后的新参考与六组真实控制评估
 
+当前状态（2026-10-07）：`check_event_fixed_20261007T061744`通过，事件类型修复已验收；同次prepare因真实位置/RGB超限失败，起点位置差0.858020，65帧原生动作全部一致。当前停止重跑以下历史命令，不执行此入口evaluate；独立起点随机分组评估已本地实现、服务器待验收，见 [新两步入口](t05_random_control_acceptance.md)。原失败分析见 [本次失败分析与后续设计](t05_warmed_start_failure_analysis.md)。
+
 2026-10-07。本地已实现 `goal_warmed_control.py / scripts/t05_warmed_control.py check/prepare/evaluate`，服务器验收待运行。助手仅静态阅读、编辑和核对差异，未运行Python、测试、模型或环境，未提交/推送。旧工具和其代码指纹保持不变。当前仍为T05，T06未开始。
 
-后续反馈：`warmed_control_check_20261007T060441`通过，但prepare第二条参考起点比较发生实时NumPy动作与JSON列表的类型错误。本地已修复并增加`live_saved_event_contract`，请按 [事件比较修复与重跑命令](t05_warmed_event_comparison_recovery.md) 重新运行新入口check和prepare；旧probe/模型不重跑，旧不完整prepare不能用于evaluate。
+历史反馈：`warmed_control_check_20261007T060441`通过，但prepare第二条参考起点比较发生实时NumPy动作与JSON列表的类型错误。本地已修复并增加`live_saved_event_contract`；随后服务器check已验收该修复，当前停止修复说明中的重跑命令，旧不完整prepare不能用于evaluate。
 
 ## 本轮具体做什么
 

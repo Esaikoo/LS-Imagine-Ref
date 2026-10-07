@@ -1,5 +1,7 @@
 # T05：修复实时NumPy事件与保存JSON事件的比较
 
+后续状态（2026-10-07）：类型修复已由`check_event_fixed_20261007T061744`通过服务器验收；prepare随后因实际位置分叉和近期RGB超限失败。以下重跑命令为历史记录，当前不继续执行；见 [实际起点失败分析](t05_warmed_start_failure_analysis.md)。新 [独立起点随机分组入口](t05_random_control_acceptance.md)已本地实现，服务器待验收。
+
 2026-10-07。用户服务器`warmed_control_check_20261007T060441`通过；同次prepare完成参考0的81帧，在参考1的65帧起点比较时报`The truth value of an array with more than one element is ambiguous`。这是程序异常，尚未得到这次起点是否通过的结果，不能据此判断目标控制失败。
 
 助手已静态修复并核对差异，未执行Python、测试、模型或环境，未提交/推送。服务器修复验收待运行；仍为T05，T06未开始。
