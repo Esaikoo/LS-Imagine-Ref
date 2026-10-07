@@ -1,6 +1,6 @@
 # T05：成功参考脚本历史上的worker动作诊断
 
-2026-10-07。本地新增 `goal_reference_action_diagnose.py / scripts/t05_reference_action_diagnose.py`，只做静态阅读、编辑及差异核对；未运行Python、测试、模型或环境，服务器验收待反馈。原标定、sample及既有推理代码不修改，不重跑已通过的标定。
+2026-10-07本地实现。用户服务器`reference_action_diagnose_20261007T155501`已通过：4条历史、64次查询、新环境步和训练0；详情见 [结果分析与修复方向](t05_reference_action_result_analysis.md)。工具阶段结束，下列命令仅保留为已完成运行记录，无需重跑。助手仅做静态实现/附件分析，没有本地运行Python、测试、模型或环境。
 
 ## 本步检查什么
 

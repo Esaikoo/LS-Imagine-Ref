@@ -2,7 +2,7 @@
 
 本地实现完成，用户服务器`reference_calibration_check / reference_calibration_probe_20261007T140544`已通过工程验收：4次完整重放、320步，四次对应目标距离0.016–0.019，记录位置/yaw/pitch误差均为0。助手只静态阅读、核对附件及编辑文档，没有运行Python、测试、模型或环境，也没有提交/推送。仍在T05，T06未开始。
 
-详细分析见 [本次标定结果](t05_reference_calibration_result_analysis.md)。两脚本在该流程下能分别接近对应目标，下一步 [worker动作支持诊断](t05_reference_action_diagnosis.md) 已本地实现、服务器待验收。下列两步命令是已完成运行的记录，无需重新执行。
+详细分析见 [本次标定结果](t05_reference_calibration_result_analysis.md)。两脚本在该流程下能分别接近对应目标，后续 [worker动作支持诊断](t05_reference_action_diagnosis.md) 也已用户服务器通过，当前转向 [真实监督和训练修复](t05_reference_action_result_analysis.md)。下列两步命令是已完成运行的记录，无需重新执行。
 
 sample试跑已完成12次有效执行，但goal/no_goal/swapped平均视觉进展为0.061381/0.098416/0.125034，全部终点仍更近target0。本步用已知真实动作定位目标基准和视觉度量问题，停止继续调整mode/sample或延长训练。
 
