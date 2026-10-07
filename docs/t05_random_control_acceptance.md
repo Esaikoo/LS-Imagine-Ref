@@ -1,12 +1,16 @@
 # T05：独立起点、随机分组的真实目标控制
 
-2026-10-07。本地已实现 `goal_random_control.py` 和 `scripts/t05_random_control.py`；服务器待验收。助手只做静态阅读、编辑和差异核对，未执行Python、测试、训练、模型或环境，未提交/推送。仍为T05。
+2026-10-07。本地已实现 `goal_random_control.py` 和 `scripts/t05_random_control.py`；用户服务器check/evaluate工程验收已通过。助手只做静态阅读、编辑和差异核对，未执行Python、测试、训练、模型或环境，未提交/推送。仍为T05。
 
-最新反馈：`random_control_check_20261007T070049`已通过；同次evaluate在首个trial写`start.json`时报`FileNotFoundError`。这是本入口遗漏目录创建的程序bug：原子JSON写入要在目标目录创建临时文件，原来trial目录只在保存轨迹时才创建；关闭截图/日志输出的环境不会主动创建它。首个trial已完成32步noop+32步前缀，尚未执行worker控制；不能从此失败判断模型效果。
+最新结果：`random_control_check_output_fixed_20261007T071508 / random_control_evaluate_output_fixed_20261007T071508`通过，12/12次真实控制有效、192个控制动作、960个环境步，模型不更新。goal总体平均进展0.090650，但两次重复为0.189649/-0.008350；第二次弱于no_goal。所有终点按当前目标编码都更近target0，且初始状态也偏向target0；goal/target1第一次的两个终点距离为0.016491/0.498087。尚不能确认指定目标方向或推进T06。
+
+本轮下一步仅执行 [同一真实状态的动作选择离线诊断](t05_action_choice_diagnosis.md)，复用上述完整12局，核对概率差、top2差距和mode变化。下面check/evaluate命令保留供原协议复现，不需要本轮再次运行；旧失败和原check继续保留。
+
+历史失败：`random_control_check_20261007T070049`已通过；同次evaluate在首个trial写`start.json`时报`FileNotFoundError`。这是本入口遗漏目录创建的程序bug：原子JSON写入要在目标目录创建临时文件，原来trial目录只在保存轨迹时才创建；关闭截图/日志输出的环境不会主动创建它。首个trial已完成32步noop+32步前缀，尚未执行worker控制；不能从此失败判断模型效果。
 
 本地修复：每个trial在启动环境前显式创建新目录，并原子写入`output_preflight.json`确认可写；已有trial目录拒绝覆盖。离线check用同一路径检查起点、历史检查、指标和动作记录的JSON读写，新增`trial_output_preflight`；不增加环境预热、训练或新协议。源模型和旧验收工具未改动。
 
-拉取修复后需重新执行下列check/evaluate两步，使用新目录。check绑定脚本内容哈希，`random_control_check_20261007T070049`不能作为修复后代码的check输入。旧失败目录保留，不从中自动续跑；这次重跑用于修复程序中断，固定目标、12次顺序、模型和预算均保持原样。
+修复后用户已用新目录重新执行并验收下列check/evaluate两步。check绑定脚本内容哈希，`random_control_check_20261007T070049`不能作为修复后代码的check输入；通过的`output_fixed`新check继续有效。旧失败目录保留，不从中自动续跑；修复重跑中固定目标、12次顺序、模型和预算均保持原样。
 
 这次保留残差worker第200步、无目标底座、WM和目标库，结束同起点重放门槛循环。入口只有两步：`check`离线固定目标/计划；`evaluate`执行完整12次。无需再运行旧prepare、新参考采集、双次probe、信息探针或BC训练。
 
