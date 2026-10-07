@@ -2,7 +2,7 @@
 
 2026-10-07。本地已实现；用户反馈 `residual_check / residual_train / residual_verify_20261007T031803` 三步离线工程验收通过，两分支各更新 200 次。完整留出有目标/无目标修正/底座 NLL 为 1.687366/1.709115/1.752972；长预算动作匹配仍弱，真实控制尚未验收。详见 [本轮结果与真实评估计划](t05_residual_worker_result_analysis.md)。助手仅静态阅读、编辑和核对差异，未运行 Python、测试、训练、模型或环境，未提交/推送。仍属于 T05；T06 未开始，旧 30 trial 暂缓。
 
-后续专用六组真实评估的服务器check/adopt已通过，首个12-trial块因起点不一致未通过；暂缓旧剩余24次。无需重跑本文件的训练步骤，当前转到 [起点离线审计与固定预热双次重放预检](t05_start_stability_acceptance.md)，仍未进入T06。原六组方案见 [残差真实重复评估说明](t05_residual_control_acceptance.md)。
+后续专用六组真实评估的服务器check/adopt已通过，首个12-trial块因起点不一致未通过；旧剩余24次暂停。起点审计和固定预热双次重放预检已通过，新参考/评估入口已本地实现，当前使用 [新预热三步命令](t05_warmed_control_acceptance.md)，服务器验收待运行。无需重跑本文件的训练或已完成预检，仍未进入T06。原六组方案见 [残差真实重复评估说明](t05_residual_control_acceptance.md)。
 
 ## 这次改变什么
 
