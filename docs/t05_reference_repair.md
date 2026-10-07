@@ -1,6 +1,6 @@
 # T05真实参考监督的固定预算修复
 
-2026-10-08：本地实现完成，服务器检查、训练、恢复和效果均待反馈。新增 `goal_reference_repair.py`、`scripts/t05_reference_repair.py check/train/verify`，不修改旧模型、评估脚本或历史指纹。修复针对已知可行脚本状态上的动作支持不足；它不是新的控制评估，也不批准T06。
+2026-10-08：本地实现完成，用户服务器`reference_repair_check/train/verify_20261007T164732`全部工程通过；局部开发留出支持改善，两目标NLL均优于目标消融，但原26局退步，真实自主控制未确认，见 [结果分析](t05_reference_repair_result_analysis.md)。已验收三步不需重跑或追加更新。下一步专用自主确认入口已本地实现，服务器待验收，见 [check/evaluate两步命令](t05_repaired_control_acceptance.md)。新增 `goal_reference_repair.py`、`scripts/t05_reference_repair.py check/train/verify`，不修改旧模型、评估脚本或历史指纹。修复针对已知可行脚本状态上的动作支持不足；它不是新的控制评估，也不批准T06。
 
 ## 固定实验
 
