@@ -60,6 +60,18 @@ def action_names():
     return [key.value for key in nodes[0].value.keys]
 
 
+def prepare_trial_directory(directory):
+    """Reserve and check output before paying for an environment reset."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=False)
+    # Supplying a simulator log path does not create it when screenshots/logs
+    # are disabled. Atomic JSON writes require their parent to already exist.
+    baseline.write_json(directory / "output_preflight.json", dict(
+        format="t05_trial_output_preflight_v1", before_environment=True,
+        diagnostic_only=True, directory=str(directory)))
+    return directory
+
+
 def load_inputs(args, report):
     import numpy as np
     import goal_bc as bc
@@ -126,7 +138,7 @@ def load_inputs(args, report):
         legacy.accepted(checked, "check")
         saved_plan = legacy.read_json(checked_dir / "design.json")
         required = {"causal_execution_interface", "independent_start_contract", "fixed_visual_targets",
-                    "predeclared_design", "no_training", "source_inputs_unchanged"}
+                    "trial_output_preflight", "predeclared_design", "no_training", "source_inputs_unchanged"}
         gl.require(saved_plan == plan and checked.get("comparison_protocol") == random_control.PROTOCOL and
                    checked.get("design_id") == plan["design_id"] and checked.get("input_identity") == plan["input_identity"] and
                    checked.get("evaluation_code") == code_identity() and
@@ -148,6 +160,21 @@ def check(args, report, cache, runtime, plan, bank):
     import goal_library as gl
     import goal_random_control as random_control
     import goal_residual_control as control
+
+    output_probe = prepare_trial_directory(report.directory / "trial_output_probe")
+    # Exercise the actual atomic writer in a newly reserved trial directory,
+    # without simulator side effects. These small records are clearly probes.
+    for name in ("start.json", "history_check.json", "metrics.json", "control_trace.json"):
+        marker = dict(output_probe_only=True, before_environment=True, artifact=name)
+        baseline.write_json(output_probe / name, marker)
+        gl.require(legacy.read_json(output_probe / name) == marker, "trial原子写入/读取预检不一致")
+    try:
+        prepare_trial_directory(output_probe)
+    except FileExistsError:
+        pass
+    else:
+        raise ValueError("重复trial目录没有被拒绝")
+    report.check("trial_output_preflight", "PASS", "启动环境前创建独立trial目录并核对原子JSON写入/读取；已有目录拒绝覆盖；未启动环境")
 
     dataset, _ = t04.accepted_dataset(Path(cache.metadata["dataset_dir"]), Path(cache.metadata["t03_verify_dir"]))
     gl.require(dataset.content_id == cache.metadata["dataset_id"], "真实历史数据集身份不同")
@@ -247,6 +274,7 @@ def run_trial(report, runtime, plan, bank, cell, directory):
     import goal_residual_control as control
     import goal_segments as segments
 
+    directory = prepare_trial_directory(directory)
     first, horizon, goals = plan["control_start_frame"], plan["horizon"], bank["goals"]
     target, mode = cell["target"], cell["mode"]
     assigned = 1 - target if mode == "swapped_goal" else target
