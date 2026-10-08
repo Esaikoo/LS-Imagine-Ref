@@ -241,7 +241,8 @@ def load_inputs(args, report, source):
     base, references = residual.load_base(paths["base_checkpoint"], paths["base_verify_report"], original.cache)
     calibration = source["calibration"]
     calibration_record = legacy.read_json(paths["calibration_manifest"].parent / "report.json")
-    legacy.accepted(calibration_record, "evaluate")
+    # Reference calibration uses check/probe; continuation collection uses check/evaluate.
+    legacy.accepted(calibration_record, "probe")
     calibration_check = baseline.project_path(calibration_record["arguments"]["check_dir"])
     ref_arrays, ref_runs, fixed = previous.references_from_histories(calibration, calibration_check, original.cache, args.device)
     original_data = reference.RepairData(original.cache, saved["options"], residual.base_identity(base),

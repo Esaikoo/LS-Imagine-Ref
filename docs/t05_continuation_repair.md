@@ -2,6 +2,8 @@
 
 2026-10-08。本地实现完成，服务器check/train/verify待用户验收。新增独立的`goal_continuation_repair.py`和`scripts/t05_continuation_repair.py`，不修改已验收Python、环境wrapper、源worker300或旧失败结果。助手只静态阅读、编辑与差异核对，未运行Python、测试、模型、训练或环境，未提交/推送。
 
+服务器首次`continuation_repair_check_20261008T115256`在读取旧标定报告时失败：本入口误把标定的`probe`命令按`evaluate`校验。已只修正新入口的命令名，仍要求报告状态通过；历史SHA256与后续真实参考校验保留。失败发生在输入加载阶段，尚未开始训练。保留该失败目录，同步修正后的`scripts/t05_continuation_repair.py`，重新设置下面的时间戳和三个输出目录后从check开始；服务器修复验收仍待反馈。
+
 来源为完整通过的`closed_loop_continuation_evaluate_20261008T093057`：十条真实16+4步历史，手工五局中只有一条实际下转纠偏、四条保持，worker事实全部保留。见 [来源分析](t05_closed_loop_continuation_result_analysis.md)。本轮不重跑采集，不执行控制，不批准T06。
 
 ## 固定训练与留出
@@ -81,4 +83,4 @@ python scripts/t05_continuation_repair.py verify \
 
 分析重点是手工保持留出是否改善、目标消融是否仍提供额外作用、唯一训练纠偏支持是否提升、原26局与目标0是否超过预声明退步限度。若修复值得继续，再按已固定新计划实现自主确认，不把离线PASS或手工5/5当作T06准入。两个目标均须达到原4/5正进展且偏好正确、五次均值为正并胜两对照，且完整视频/位姿核对通过后，才考虑限定场景T06。
 
-中文Git提交备注：`feat: 增加T05真实续段混合修复与独立恢复验收`
+中文Git提交备注：`fix: 修复T05续段修复入口的标定probe报告校验`
