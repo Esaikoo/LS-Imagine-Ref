@@ -1,6 +1,6 @@
 # T05修复worker的自主确认
 
-2026-10-08：新增 `goal_repaired_control.py`、`scripts/t05_repaired_control.py check/evaluate`。本地仅静态阅读、编辑与差异核对；没有运行Python、测试、模型或环境，服务器待验收。已通过的参考修复check/train/verify、旧诊断和标定不用重跑，不再训练或选择中途快照。
+2026-10-08：用户服务器`repaired_control_check/evaluate_20261007T180059`工程验收通过，30/30局有效、2400环境步。目标0数值规则通过，目标1方向2/5且平均进展低于no_goal，总体数值门槛未通过，T06未批准。逐帧分析发现目标1三次失败在最后一步由目标1姿态回到目标0，见 [本轮结果分析](t05_repaired_control_result_analysis.md)。原30局保留，不重跑已通过的训练、标定或确认，不改固定16步/门槛；下面命令记录现有实现。本地只做静态阅读、编辑及附件统计，没有运行Python、测试、模型或环境。
 
 ## 本次固定的实验
 
