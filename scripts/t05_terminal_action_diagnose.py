@@ -188,9 +188,11 @@ def contract_checks(report):
                "末步实际偏好翻转必须与事实测量一致")
     # Explicit memory-only markers test indexing; never saved as observations.
     first, horizon, dimension, index = 1, 16, 3, 0
-    cell = dict(mode="goal", target=1, repeat=0, randomization_seed=1)
+    # Match the saved design: the seed belongs to design, not each cell.
+    cell = dict(mode="goal", target=1, repeat=0, seed=0)
     plan = dict(control_start_frame=first, horizon=horizon, design_id="memory-only",
-                comparison_protocol="memory-only", input_identity=dict(model_id="memory-only"))
+                comparison_protocol="memory-only", input_identity=dict(model_id="memory-only"),
+                design=dict(randomization_seed=1, schedule=[cell, dict(cell, repeat=1)]))
     arrays = dict(features=np.zeros((18, 5120), np.float32),
         action=np.vstack((np.zeros(3), np.eye(3)[[0] + [1] * 16])).astype(np.float32),
         is_last=np.zeros(18, bool), is_terminal=np.zeros(18, bool))
@@ -201,10 +203,29 @@ def contract_checks(report):
         execution_policy="mode", design_id="memory-only", comparison_protocol="memory-only",
         model_id="memory-only", worker_version=300, repair_updates=100, control_start_frame=first)
     measurements = [dict(frame=first + i, control_step=i, distance_0=.43, distance_1=.03) for i in range(17)]
-    def query(a=arrays, t=trace, m=measurements):
-        return diagnosis.validate_queries(a, t, m, plan, cell, index, dimension)
+    def query(a=arrays, t=trace, m=measurements, source_plan=plan, trial_index=index):
+        return diagnosis.validate_queries(a, t, m, source_plan,
+                                          source_plan["design"]["schedule"][trial_index], trial_index, dimension)
+    original_plan, original_cell = copy.deepcopy(plan), copy.deepcopy(cell)
     gl.require([(row["frame"], row["next_action_frame"], row["remaining"]) for row in query()] == [(15, 16, 2), (16, 17, 1)],
                "实际末尾两动作的状态/下一动作/预算边界异常")
+    later = copy.deepcopy(trace)
+    later["action_seed"] = 1711
+    later["uniforms"] = np.random.RandomState(1711).uniform(size=horizon).tolist()
+    gl.require(query(t=later, trial_index=1) == query() and
+               plan == original_plan and cell == original_cell and "randomization_seed" not in cell,
+               "计划种子适配须支持真实条目和后续trial，不能修改源计划")
+    missing_seed = copy.deepcopy(plan)
+    del missing_seed["design"]["randomization_seed"]
+    t02.rejection(report, "missing_design_seed_guard", lambda: query(source_plan=missing_seed), "随机种子")
+    wrong_seed = copy.deepcopy(trace)
+    wrong_seed["action_seed"] = 701
+    wrong_seed["uniforms"] = np.random.RandomState(701).uniform(size=horizon).tolist()
+    t02.rejection(report, "action_seed_guard", lambda: query(t=wrong_seed), "随机数")
+    wrong_uniforms = copy.deepcopy(trace)
+    wrong_uniforms["uniforms"][-1] = (wrong_uniforms["uniforms"][-1] + .5) % 1
+    t02.rejection(report, "action_uniform_guard", lambda: query(t=wrong_uniforms), "随机数")
+    report.check("schedule_seed_contract", "PASS", "真实计划种子只在design中；首个/后续trial校验通过，缺失/错误种子和随机数仍拒绝；原计划/条目未改")
     wrong = {name: value.copy() for name, value in arrays.items()}
     wrong["action"][-1] = np.eye(3)[0]
     t02.rejection(report, "next_action_guard", lambda: query(a=wrong), "下一动作")

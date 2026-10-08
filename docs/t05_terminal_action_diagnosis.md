@@ -2,6 +2,8 @@
 
 2026-10-08。新增`goal_terminal_action_diagnose.py`和`scripts/t05_terminal_action_diagnose.py`。本地仅静态阅读、编辑和差异核对，未运行Python、测试、模型或环境；服务器待验收。旧推理代码、worker300、原轨迹、固定16步及数值门槛不改。
 
+服务器首轮`terminal_action_diagnose_20261008T063941`通过历史身份、原守卫和冻结模型加载，但在首条自主历史调用旧动作校验时因`KeyError: 'randomization_seed'`退出，末步诊断尚未完成。真实计划仅在`design.randomization_seed`保存种子，每个schedule条目没有该字段；旧校验接口需要调用方补入。新诊断现在从已验真的design读取种子，通过新字典适配旧接口，不修改原计划或保存轨迹。内存检查样例同步使用真实结构，核对首个/后续trial并拒绝缺失种子、错误动作种子和被改动的随机数。旧校验代码及历史指纹不变；本地仅静态核对，修复后服务器待验收。
+
 ## 本次要定位什么
 
 原30次确认工程有效，但目标1只通过2/5方向，平均进展低于独立no_goal，T06未批准。其失败repeat1、2、4在第15步d1约0.037，第16步d1约0.493，pitch误差0°→10°，终点回到目标0姿态。详见 [自主确认结果分析](t05_repaired_control_result_analysis.md)。这说明末步是明确的定位边界，尚不说明网络内部原因。
@@ -22,7 +24,7 @@
 ```bash
 cd /root/rivermind-data/mine/projects/LS-Imagine-Ref
 
-T05_TERMINAL_DIAG="$PWD/relevance_map/t05_outputs/terminal_action_diagnose_$(date +%Y%m%dT%H%M%S)"
+T05_TERMINAL_DIAG="$PWD/relevance_map/t05_outputs/terminal_action_diagnose_seed_fixed_$(date +%Y%m%dT%H%M%S)"
 
 python scripts/t05_terminal_action_diagnose.py \
   --eval-dir "$PWD/relevance_map/t05_outputs/repaired_control_evaluate_20261007T180059" \
@@ -43,10 +45,10 @@ python scripts/t05_terminal_action_diagnose.py \
 | `reference_context.json` | 四参考历史的8个末尾查询、真实脚本动作及当前worker支持，不移植标签。 |
 | `target1_last_action_probabilities.png` | 正确目标1五个repeat的最后一步概率图，成功和失败全保留。 |
 
-预期最终`[PASS] T05_TERMINAL_ACTION_DIAGNOSE`，并有`historical_identity`、`real_query_alignment`、`recorded_forward_roundtrip`、`recorded_measurement_roundtrip`、`reference_context_comparison`、`no_training`、`source_inputs_unchanged`的PASS。`scope`的WARN保留T05边界；guard的错误文字表示主动拒绝错误输入。概率须在原容差内且mode动作逐个重现，不能为运行通过放宽原容差。若接口/身份/重现失败，保留报告反馈，暂不解释概率或训练。
+预期最终`[PASS] T05_TERMINAL_ACTION_DIAGNOSE`，并有`historical_identity`、`schedule_seed_contract`、`real_query_alignment`、`recorded_forward_roundtrip`、`recorded_measurement_roundtrip`、`reference_context_comparison`、`no_training`、`source_inputs_unchanged`的PASS。新增`missing_design_seed_guard`、`action_seed_guard`、`action_uniform_guard`须PASS，表示缺失/错误种子或随机数被主动拒绝。`scope`的WARN保留T05边界；guard的错误文字表示主动拒绝错误输入。概率须在原容差内且mode动作逐个重现，不能为运行通过放宽原容差。若接口/身份/重现失败，保留报告反馈，暂不解释概率或训练。此次失败目录保留，使用上面的新目录重跑离线诊断，不重跑原30次评估或训练。
 
 回传`report.json`、`diagnostics.json`、`trials.csv`、`frame_metrics.csv`、`reference_context.json`及概率图。完整`action_queries.json`已保存，初次无需上传；若失败另回传终端错误。无需下载模型、缓存、轨迹或视频。
 
 分析时优先回答：失败三局最后实际选了什么，换目标是否改变mode，目标1下哪个动作领先以及差距多大；成功局是否保持目标1姿态；在同预算参考状态上是否也选同一末步动作。状态相似度本身不能证明泛化失败或为自主状态提供动作标签。
 
-中文Git提交备注：`feat(T05): 增加自主轨迹末两步动作与同预算参考状态离线诊断`
+中文Git提交备注：`fix: 修复T05末步诊断读取计划随机种子时的接口错误`

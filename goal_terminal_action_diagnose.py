@@ -26,7 +26,13 @@ def validate_queries(arrays, trace, measurements, plan, cell, index, dimension):
                     trace.get("control_start_frame") == first and
                     trace.get("model_id") == plan["input_identity"]["model_id"],
                     "真实控制模型/计划或mode执行身份不同")
-    choices.validate_trace(arrays, trace, first, horizon, dimension, cell, index)
+    randomization_seed = plan["design"].get("randomization_seed")
+    choices.require(type(randomization_seed) is int and 0 <= randomization_seed < 2**31 - 10000,
+                    "计划动作随机种子缺失或无效")
+    # Saved schedule cells omit this design-level field; adapt a fresh copy
+    # for the legacy validator without changing the SHA-bound source plan.
+    validation_cell = dict(cell, randomization_seed=randomization_seed)
+    choices.validate_trace(arrays, trace, first, horizon, dimension, validation_cell, index)
     choices.require(len(measurements) == horizon + 1 and all(
         row["frame"] == first + step and row["control_step"] == step
         for step, row in enumerate(measurements)), "保存测量与真实动作边界不同")
