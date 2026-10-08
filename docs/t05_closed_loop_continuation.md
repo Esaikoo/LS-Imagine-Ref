@@ -1,6 +1,6 @@
 # T05真实纠偏与保持续段采集
 
-2026-10-08。本地实现完成，服务器check及真实采集待用户运行。只做静态阅读、编辑和差异核对，没有本地运行Python、测试、模型或环境，没有提交/推送。新增独立的`goal_closed_loop_continuation.py`与`scripts/t05_closed_loop_continuation.py`；原已验收代码及旧失败不改写。
+2026-10-08。本地实现及用户服务器`closed_loop_continuation_check/evaluate_20261008T093057`工程验收已完成：10局/840步、查询200、worker执行180、手工20、更新0。手工终点偏好5/5、worker3/5，真实下转纠偏1局、noop保持4局；唯一纠偏在train，开发留出没有纠偏，位置仍移动。见 [结果与下一步修复分析](t05_closed_loop_continuation_result_analysis.md)。本页命令保留供复现，本次无需重跑。助手仅静态阅读/编辑和附件复算，没有本地运行Python、测试、模型或环境，未提交/推送；原已验收代码及旧失败不改写。
 
 上轮固定forward真正改变建议的两局都没有纠正视角；成功三局本来就建议forward。原worker三次在正确视角下最后turn_up离开。此次取得真实纠偏和保持动作的执行证据，先采集再决定训练。来源见[上轮分析](t05_terminal_intervention_result_analysis.md)。
 
