@@ -2,6 +2,10 @@
 
 2026-10-08。本地新增`goal_terminal_intervention.py`与`scripts/t05_terminal_intervention.py check/evaluate`，验证在新的自主目标1轨迹上，最后执行固定forward是否改善真实终点。只完成静态阅读、修改和差异核对，未运行Python、测试、模型、训练或环境，未提交/推送；服务器验收与效果待用户运行。旧验收代码、原30局、worker300和既定T06门槛保持。
 
+后续用户反馈`terminal_intervention_check/evaluate_20261008T081058`工程完整通过：10局/800步、控制查询160、worker执行155、固定干预5，概率重现误差0。原mode方向2/5、固定forward3/5；真正改变建议的两局均失败，成功三局本来就建议forward，不能声称干预救回失败。固定forward失败两局在前15步未调对目标1角度，mode失败三局则在末步离开正确朝向。详见 [结果分析](t05_terminal_intervention_result_analysis.md)。本页命令保留供复现，本次无需重跑；下一步应取得真实闭环纠偏证据，T06未批准。
+
+下一步独立 [闭环纠偏与保持续段入口](t05_closed_loop_continuation.md) 已本地完成，运行该页check/evaluate即可；服务器待验收。原十局及本页入口保持，不重跑或改写旧结果。
+
 ## 固定实验
 
 依据是已完整通过的`terminal_action_diagnose_seed_fixed_20261008T070142`：目标1失败三局最后实际选turn_up，成功两局选forward，但失败状态上的forward未真实执行。新实验只验证真实续段，不能把成功参考动作直接转为失败自主状态的专家标签。见 [诊断分析](t05_terminal_action_result_analysis.md)。
