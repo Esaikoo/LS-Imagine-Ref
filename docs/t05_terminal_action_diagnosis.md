@@ -1,8 +1,10 @@
 # T05自主轨迹最后两步的离线动作诊断
 
-2026-10-08。新增`goal_terminal_action_diagnose.py`和`scripts/t05_terminal_action_diagnose.py`。本地仅静态阅读、编辑和差异核对，未运行Python、测试、模型或环境；服务器待验收。旧推理代码、worker300、原轨迹、固定16步及数值门槛不改。
+2026-10-08。新增`goal_terminal_action_diagnose.py`和`scripts/t05_terminal_action_diagnose.py`，用户服务器`terminal_action_diagnose_seed_fixed_20261008T070142`完整通过。30局/60个末尾查询、480个原概率/动作、510帧测量和8个参考查询均有效，概率重现误差0。助手只做本地静态实现与附件分析，未运行Python、测试、模型或环境。旧推理代码、worker300、原轨迹、固定16步及数值门槛不改。
 
 服务器首轮`terminal_action_diagnose_20261008T063941`通过历史身份、原守卫和冻结模型加载，但在首条自主历史调用旧动作校验时因`KeyError: 'randomization_seed'`退出，末步诊断尚未完成。真实计划仅在`design.randomization_seed`保存种子，每个schedule条目没有该字段；旧校验接口需要调用方补入。新诊断现在从已验真的design读取种子，通过新字典适配旧接口，不修改原计划或保存轨迹。内存检查样例同步使用真实结构，核对首个/后续trial并拒绝缺失种子、错误动作种子和被改动的随机数。旧校验代码及历史指纹不变；本地仅静态核对，修复后服务器待验收。
+
+用户后续反馈修复后的完整PASS。目标1失败三局实际末步都是turn_up，正确目标虽降低其概率却未改变mode；成功两局末步forward，参考8/8匹配。原行为门槛失败保持，下一步建议新的真实末步干预以取得闭环续段证据，见 [诊断结果分析](t05_terminal_action_result_analysis.md)。本页命令保留供复现，此次无需重复诊断。
 
 ## 本次要定位什么
 
