@@ -1,8 +1,8 @@
 # T05真实续段的小预算混合修复
 
-2026-10-08。本地实现完成，服务器check/train/verify待用户验收。新增独立的`goal_continuation_repair.py`和`scripts/t05_continuation_repair.py`，不修改已验收Python、环境wrapper、源worker300或旧失败结果。助手只静态阅读、编辑与差异核对，未运行Python、测试、模型、训练或环境，未提交/推送。
+2026-10-08。本地实现完成，用户服务器`continuation_repair_check/train/verify_20261008T143457`均工程通过；见 [结果分析](t05_continuation_repair_result_analysis.md)。固定worker350提供保持与已见纠偏的离线收益，六项退步检查通过，尚未执行新自主确认，T06未批准。新增独立的`goal_continuation_repair.py`和`scripts/t05_continuation_repair.py`，不修改已验收Python、环境wrapper、源worker300或旧失败结果。助手未运行Python、测试、模型、训练或环境，未提交/推送。
 
-服务器首次`continuation_repair_check_20261008T115256`在读取旧标定报告时失败：本入口误把标定的`probe`命令按`evaluate`校验。已只修正新入口的命令名，仍要求报告状态通过；历史SHA256与后续真实参考校验保留。失败发生在输入加载阶段，尚未开始训练。保留该失败目录，同步修正后的`scripts/t05_continuation_repair.py`，重新设置下面的时间戳和三个输出目录后从check开始；服务器修复验收仍待反馈。
+服务器首次`continuation_repair_check_20261008T115256`在读取旧标定报告时失败：本入口误把标定的`probe`命令按`evaluate`校验。只修正新入口的命令名，仍要求报告状态通过；历史SHA256与后续真实参考校验保留。失败发生在输入加载阶段，尚未开始训练。失败目录保留，修正后的三步已在新目录完整通过，无需再次运行本页实验或旧采集。
 
 来源为完整通过的`closed_loop_continuation_evaluate_20261008T093057`：十条真实16+4步历史，手工五局中只有一条实际下转纠偏、四条保持，worker事实全部保留。见 [来源分析](t05_closed_loop_continuation_result_analysis.md)。本轮不重跑采集，不执行控制，不批准T06。
 
@@ -45,7 +45,7 @@
 
 ## 服务器命令
 
-同步两个新增Python文件及文档，在服务器项目根目录依次执行；上一条最终PASS后再执行下一条。无需重新采集或运行旧修复，也无需`MINEDOJO_HEADLESS=1`，这三个入口都不开环境。
+下列为已完成实验的命令留档，当前不需重跑。初次运行时同步两个新增Python文件及文档，在服务器项目根目录依次执行；上一条最终PASS后再执行下一条。无需重新采集或运行旧修复，也无需`MINEDOJO_HEADLESS=1`，这三个入口都不开环境。
 
 ```bash
 cd /root/rivermind-data/mine/projects/LS-Imagine-Ref
@@ -83,4 +83,6 @@ python scripts/t05_continuation_repair.py verify \
 
 分析重点是手工保持留出是否改善、目标消融是否仍提供额外作用、唯一训练纠偏支持是否提升、原26局与目标0是否超过预声明退步限度。若修复值得继续，再按已固定新计划实现自主确认，不把离线PASS或手工5/5当作T06准入。两个目标均须达到原4/5正进展且偏好正确、五次均值为正并胜两对照，且完整视频/位姿核对通过后，才考虑限定场景T06。
 
-中文Git提交备注：`fix: 修复T05续段修复入口的标定probe报告校验`
+最新服务器结果与下一步见 [结果分析](t05_continuation_repair_result_analysis.md)：保持留出mode0/8→6/8，唯一纠偏已见状态的下转概率0.819%→51.293%，但交换目标和零目标仍选下转，纠偏泛化未验证。2026-10-09已新增预声明worker350的独立自主确认入口，保留本页验收代码，见 [两步运行说明](t05_continuation_control.md)；只静态核对，服务器待执行，不追加训练或重跑采集。
+
+中文Git提交备注：`docs: 增加T05续段混合修复结果与worker350自主确认分析`
