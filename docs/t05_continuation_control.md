@@ -1,6 +1,8 @@
 # T05 worker350独立自主确认
 
-2026-10-09本地实现，服务器尚未执行。入口是`scripts/t05_continuation_control.py check/evaluate`，协议在`goal_continuation_control.py`。本轮只新增这两个代码文件，保留续段修复已验收的38个代码文件及旧结果；只做静态阅读、编辑和差异核对，没有本地Python、测试、模型、训练或环境运行，没有提交或推送。
+2026-10-09本地实现后，用户反馈服务器`continuation_control_check/evaluate_20261008T165222`两步工程完整通过：30/30完整16步、2400环境步、480概率重现误差0，更新/干预0。目标0方向4/5却输交换组，目标1方向3/5；最新行为门槛失败、T06未批准，见 [结果分析与同状态诊断方案](t05_continuation_control_result_analysis.md)。本轮已执行，不因失败重跑、补样或延长预算；下方命令保留为已完成实验的运行说明。
+
+入口是`scripts/t05_continuation_control.py check/evaluate`，协议在`goal_continuation_control.py`。实现时只新增这两个代码文件，保留此前38个验收代码及旧结果；本次结果分析也未修改这些代码。本地仅静态阅读、附件计算、文档编辑和差异核对，没有Python、测试、模型、训练或环境运行，没有提交或推送。
 
 ## 要回答的问题
 
@@ -68,6 +70,6 @@ check只读真实历史并核对增量因果状态、动作分布和保存/门�
 
 完整无提前终止时，预期30/30有效、worker查询/执行480、保存概率重现480、逐帧测量510、env.step2400；干预、优化器、底座/WM更新均0。真实提前终止的计数按实际长度减少，不补零或假装16步。普通执行/保存接口错误保留本局并继续固定顺序，磁盘写入故障停止；总体门槛不通过。
 
-反馈两步完整日志。可下载check的`report.json/design.json`和evaluate的`report.json/diagnostics.json/gate.json/trials.csv/frame_metrics.csv/initial_balance.json/evaluation_manifest.json`及十张结果图，同名文件加check/evaluate前缀；不要下载模型、checkpoint、缓存、trajectory.npz或视频。新确认结果到来后再分析，原worker300失败不改写；工程PASS或数值PASS都不会自动启动T06或1M训练。
+两步完整日志及上述19个汇总/图片附件已反馈并分析。服务器模型、checkpoint、缓存、trajectory.npz和视频继续保留原处；未下载。原worker300及本轮worker350行为失败不改写；工程PASS不会自动启动T06或1M训练。后续同状态目标/版本动作诊断已实现并同步T2，语法、真实来源及全部动作索引守卫已通过，模型前向待运行，见 [新运行说明](t05_continuation_action_diagnosis.md)。本轮5阶段46文件已汇总接收到电脑，见 [汇总说明](t05_result_bundle.md)；诊断范围依据见 [本轮结果](t05_continuation_control_result_analysis.md)。
 
 中文Git提交备注：`feat: 增加T05续段修复worker350的独立自主确认`
