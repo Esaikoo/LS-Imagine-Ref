@@ -1,6 +1,8 @@
 # T05结果汇总与自动接收
 
-最新本地交付：独立原预算末4步固定修复check/train/verify已复用原汇总器，自动包含本轮、源监督check、反馈evaluate/check、诊断、原350确认和原350verify共7阶段；train再包含新check为8阶段，verify再包含新train为9阶段。原字节和SHA保留，不复制模型、NPZ轨迹或视频、不需逐文件重命名；实际新修复和打包待用户服务器运行。反馈最后`FEEDBACK_INDEX`即可继续只读接收，代码仍由用户Git同步，助手本轮没有修改或连接服务器。见 [三步运行说明](t05_within_horizon_repair.md)。
+最新真实接收：`within_horizon_repair_verify_20261009T150348` 的9阶段99文件已保存至 `C:\Users\28620\Downloads\T05Results\received_20261009T230855_4567165\T05_within_horizon_repair_verify_20261009T150348_results.json`。44593409字节，整包SHA256为 `af808fab8e8c5fde881973b76dca2c56e28a627a4548671bf5051c1d0f745426`；整包/所有文件校验通过，原6阶段68文件逐一SHA未变。check/train/verify三组80查询的10320标量、CSV/分组、三池计数、10项保留差值和train/verify最终指标独立核对一致。生产400工程通过，但保留8/10超限、旧gate/T06保持，见 [最新分析](t05_within_horizon_repair_result_analysis.md)。本次仅复用已授权只读接收，没有改服务器代码/认证配置、下载模型/NPZ轨迹/视频或执行服务器项目脚本；用户只需提供一个FEEDBACK_INDEX，无需逐文件下载/重命名。
+
+最新本地交付：350/400同状态冲突诊断已复用原汇总器，固定184真实状态/2208完整分布，自动包含新诊断、400verify/train/check、监督check、反馈evaluate/check、原诊断、350确认和350verify共10阶段。原字节和SHA保留，不复制模型、NPZ轨迹或视频，不需逐文件重命名；诊断与新打包尚待用户服务器运行。反馈最后`FEEDBACK_INDEX`即可继续只读接收，代码仍由用户Git同步，助手本轮没有修改或连接服务器。见 [单步运行说明](t05_within_horizon_conflict_diagnosis.md)。原修复三步的7/8/9阶段汇总已真实完成，见 [修复协议](t05_within_horizon_repair.md)。
 
 2026-10-09最新接收：原预算内事实监督check已经用户服务器完整PASS/WARN，自动汇总6阶段68文件（本轮、双目标反馈evaluate/check、同状态诊断、原350确认、repair verify）。已通过现有T2-3090授权只读保存到 `C:\Users\28620\Downloads\T05Results\received_20261009T193008_1714413\T05_within_horizon_supervision_check_20261009T112719_064845_results.json`，25321515字节，SHA256为 `9c00c7f1bd2017a266da47a3c7910a2756834fc0d60ae9ec43d3c19308954793`。整包/68文件SHA、原5阶段60文件未变、新6产物SHA、140原产物引用、80查询/480分布的3440标量及全部分组核对通过，无需逐文件下载或改名。见 [最新分析](t05_within_horizon_supervision_result_analysis.md)。只读取结果，没有上传/修改服务器代码、执行服务器项目脚本或下载模型/轨迹/视频；代码仍只经用户Git同步。
 
