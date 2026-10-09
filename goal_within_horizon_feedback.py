@@ -48,6 +48,9 @@ def feedback_rule():
 
 def validate_plan(plan):
     d = plan["design"]
+    # The accepted MineDojo scenario stores the world seed as a string. Keep it unchanged.
+    gl.require(plan.get("scenario", {}).get("world_seed") == "1",
+        "原场景world_seed必须保持字符串'1'，不能转换类型或更换世界")
     gl.require(plan.get("format") == FORMAT and plan.get("comparison_protocol") == PROTOCOL and
         plan.get("worker_version") == 350 and plan.get("source_worker_version") == 300 and
         plan.get("additional_updates") == 50 and plan.get("control_start_frame") == 64 and
@@ -55,7 +58,7 @@ def validate_plan(plan):
         plan.get("feedback_horizon") == 4 and plan.get("actual_endpoint_frame") == 80 and
         plan.get("maximum_new_env_steps") == 1600 and plan.get("warmup_steps") == 32 and
         len(plan["prefix_actions"]) == 32 and plan["start_actions"] == [0] * 32 + plan["prefix_actions"] and
-        plan["scenario"]["world_seed"] == 1 and plan["feedback_rule"] == feedback_rule() and
+        plan["feedback_rule"] == feedback_rule() and
         plan.get("episode_split") == {str(i): split(i) for i in range(5)} and
         plan.get("same_hidden_state") is False and plan.get("matched_start_comparison") is False and
         plan.get("behavior_accepted") is False and plan.get("t06_approved") is False and

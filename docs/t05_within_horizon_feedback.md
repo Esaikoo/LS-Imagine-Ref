@@ -70,4 +70,29 @@ evaluate必须绑定同一check、worker350、诊断、代码、目标、规则�
 
 把最后的 `FEEDBACK_INDEX=.../bundle_index.json` 发到本对话即可复用T2-3090的只读下载方式保存到本机 `C:\Users\28620\Downloads\T05Results`。这里只下载结果，不执行服务器模型/环境、不上传或修改服务器代码。一次check包和一次evaluate包互不覆盖；导出失败会独立报错，原运行产物保留。
 
-本次仅本地静态编辑、阅读接口与差异核对；没有运行本地Python、项目测试、模型、训练或环境，也没有连接/执行服务器、提交或推送。服务器check/evaluate待用户运行验收。
+初次交付仅本地静态编辑、阅读接口与差异核对；没有运行本地Python、项目测试、模型、训练或环境，也没有连接/执行服务器、提交或推送。服务器check/evaluate待用户运行验收。
+
+## 首次check故障与修复
+
+用户服务器 `within_horizon_feedback_check_20261009T055139` 通过历史SHA及冻结模型来源核对，但在新 `validate_plan` 中误拒绝正常继承的计划，尚未进入接口check或启动环境。原因是原已验收MineDojo场景保存 `scenario.world_seed` 为字符串 `"1"`，新入口误用整数 `1` 比较，两个值在Python中不相等。原350确认和check的已下载结果包均明确保存字符串；原计划/场景没有被用户修改。
+
+本地修复只改变两个新入口代码：保持原字符串 `"1"` 的严格身份校验，将世界种子错误单独提示；在服务器check中增加整数 `1`、其他世界字符串 `"2"`、无效空值的内存拒绝守卫。不转换原计划字段、不放宽世界身份、不改变种子5/20局/原16步/反馈规则/划分，不修改43个旧验收Python文件或旧报告。守卫仅在用户服务器运行check时执行，本地没有运行Python、项目测试、模型或环境。
+
+中文Git提交备注：`fix: 修复T05预算内反馈计划的世界种子类型校验`
+
+先在本地提交/推送，再由用户在服务器拉取。失败目录保留，不能复用或覆盖；在原服务器终端重新设置新目录并重跑check：
+
+```bash
+T05_FEEDBACK_DIAG="$PWD/relevance_map/t05_outputs/continuation_action_diagnose_20261009T045733_081902"
+T05_FEEDBACK_STAMP="$(date +%Y%m%dT%H%M%S)"
+T05_FEEDBACK_CHECK="$PWD/relevance_map/t05_outputs/within_horizon_feedback_check_seed_fixed_$T05_FEEDBACK_STAMP"
+T05_FEEDBACK_EVAL="$PWD/relevance_map/t05_outputs/within_horizon_feedback_evaluate_seed_fixed_$T05_FEEDBACK_STAMP"
+
+python scripts/t05_within_horizon_feedback.py check \
+  --diagnosis-dir "$T05_FEEDBACK_DIAG" \
+  --output-dir "$T05_FEEDBACK_CHECK" --device cuda:0
+```
+
+新check通过后，同一终端使用本页evaluate命令和新变量继续。原诊断不重跑，模型不重训；旧失败结果包的FAIL原样保留，自动汇总/只读接收方式不变，实际采集及T06仍未验收。
+
+失败结果已按既有授权只读接收至 `C:\Users\28620\Downloads\T05Results\received_20261009T140139_6042862\T05_within_horizon_feedback_check_20261009T055139_results.json`，4阶段36文件及整包SHA通过（整包 `d9b3877e839d79670dda1c4e2efc1f9abb34fe18c57760a92a205ca745d9da71`）。报告确认状态failed、环境步/worker查询/动作/优化器更新均0、源文件签名前后相同；原350计划warmup32/前缀32/起点frame64/预算16和初始化动作逐项一致，仅新校验把字符串世界种子误作整数。此次SSH只读取结果文件，没有修改服务器代码/原产物或执行项目脚本。修复仅完成本地静态核对及Git差异检查，服务器新check仍待用户验收。
