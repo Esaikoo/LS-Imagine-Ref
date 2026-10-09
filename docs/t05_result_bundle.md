@@ -1,5 +1,7 @@
 # T05结果汇总与自动接收
 
+2026-10-09最新本地交付：原预算内事实监督check结束后自动汇总6阶段（本轮、双目标反馈evaluate/check、同状态诊断、原350确认、repair verify），复用现有打包/接收脚本，不需要逐文件下载或改名。新增check的真实打包待用户服务器验收，见 [单步运行说明](t05_within_horizon_supervision.md)。本轮没有连接/修改服务器，代码只经用户Git同步。
+
 2026-10-09。用户确认服务器为T2-3090，已用其现有SSH配置完成一次真实结果接收。没有更改认证/安全设置、创建密钥或保存密码。只复制报告、表格、汇总图，不递归采集模型、checkpoint、缓存、逐局trajectory或视频。
 
 ## 已保存本轮结果
@@ -53,3 +55,5 @@ ZIP包含同一汇总JSON及`sources/<阶段>/<原文件名>`。两种形式都�
 最新成功诊断也已自动接收：`continuation_action_diagnose_20261009T045733_081902`的4阶段38文件保存到`Downloads/T05Results/received_20261009T130051_2757614/`，汇总19104555字节，整包SHA为`d8b9791c5132b8dcd04bdcadd5f3e1d263ddc2d093adc368db561152a15ac652`。所有内嵌字节校验通过，概率图按原字节解码用于分析。用户仅反馈终端目录/索引即可完成整包接收，无需逐个下载重命名。
 
 随后已本地实现原16步内双目标纠偏/保持采集，见 [两步运行说明](t05_within_horizon_feedback.md)。新check/evaluate在最终报告保存后复用原汇总器，显式包含本轮、check（evaluate时）、成功诊断、原350确认和repair verify，仍保持单文件反馈及原SHA，不修改已验收的汇总器/接收脚本。新入口实际打包待用户服务器运行；本次未连接/修改服务器，未执行本地Python/模型/环境或提交推送，代码继续通过Git同步。
+
+2026-10-09该新入口已真实运行并成功打包。`within_horizon_feedback_evaluate_seed_fixed_20261009T084226` 的5阶段60文件已自动接收至 `C:\Users\28620\Downloads\T05Results\received_20261009T182334_5798448\T05_within_horizon_feedback_evaluate_seed_fixed_20261009T084226_results.json`，22967169字节，整包SHA256为 `4dd4e266eb3a613b919cc1e31556fbfb9d57a934f94e94578d0b3f637349c353`。整包与全部原文件字节/SHA通过，20局/340帧/320查询/80事实动作和140个原产物SHA引用独立核对；10张PNG按原字节解码查看，见 [分析](t05_within_horizon_feedback_result_analysis.md)。只读SSH接收无需逐文件下载或改名；没有上传/修改服务器代码、下载模型/轨迹/视频、执行服务器项目脚本或本地项目Python/测试/模型/环境。旧行为失败及T06未批准原样保留。
