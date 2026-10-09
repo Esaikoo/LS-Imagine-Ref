@@ -2,7 +2,9 @@
 
 新增 `goal_within_horizon_supervision.py / scripts/t05_within_horizon_supervision.py` 的独立check。绑定已通过的 `within_horizon_feedback_evaluate_seed_fixed_20261009T084226`，读取全部20条真实历史，检查本局实际第80帧目标与原固定目标下的事实动作拟合。只有check入口，没有train/evaluate或策略执行入口。
 
-本轮只在本地静态编辑、阅读接口、核对已有结果包字段和Git差异，没有运行本地Python、项目测试、模型、训练或环境，没有连接/修改服务器、提交或推送。服务器通过用户Git同步，45个已验收Python文件与原产物保持不动。新增代码的实际检查待用户在服务器运行。
+2026-10-09服务器验收已完成：`within_horizon_supervision_check_20261009T112719_064845`完整PASS/WARN，20局/80事实查询/480分布，320原概率重现误差0、340测量和实际终点重编码通过，更新/环境步/动作执行0。6阶段68文件已只读接收到电脑，整包与各文件SHA、3440标量及全部分组独立复算一致。40个手工事实动作在六条件下mode均不匹配；目标0保持尤其弱，目标1训练纠偏仍缺失。见 [完整结果与有限修复方案](t05_within_horizon_supervision_result_analysis.md)。无需重复本check或原20局采集；用户后续授权的独立固定修复check/train/verify已本地实现，见 [新运行说明](t05_within_horizon_repair.md)，服务器训练/验收待执行。此源check的只读范围和训练批准false不改写，T06仍未批准。
+
+实现时只在本地静态编辑、阅读接口、核对已有结果包字段和Git差异，没有运行本地Python、项目测试、模型、训练或环境，没有连接/修改服务器、提交或推送。服务器通过用户Git同步，45个已验收Python文件与原产物保持不动。随后本轮结果接收仅为读取报告包，没有上传/修改服务器代码或执行服务器项目命令。
 
 ## 检查范围
 
@@ -65,7 +67,7 @@ python scripts/t05_within_horizon_supervision.py check \
 
 已知本轮目标1训练纠偏缺失应继续报告WARN；这是数据事实，不是程序失败。`training_review.json`应保留`target1_train_correction`缺覆盖，手工训练23noop/1上转/0下转、目标0偏航残留两局。其他分支和拟合结果以此次真实前向为准，不能提前填结论。
 
-最终应为`[PASS] T05_WITHIN_HORIZON_SUPERVISION_CHECK`，通常状态`passed_with_warnings`。所有`approved_for_training / behavior_accepted / t06_approved`仍为false。工程PASS不会生成新的训练批准或自主行为验收；根据完整指标再设计有限修复或另一个独立预声明开发实验，不能重划本批留出、补跑本计划或盲目加更新步数。原 [T06门槛](t05_to_t06_gate.md) 与旧失败保持。
+最终为`[PASS] T05_WITHIN_HORIZON_SUPERVISION_CHECK`，本次实际状态`passed_with_warnings`。所有`approved_for_training / behavior_accepted / t06_approved`仍为false。工程PASS不会生成新的训练批准或自主行为验收；根据完整指标再设计有限修复或另一个独立预声明开发实验，不能重划本批留出、补跑本计划或盲目加更新步数。原 [T06门槛](t05_to_t06_gate.md) 与旧失败保持。
 
 ## 自动结果包
 

@@ -83,7 +83,7 @@ worker350本轮还实际选择了一次noop：目标1/repeat4/trial18、frame79/
 
 ## 下一步范围
 
-用户后续授权继续实现后，已本地新增独立 `goal_within_horizon_supervision.py / scripts/t05_within_horizon_supervision.py check`，范围落实为下述真实末4步事后监督查询、全部来源/概率/测量复核、覆盖与只读范围报告，自动6阶段结果包。45个已验收Python不改；仅本地静态实现，没有连接/修改服务器或运行本地Python/测试/模型/环境、提交推送。当前服务器待验收，按 [单步运行说明](t05_within_horizon_supervision.md) Git同步后运行。下文“未实现”为此前分析时状态，后续以本段为准。
+后续独立 `goal_within_horizon_supervision.py / scripts/t05_within_horizon_supervision.py check` 已本地实现并于用户服务器`within_horizon_supervision_check_20261009T112719_064845`完整通过：80末4步查询/480分布、320原概率重现误差0、340测量，更新/新环境步0。6阶段68文件已只读接收并核对；40手工事实mode在六条件下均不匹配，目标0保持薄弱，实际终点仅小幅改善拟合，目标1训练纠偏仍缺失。下一步建议独立固定预算有限保持修复，尚未实现或训练；见 [新的完整监督分析](t05_within_horizon_supervision_result_analysis.md)。下文为采集结果初次分析时的历史计划；不再重复监督check、采集或补样。本次仅只读接收/复算和本地文档更新，没有修改Python或服务器代码、执行本地项目Python/测试/模型/环境或服务器项目脚本、提交推送。
 
 本轮数据接收、接口验收、距离复算与终点图核对已完成，不重复check/evaluate或补跑本计划。建议下一步先实现独立的原预算内监督check，暂不训练：
 
