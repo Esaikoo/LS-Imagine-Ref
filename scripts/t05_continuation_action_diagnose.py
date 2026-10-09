@@ -42,6 +42,7 @@ def historical_inputs(args):
     import goal_bc as bc
     import goal_library as gl
     import goal_continuation_control as confirmation
+    import goal_continuation_action_diagnose as diagnosis
     directory = baseline.project_path(args.eval_dir)
     record = legacy.read_json(directory / "report.json")
     legacy.accepted(record, "evaluate")
@@ -114,6 +115,12 @@ def historical_inputs(args):
             gl.require(not Path(name).is_absolute() and directory in path.parents and path.is_file() and
                        bc.file_hash(path) == digest, f"原真实产物缺失或SHA256不同：{name}")
             files.append(path)
+    # Check the real recorder schema before loading either inference model.
+    for row in rows:
+        trial_dir = baseline.project_path(row["artifact_dir"])
+        diagnosis.validate_saved_history(legacy.read_json(trial_dir / "metrics.json"),
+            legacy.read_json(trial_dir / "history_check.json"), row, plan["control_start_frame"],
+            plan["control_start_frame"] + plan["horizon"] + 1)
     files += [directory / "report.json", directory / "evaluation_manifest.json",
               *[checked_dir / n for n in ("report.json", "design.json", "targets.npz")], *[ROOT / n for n in CODE]]
     return dict(record=record, manifest=manifest, checked_dir=checked_dir, context=context), \
@@ -170,6 +177,35 @@ def load_policies(args, report, source):
         state_source="each SHA256-bound worker350 real history; saved causal features only; no RSSM reconstruction")
     report.check("strict_frozen_versions", "PASS", "生产300与350严格独立推理；共用底座/WM/目标表示，无优化器或RSSM构造")
     return {"300": policy300, "350": policy350}, library, bank
+
+
+def saved_history_contract_checks(report, metrics, history, row, first, total_frames):
+    import goal_continuation_action_diagnose as diagnosis
+
+    # The real autonomous recorder never writes saved_history_roundtrip.
+    # Acceptance comes from its SHA256-bound own-history fields and matching error.
+    original_schema = copy.deepcopy(history)
+    original_schema.pop("saved_history_roundtrip", None)
+    diagnosis.validate_saved_history(metrics, original_schema, row, first, total_frames)
+    for key, value in (("own_causal_history_passed", False), ("reset_is_real", False),
+                       ("comparison_to_other_histories", True), ("start_frame", first + 1),
+                       ("total_frames", total_frames - 1)):
+        changed = dict(original_schema, **{key: value}, saved_history_roundtrip=True)
+        t02.rejection(report, f"history_{key}_guard", lambda h=changed: diagnosis.validate_saved_history(
+            metrics, h, row, first, total_frames), "因果历史")
+    for name, changed in (("missing", {k: v for k, v in original_schema.items() if k != "maximum_absolute_error"}),
+                          ("mismatch", dict(original_schema, maximum_absolute_error=history["maximum_absolute_error"] + 1)),
+                          ("nonfinite", dict(original_schema, maximum_absolute_error=float("nan")))):
+        t02.rejection(report, f"history_error_{name}_guard", lambda h=changed: diagnosis.validate_saved_history(
+            metrics, h, row, first, total_frames), "误差")
+    changed = copy.deepcopy(row)
+    changed["video"]["frames"] = total_frames - 1
+    t02.rejection(report, "history_video_frames_guard", lambda: diagnosis.validate_saved_history(
+        changed, original_schema, changed, first, total_frames), "视频")
+    changed = dict(metrics, own_history_max_error=row["own_history_max_error"] + 1)
+    t02.rejection(report, "history_metrics_guard", lambda: diagnosis.validate_saved_history(
+        changed, original_schema, row, first, total_frames), "指标")
+    report.check("saved_history_schema_contract", "PASS", "原自主历史无需参考历史专用字段；真实重置/自身历史/边界/误差/视频仍严格核对，内存负守卫不写轨迹")
 
 
 def contract_checks(report, arrays, events, trace, measured, plan):
@@ -284,14 +320,12 @@ def analyze(args, report, source):
         trace = legacy.read_json(directory / "control_trace.json")
         measured = legacy.read_json(directory / "frame_metrics.json")
         history = legacy.read_json(directory / "history_check.json")
-        gl.require(legacy.read_json(directory / "metrics.json") == row and
-            history.get("own_causal_history_passed") is True and history.get("saved_history_roundtrip") is True and
-            history.get("reset_is_real") is True and history.get("comparison_to_other_histories") is False and
-            history.get("start_frame") == 64 and history.get("total_frames") == 81 and
-            row["saved_execution_verified"] is True and row["video_verified"] is True and row["video"]["frames"] == 81,
-            "必须保留本局完整已验收真实因果历史/视频，不复制另一局状态")
+        metrics_record = legacy.read_json(directory / "metrics.json")
+        diagnosis.validate_saved_history(metrics_record, history, row, plan["control_start_frame"], len(arrays["image"]))
         queries = diagnosis.validate_queries(arrays, events, trace, measured, plan, index)
         if index == 0:
+            saved_history_contract_checks(report, metrics_record, history, row,
+                                          plan["control_start_frame"], len(arrays["image"]))
             contract_checks(report, arrays, events, trace, measured, plan)
         start = legacy.read_json(directory / "start.json")
         gl.require(start.get("control_start_frame") == 64 and start.get("own_real_history_only") is True and
@@ -386,6 +420,7 @@ def analyze(args, report, source):
     output_manifest["diagnosis_id"] = gl.tensor_digest({}, output_manifest)
     baseline.write_json(report.directory / "diagnosis_manifest.json", output_manifest)
     report.data.update(diagnosis_id=output_manifest["diagnosis_id"], diagnosed_trials=30, query_frames=480,
+        saved_history_records_verified=30,
         diagnostic_distribution_rows=4800, terminal_query_frames=60, probability_roundtrip_frames=480,
         measurement_roundtrip_frames=510, maximum_probability_error=maximum_error,
         same_state_within_query=True, same_state_across_trials=False)
@@ -418,6 +453,7 @@ def main():
         return 2
     report = Report(directory, args)
     report.data.update(optimizer_updates=0, new_env_steps=0, worker_control_actions=0,
+        source_saved_history_records_verified=30,
         counterfactual_env_steps=0, behavior_accepted=False, t06_approved=False,
         feedback_policy="automatic single lossless metadata/images JSON after final report; no raw data/models/videos")
     print(f"OUTPUT_DIR={directory}", flush=True)
@@ -435,6 +471,7 @@ def main():
         bc.require_disk_space(directory, 160 * 1024**2)
         report.require_writable()
         report.check("historical_identity", "PASS", "完整350确认/check/固定50步latest/verify及真实产物和40个旧代码SHA绑定；旧行为失败保持")
+        report.check("source_saved_history_schema", "PASS", "全部30局原自主历史格式、逐局指标、误差及81帧视频验收标志一致；不要求参考历史专用字段")
         rng = bc.capture_rng(args.device)
         with torch.no_grad():
             analyze(args, report, source)

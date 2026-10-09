@@ -9,6 +9,26 @@ FORMAT = "ls_imagine_continuation_action_diagnosis_v1"
 VERSIONS = ("300", "350")
 
 
+def validate_saved_history(metrics, history, row, first, total_frames):
+    """Validate the autonomous recorder's schema, not the reference-history schema."""
+    choices.require(type(first) is int and type(total_frames) is int and 0 <= first < total_frames,
+                    "真实因果历史边界异常")
+    choices.require(metrics == row, "逐trial指标与原manifest不同")
+    choices.require(isinstance(history, dict) and
+                    history.get("own_causal_history_passed") is True and
+                    history.get("reset_is_real") is True and
+                    history.get("comparison_to_other_histories") is False and
+                    history.get("start_frame") == first and history.get("total_frames") == total_frames,
+                    "必须保留本局已验收真实因果历史/重置/边界，不能复制另一局状态")
+    error = history.get("maximum_absolute_error")
+    choices.require(type(error) in (int, float) and np.isfinite(error) and error >= 0 and
+                    type(row.get("own_history_max_error")) in (int, float) and
+                    error == row["own_history_max_error"], "真实因果历史误差缺失、无效或与原指标不同")
+    choices.require(row.get("saved_execution_verified") is True and row.get("video_verified") is True and
+                    isinstance(row.get("video"), dict) and row["video"].get("frames") == total_frames,
+                    "必须保留本局已验收执行与完整解码视频")
+
+
 def validate_queries(arrays, events, trace, measured, plan, index):
     choices.require(type(plan.get("design", {}).get("randomization_seed")) is int and
                     plan["design"]["randomization_seed"] == 4, "真实计划随机种子缺失或不同")
