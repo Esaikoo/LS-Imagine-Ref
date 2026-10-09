@@ -570,6 +570,11 @@ def contract_checks(report, plan):
     changed = copy.deepcopy(plan)
     changed["feedback_start_frame"] = 80
     t02.rejection(report, "after_horizon_feedback_guard", lambda: protocol.validate_plan(changed), "计划")
+    for value in (1, "2", None):
+        changed = copy.deepcopy(plan)
+        changed["scenario"]["world_seed"] = value
+        t02.rejection(report, "world_seed_type_guard" if type(value) is int else "world_seed_identity_guard",
+            lambda changed=changed: protocol.validate_plan(changed), "world_seed")
     endpoint = dict(image=arrays["image"][80].copy(), heatmap=arrays["heatmap"][80].copy(), goal_feature=np.array([1., 0.], np.float32))
     queries = [dict(state_frame=76 + o, incoming_action_frame=77 + o, remaining=4 - o,
                    actual_action=trace["action_ids"][12 + o], decision_source=trace["decision_sources"][12 + o]) for o in range(4)]
