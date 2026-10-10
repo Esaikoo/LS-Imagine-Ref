@@ -88,6 +88,49 @@ def validate_queries(rows, expected):
         validate_query(row, identity)
 
 
+def historical_goal_bindings(data):
+    """Map original evaluation contexts without changing the six main conditions."""
+    result = []
+    for pool, arrays, runs in pools(data):
+        if pool == "within80":
+            continue
+        for source in ("own_real_endpoint", "fixed_old_targets"):
+            for index in range(POOL_SIZES[pool]):
+                run = runs[int(arrays["run"][index])]
+                target = int(arrays["target"][index])
+                selected = arrays["goals"][index] if source == "own_real_endpoint" else data.fixed_goals[target]
+                alternate, donor = data.fixed_goals[1-target], None
+                if pool == "reference" and source == "own_real_endpoint":
+                    candidates = [i for i,item in enumerate(runs)
+                                  if item["repeat"] == run["repeat"] and item["target"] != target]
+                    gl.require(len(candidates) == 1, "旧参考实际交换目标需要同repeat唯一另一目标局")
+                    donor = runs[candidates[0]]
+                    indices = np.flatnonzero(arrays["run"] == candidates[0])
+                    gl.require(len(indices) == 16 and donor["endpoint_frame"] == run["endpoint_frame"] == 80 and
+                        bool(arrays["train"][indices[0]]) == bool(arrays["train"][index]),
+                        "旧参考实际交换目标必须同repeat/同划分，仅作评价")
+                    alternate = arrays["goals"][indices[0]]
+                result.append(dict(pool=pool, pool_row=index, run=int(arrays["run"][index]),
+                    state_frame=int(arrays["frame"][index]), remaining=int(arrays["remaining"][index]),
+                    goal_source=source, goal_sha256=sha(selected), historical_swapped_goal_sha256=sha(alternate),
+                    historical_swapped_goal_source="opposite_episode_actual_endpoint_same_repeat" if donor else "opposite_fixed_visual_target",
+                    donor_trajectory_path=donor["trajectory_path"] if donor else None,
+                    donor_trajectory_sha256=donor["trajectory_sha256"] if donor else None,
+                    donor_run=candidates[0] if donor else None,
+                    main_swapped_goal_source="opposite_fixed_visual_target",
+                    main_swapped_goal_sha256=sha(data.fixed_goals[1-target]),
+                    historical_swap_has_distinct_context=donor is not None,
+                    evaluation_only=True, approved_for_training=False, endpoint_label_replaced=False))
+    gl.require(len(result) == 208, "旧保留目标来源/交换上下文有遗漏")
+    return result
+
+
+def validate_historical_binding(binding, expected):
+    gl.require(binding == expected and binding.get("evaluation_only") is True and
+        binding.get("approved_for_training") is False and binding.get("endpoint_label_replaced") is False,
+        "旧保留目标来源/交换上下文不同；不能将另一局评价目标替换本局标签")
+
+
 def compare(versions, action_names):
     """Raw margins cancel additive common offsets; changes are descriptive."""
     gl.require(set(versions) == {"350", "400"} and len(action_names) == 12 and

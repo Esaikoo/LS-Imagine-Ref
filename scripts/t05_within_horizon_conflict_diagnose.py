@@ -210,34 +210,104 @@ def within_roundtrip(row, original, probabilities, raw, metrics, version):
     return maximum
 
 
-def retained_roundtrip(rows, source):
+def retained_roundtrip(rows, source, data, policies, device, report):
     import numpy as np
     import goal_library as gl
-    maximum = 0.
-    for version in ("350", "400"):
-        saved = source["retained_metrics"][version]
-        gl.require(len(saved) == 208, "原参考/84帧保留评价缺失")
-        for pool, saved_pool in (("reference","reference"), ("retained84","retained84_evaluation")):
+    import goal_reference_repair as reference
+    import goal_continuation_repair as continuation
+    import goal_within_horizon_conflict_diagnose as diagnosis
+    bindings = diagnosis.historical_goal_bindings(data)
+    baseline.write_json(report.directory / "historical_goal_bindings.json", bindings)
+    first = bindings[0]
+    altered = dict(first, historical_swapped_goal_source="opposite_fixed_visual_target")
+    t02.rejection(report, "historical_swap_source_guard",
+        lambda:diagnosis.validate_historical_binding(altered,first), "旧保留目标来源")
+    maximum, checks, mismatches, replay_rows = 0., [], [], []
+    def values(record, condition):
+        return {key:record[condition+"_"+key] for key in ("probability","nll","mode","match")}
+    def compare(context, expected, observed):
+        nonlocal maximum
+        failures = []
+        for key in ("probability", "nll"):
+            if not np.isclose(observed[key],expected[key],atol=3e-5,rtol=3e-5):
+                failures.append(key)
+        for key in ("mode", "match"):
+            if observed[key] != expected[key]:
+                failures.append(key)
+        difference = dict(probability=observed["probability"]-expected["probability"],
+                          nll=observed["nll"]-expected["nll"])
+        maximum = max(maximum,abs(difference["probability"]))
+        record = dict(context, expected=expected, observed=observed, difference=difference,
+                      passed=not failures, failed_metrics=failures)
+        checks.append(record)
+        if failures:
+            mismatches.append(record)
+    for version,policy in policies.items():
+        # The accepted evaluators need only these three inference attributes.
+        # This is not a Trainer: no constructor, optimizer, sampler or update.
+        inference = SimpleNamespace(data=data,model=policy,device=device)
+        native = []
+        for goal_source in ("own_real_endpoint", "fixed_old_targets"):
+            native.extend(dict(pool="reference",**r) for r in reference.reference_predictions(inference,goal_source))
+            native.extend(dict(pool="retained84_evaluation",**r) for r in continuation.continuation_predictions(inference,goal_source))
+        replay_rows.extend(dict(evaluated_worker_version=version,**r) for r in native)
+        saved = source["retained_metrics"][str(version)]
+        gl.require(len(saved) == len(native) == 208, "原参考/84帧保留评价缺失")
+        for pool,saved_pool in (("reference","reference"), ("retained84","retained84_evaluation")):
             selected = [r for r in rows if r["pool"] == pool]
-            for goal_source, goal_condition in (("own_real_endpoint","actual_endpoint"), ("fixed_old_targets","fixed_goal")):
+            for goal_source,goal_condition in (("own_real_endpoint","actual_endpoint"), ("fixed_old_targets","fixed_goal")):
                 original = [r for r in saved if r["pool"] == saved_pool and r["goal_source"] == goal_source]
-                gl.require(len(original) == len(selected), "原保留事实重复或遗漏")
-                for row, previous in zip(selected,original):
-                    gl.require(previous["run" if pool == "reference" else "trial_index"] == row["run"] and
-                        previous["frame"] == row["state_frame"] and previous["next_action_frame"] == row["incoming_action_frame"] and
-                        previous["remaining"] == row["remaining"] and previous["label"] == row["actual_action"] and
-                        previous["split"] == row["episode_split"] and
-                        (pool != "reference" or previous["target"] == row["target"]), "原保留状态/动作/划分或预算不同")
-                    m = row["versions"][version]["metrics"]
-                    for name, condition in (("goal",goal_condition), ("no_goal","no_goal"), ("zero_goal","zero_goal"),
-                                            ("base","base"), ("swapped_goal","swapped_goal")):
-                        p, nll = m[condition+"_factual_probability"], m[condition+"_factual_nll"]
-                        gl.require(np.isclose(p,previous[name+"_probability"],atol=3e-5,rtol=3e-5) and
-                            np.isclose(nll,previous[name+"_nll"],atol=3e-5,rtol=3e-5) and
-                            m[condition+"_mode"] == previous[name+"_mode"] and
-                            m[condition+"_mode_matches_factual"] == previous[name+"_match"],
-                            "原350/400参考或84帧事实概率/NLL/mode重现不同")
-                        maximum = max(maximum, abs(p-previous[name+"_probability"]))
+                reproduced = [r for r in native if r["pool"] == saved_pool and r["goal_source"] == goal_source]
+                contexts = [r for r in bindings if r["pool"] == pool and r["goal_source"] == goal_source]
+                gl.require(len(original) == len(reproduced) == len(contexts) == len(selected), "原保留事实重复或遗漏")
+                for row,previous,current,binding in zip(selected,original,reproduced,contexts):
+                    run_key = "run" if pool == "reference" else "trial_index"
+                    expected = {run_key:row["run"], "frame":row["state_frame"], "next_action_frame":row["incoming_action_frame"],
+                        "remaining":row["remaining"], "label":row["actual_action"], "split":row["episode_split"], "goal_source":goal_source}
+                    if pool == "reference":
+                        expected["target"] = row["target"]
+                    gl.require(all(record.get(k) == v for record in (previous,current) for k,v in expected.items()) and
+                        binding["run"] == row["run"] and binding["state_frame"] == row["state_frame"],
+                        "原保留状态/动作/划分/预算或交换上下文不同")
+                    m = row["versions"][str(version)]["metrics"]
+                    for name,condition in (("goal",goal_condition), ("no_goal","no_goal"), ("zero_goal","zero_goal"),
+                                           ("base","base"), ("swapped_goal","swapped_goal")):
+                        identity = dict(version=version,pool=pool,goal_source=goal_source,run=row["run"],
+                            query_index=row["query_index"],frame=row["state_frame"],remaining=row["remaining"],
+                            actual_action=row["actual_action"],historical_condition=name,
+                            main_condition=None if name == "swapped_goal" and binding["historical_swap_has_distinct_context"] else condition,
+                            historical_input_goal_sha256=binding["historical_swapped_goal_sha256"] if name == "swapped_goal" else binding["goal_sha256"])
+                        compare(dict(identity,comparison="historical_batch_vs_saved"),values(previous,name),values(current,name))
+                        # Original reference own-endpoint swap uses the opposite
+                        # episode endpoint; the main swap always uses fixed goals.
+                        # That historical condition is fully checked above.
+                        if name == "swapped_goal" and binding["historical_swap_has_distinct_context"]:
+                            continue
+                        observed = dict(probability=m[condition+"_factual_probability"],nll=m[condition+"_factual_nll"],
+                            mode=m[condition+"_mode"],match=m[condition+"_mode_matches_factual"])
+                        compare(dict(identity,comparison="main_scalar_vs_historical_batch"),values(current,name),observed)
+    gl.require(len(replay_rows) == 416 and len(checks) == 4032, "旧保留2080历史/1952同语义核对有遗漏")
+    result = dict(format=diagnosis.FORMAT,atol=3e-5,rtol=3e-5,historical_batch_contexts=8,
+        historical_distribution_checks=2080,main_same_semantics_checks=1952,
+        historical_reference_actual_swap_distribution_checks=128,
+        historical_reference_actual_swap_role="opposite episode actual endpoint, same repeat and split; evaluation only",
+        main_swapped_goal_role="opposite fixed visual target for all184 queries",
+        maximum_probability_error=maximum,passed=not mismatches,checks=checks,mismatches=mismatches,
+        approved_for_training=False,endpoint_label_replaced=False)
+    baseline.write_json(report.directory / "retained_replay_metrics.json", replay_rows)
+    baseline.write_json(report.directory / "retained_roundtrip.json", result)
+    report.data.update(historical_roundtrip_verified=not mismatches,historical_replay_distribution_rows=2080,
+        historical_main_same_semantics_checks=1952,historical_swap_context_distribution_rows=128,
+        historical_roundtrip_mismatches=len(mismatches))
+    if mismatches:
+        first = mismatches[0]
+        gl.require(False, "原350/400参考或84帧事实概率/NLL/mode重现不同："+
+            f"version={first['version']} pool={first['pool']} run={first['run']} frame={first['frame']} " +
+            f"source={first['goal_source']} condition={first['historical_condition']} " +
+            f"comparison={first['comparison']} failed={first['failed_metrics']} " +
+            f"expected={first['expected']} observed={first['observed']}；详见retained_roundtrip.json")
+    report.check("historical_goal_context_roundtrip","PASS",
+        "原64/40批量、目标来源与2080条件重放；参考实际交换另用同repeat另一局真实终点，仅评价；1952同语义主查询核对，容差不变")
     return maximum
 
 
@@ -333,7 +403,12 @@ def analyze(args, report, source):
             rows.append(row)
             if len(rows)%16 == 0 or len(rows) == 184:
                 print(f"[CONFLICT DIAGNOSE {len(rows)}/184] pool={row['pool']} frame={row['state_frame']} remaining={row['remaining']}",flush=True)
-    maximum = max(maximum,retained_roundtrip(rows,source))
+    # Preserve complete, unapproved diagnostic output before acceptance checks.
+    # A failed run remains failed and cannot be used as an accepted artifact.
+    baseline.write_json(report.directory/"queries.json",rows)
+    baseline.write_csv(report.directory/"frame_metrics.csv",diagnosis.flat_rows(rows,names))
+    report.data.update(comparison_queries_complete=True,historical_roundtrip_verified=False)
+    maximum = max(maximum,retained_roundtrip(rows,source,data,policies,args.device,report))
     altered = copy.deepcopy(rows[0]["versions"])
     altered["400"]["raw_preferences"]["base"][0] += 1
     t02.rejection(report,"base_version_guard",lambda:diagnosis.compare(altered,names),"同状态350/400冻结底座")
