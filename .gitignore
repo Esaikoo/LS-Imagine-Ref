@@ -4,6 +4,9 @@ __pycache__/
 # Ignore the npz_analysis_log data folder
 npz_analysis_log
 
+# Ignore the npz_analysis_log data folder
+ckpt
+
 # Ignore the relevance map test data folder
 relevance_map/*
 !relevance_map/*.py
@@ -50,3 +53,32 @@ weights/*
 
 # Ignore DynDream_exprs.sh
 DynDream_exprs.sh
+
+# Goal Horizon research: source and docs tracked, generated artifacts ignored
+/research/goal_horizon/outputs/
+/research/goal_horizon/data/
+/research/goal_horizon/cache/
+/research/goal_horizon/checkpoints/
+/research/goal_horizon/logs/
+/research/goal_horizon/artifacts/
+/research/goal_horizon/**/__pycache__/
+/research/goal_horizon/**/.pytest_cache/
+/research/goal_horizon/**/.mypy_cache/
+/research/goal_horizon/**/.ruff_cache/
+/research/goal_horizon/**/.coverage*
+/research/goal_horizon/**/htmlcov/
+/research/goal_horizon/**/events.out.tfevents.*
+/research/goal_horizon/**/*.pt
+/research/goal_horizon/**/*.pth
+/research/goal_horizon/**/*.ckpt
+/research/goal_horizon/**/*.safetensors
+/research/goal_horizon/**/*.onnx
+/research/goal_horizon/**/*.npz
+/research/goal_horizon/**/*.npy
+/research/goal_horizon/**/*.h5
+/research/goal_horizon/**/*.hdf5
+/research/goal_horizon/**/*.pkl
+/research/goal_horizon/**/*.pickle
+/research/goal_horizon/**/*.parquet
+/research/goal_horizon/**/*.arrow
+/research/goal_horizon/**/*.zip
