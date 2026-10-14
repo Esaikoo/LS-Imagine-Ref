@@ -1,6 +1,9 @@
 # Ignore all __pycache__ folders in the project
 __pycache__/
 
+# Ignore the ckpt data folder
+ckpt
+
 # Ignore the entire Minecraft folder
 affordance_map/datasets/Minecraft/
 
