@@ -11,6 +11,7 @@ from torch import nn
 
 import networks
 import tools
+from search_a import SearchOutcomeHead
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -23,6 +24,10 @@ def probability_to_bool(input_tensor, jump_prob=1.0):
     bool_tensor = bool_tensor & random_mask
     
     return bool_tensor
+
+def config_search_weight(config):
+    return float(getattr(config, "search_a_loss_weight", 1.0))
+
 
 class RewardEMA:
     """running mean and std"""
@@ -46,7 +51,7 @@ class WorldModel(nn.Module):
         super(WorldModel, self).__init__()
         self._use_amp = True if config.precision == 16 else False
         self._config = config
-        shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()} # 'image': (64, 64, 3)
+        shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items() if not k.startswith("search_")} # 'image': (64, 64, 3)
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
         self.embed_size = self.encoder.outdim
         self.dynamics = networks.RSSM(
@@ -156,6 +161,17 @@ class WorldModel(nn.Module):
             name="accumulated_reward",
         )
        
+        # APM-IMAGINE A STAGE: trainable observation-outcome predictor.
+        self.search_a = None
+        if config.search_a_enabled:
+            if config.num_actions != 12 or config.batch_length <= config.search_a_horizon:
+                raise ValueError("A requires 12 actions and batch_length > horizon")
+            # Enabling A must not perturb initialization of the original Actor.
+            with torch.random.fork_rng(devices=[]):
+                self.search_a = SearchOutcomeHead(
+                    feat_size, config.search_a_horizon, config.search_a_hidden,
+                    config.search_a_future_weight, config.search_a_event_weight)
+
         for name in config.grad_heads:
             assert name in self.heads, name
 
@@ -341,7 +357,22 @@ class WorldModel(nn.Module):
                     
                     model_loss = sum(scaled.values()) + kl_loss
 
-            metrics = self._model_opt(torch.mean(model_loss), self.parameters())
+            # APM-IMAGINE A STAGE: real executed H-step windows, no imagined labels.
+            a_loss = torch.zeros((), device=model_loss.device)
+            a_metrics = {}
+            train_a = (self.search_a is not None and self._config.search_a_train
+                       and config_search_weight(self._config) > 0)
+            if train_a:
+                with torch.cuda.amp.autocast(self._use_amp):
+                    a_loss, a_metrics, counts, positives = self.search_a.training_loss(
+                        self.dynamics.get_feat(post), data)
+            total_loss = torch.mean(model_loss) + (
+                config_search_weight(self._config) * a_loss)
+            metrics = self._model_opt(total_loss, self.parameters())
+            if train_a and torch.isfinite(a_loss):
+                self.search_a.record_supervision(counts, positives)
+            for a_key, a_val in a_metrics.items():
+                metrics[a_key] = to_np(a_val)
 
         metrics.update({f"{name}_loss": to_np(torch.mean(loss)) for name, loss in losses.items()})
         if zoomed_num > 0:
@@ -421,7 +452,7 @@ class WorldModel(nn.Module):
         obs.pop("intrinsic_on_zoomed", None)
 
         if "discount" in obs:
-            obs["discount"] *= self._config.discount
+            obs["discount"] = obs["discount"] * self._config.discount
             obs["discount"] = torch.Tensor(obs["discount"]).unsqueeze(-1)
         # 'is_first' is necesarry to initialize hidden state at training
         assert "is_first" in obs
@@ -582,21 +613,22 @@ class ImagBehavior(nn.Module):
                     # check if checking_state can jump
                     jump_tensor = jump_indicator(checking_state) # [N, 1]
                     end_factor = is_end(checking_state) # [N, 1]
-                    indices = probability_to_bool(jump_tensor * (1.0 - end_factor), self.jump_prob).squeeze() # [N]
+                    indices = probability_to_bool(jump_tensor * (1.0 - end_factor), self.jump_prob).squeeze(-1) # [N]
                     jump_record = torch.cat((jump_record, indices.unsqueeze(0)), dim=0) # [L, N]
 
                     jump_state = {} # [X, xx, xx]
                     for key, tensor in checking_state.items():
                         jump_state[key] = tensor[indices]
 
-                    # for states identified as requiring a jumpy transition, execute long-term imagination.
-                    _, state_after_jumping, _ = self._jumpy(
-                        jump_state, self.actor, 1
-                    )
+                    if indices.any():
+                        # for states identified as requiring a jumpy transition, execute long-term imagination.
+                        _, state_after_jumping, _ = self._jumpy(
+                            jump_state, self.actor, 1
+                        )
 
-                    _, state_after_jumping, _ = self._imagine(
-                        state_after_jumping, self.actor, 1
-                    ) # [X, xx, xx]
+                        _, state_after_jumping, _ = self._imagine(
+                            state_after_jumping, self.actor, 1
+                        ) # [X, xx, xx]
 
                     # For other states, execute short-term imagination.
                     _, state_after_imagination, ac = self._imagine(
@@ -606,8 +638,9 @@ class ImagBehavior(nn.Module):
                     # save action for this step to imag_action
                     imag_action = torch.cat((imag_action, ac.unsqueeze(0)), dim=0)
  
-                    for key in state_after_imagination:
-                        state_after_imagination[key][indices] = state_after_jumping[key]
+                    if indices.any():
+                        for key in state_after_imagination:
+                            state_after_imagination[key][indices] = state_after_jumping[key]
 
                     for key in imag_state:
                         imag_state[key] = torch.cat((imag_state[key], state_after_imagination[key].unsqueeze(0)), dim=0)
@@ -632,33 +665,34 @@ class ImagBehavior(nn.Module):
                 max_values, _ = zoom_indices.max(dim=0, keepdim=True)
                 max_mask = (zoom_indices == max_values)
                 zoom_indices *= max_mask.float()
-                zoom_indices = probability_to_bool(zoom_indices, self.jump_prob).squeeze() # [L, N]
+                zoom_indices = probability_to_bool(zoom_indices, self.jump_prob).squeeze(-1) # [L, N]
 
                 new_num = torch.sum(zoom_indices) # Y
 
                 for key, tensor in imag_state.items():
                     new_state[key] = tensor[zoom_indices] # [Y, xx, xx]
 
-                _, new_state_after_jump, _ = self._jumpy(
-                    new_state, self.actor, 1
-                ) 
+                if new_num > 0:
+                    _, new_state_after_jump, _ = self._jumpy(
+                        new_state, self.actor, 1
+                    )
 
-                _, new_state_after_jump, _ = self._imagine(
-                    new_state_after_jump, self.actor, 1
-                ) 
+                    _, new_state_after_jump, _ = self._imagine(
+                        new_state_after_jump, self.actor, 1
+                    )
 
-                new_feat, new_state_sequence, new_action = self._imagine(
-                    new_state_after_jump, self.actor, self._config.imag_horizon
-                ) # [L, N, xx, xx]
+                    new_feat, new_state_sequence, new_action = self._imagine(
+                        new_state_after_jump, self.actor, self._config.imag_horizon
+                    ) # [L, N, xx, xx]
 
-                new_jump_record = torch.zeros((self._config.imag_horizon, new_num), device=self._config.device) # [L, Y]
+                    new_jump_record = torch.zeros((self._config.imag_horizon, new_num), device=self._config.device) # [L, Y]
 
-                for key, tensor in imag_state.items():
-                    imag_state[key] = torch.cat((tensor, new_state_sequence[key]), dim=1) # [L, N+Y, xx, xx]
+                    for key, tensor in imag_state.items():
+                        imag_state[key] = torch.cat((tensor, new_state_sequence[key]), dim=1) # [L, N+Y, xx, xx]
 
-                imag_feat = torch.cat((imag_feat, new_feat), dim=1) # [L, N+Y, xx]
-                imag_action = torch.cat((imag_action, new_action), dim=1) # [L, N+Y, 12]
-                jump_record = torch.cat((jump_record, new_jump_record), dim=1) # [L, N+Y]
+                    imag_feat = torch.cat((imag_feat, new_feat), dim=1) # [L, N+Y, xx]
+                    imag_action = torch.cat((imag_action, new_action), dim=1) # [L, N+Y, 12]
+                    jump_record = torch.cat((jump_record, new_jump_record), dim=1) # [L, N+Y]
 
                 imagination_num_tensor = torch.tensor(state_num, dtype=torch.float32, device=imag_feat.device)
                 

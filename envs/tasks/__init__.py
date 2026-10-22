@@ -1,3 +1,4 @@
+import copy
 from omegaconf import OmegaConf
 from envs.tasks.minedojo import make_minedojo
 
@@ -6,7 +7,7 @@ CUTOM_TASK_SPECS = OmegaConf.to_container(OmegaConf.load("envs/tasks/task_specs.
 def get_specs(task, **kwargs):
     # Get task data and task id
     if task in CUTOM_TASK_SPECS:
-        yaml_specs = CUTOM_TASK_SPECS[task].copy()
+        yaml_specs = copy.deepcopy(CUTOM_TASK_SPECS[task])
         task_id = yaml_specs.pop("task_id", task)
         assert "sim" in yaml_specs, "task_specs.yaml must define sim attribute"
     else:

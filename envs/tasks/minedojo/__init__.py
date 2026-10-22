@@ -1,4 +1,6 @@
 from typing import Dict
+import copy
+from search_evidence import SearchEvidenceWrapper, lidar_rays
 from omegaconf import OmegaConf
 from minedojo.tasks import MetaTaskBase, _meta_task_make, _parse_inventory_dict, ALL_TASKS_SPECS
 from minedojo.sim import MineDojoSim
@@ -8,7 +10,7 @@ from envs.tasks.minedojo.wrappers import *
 
 def _get_minedojo_specs(task_id, task_specs, sim_specs):
     if task_id in ALL_TASKS_SPECS:
-        minedojo_specs = ALL_TASKS_SPECS[task_id]
+        minedojo_specs = copy.deepcopy(ALL_TASKS_SPECS[task_id])
         if OmegaConf.is_config(minedojo_specs):
             minedojo_specs = OmegaConf.to_container(minedojo_specs)
         minedojo_specs.pop("prompt", None)
@@ -55,6 +57,7 @@ def _add_wrappers(
     concentration_specs: Dict = None,
     fast_reset: int = None,
     log_dir: str = None,
+    search_evidence_specs: Dict = None,
     freeze_equipped: bool = True,
     **kwargs
 ):
@@ -83,6 +86,7 @@ def _add_wrappers(
         concentration_reward = MinedojoConcentrationReward(unet_checkpoint_dir=unet_checkpoint_dir, output_dir=log_dir, gaussian_sigma_weight=gaussian_sigma_weight)
         env = ConcentrationWrapper(env, concentration_reward, **concentration_specs)
 
+    env = SearchEvidenceWrapper(env, **(search_evidence_specs or {}))
     env = MinedojoLSImagineWrapper(env, **LS_Imagine_specs)
 
     # If we don't care about start position, use fast reset to speed training and prevent memory leaks
@@ -105,6 +109,14 @@ def make_minedojo(task_id: str, task_specs, sim_specs):
     # Get minedojo specs
     meta_task_cls, minedojo_specs = _get_minedojo_specs(task_id, task_specs, sim_specs)
     
+    evidence = task_specs.get("search_evidence_specs", {})
+    # Eval/off modes explicitly disable the extra sensor.
+    minedojo_specs["use_lidar"] = bool(evidence.get("enabled", False))
+    if minedojo_specs["use_lidar"]:
+        minedojo_specs["lidar_rays"] = lidar_rays(evidence.get("distance", 32.0))
+    if task_specs.get("simulator_seed") is not None:
+        minedojo_specs["seed"] = task_specs["simulator_seed"]
+        minedojo_specs["world_seed"] = task_specs["simulator_seed"]
     # Make minedojo env
     env = _meta_task_make(meta_task_cls, **minedojo_specs)
     env = _add_wrappers(env, task_id, **task_specs)

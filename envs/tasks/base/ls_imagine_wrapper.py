@@ -6,6 +6,7 @@ import cv2
 from collections import OrderedDict
 
 import copy
+from search_evidence import SEARCH_LABEL_KEYS, empty_labels
 
 BASIC_ACTIONS = {
     "noop": dict(),
@@ -81,6 +82,9 @@ class LSImagineWrapper(Wrapper, ABC):
             }
         )
 
+        for key in SEARCH_LABEL_KEYS:
+            self.observation_space.spaces[key] = spaces.Box(0, 2, shape=(), dtype=np.float32)
+
         self.action_space = spaces.discrete.Discrete(len(BASIC_ACTIONS))
         self.action_space.discrete = True
         self._repeat = repeat
@@ -124,6 +128,7 @@ class LSImagineWrapper(Wrapper, ABC):
         return obs, reward, done, info
 
     def _obs(self, obs):
+        evidence = {key: np.float32(obs.get(key, value)) for key, value in empty_labels().items()}
         image = obs['rgb'] # 3 * H * W
         image = image.transpose(1, 2, 0).astype(np.uint8) # H * W * 3
         image = cv2.resize(image, (64, 64)) # 64 * 64 * 3
@@ -158,6 +163,7 @@ class LSImagineWrapper(Wrapper, ABC):
             'accumulated_reward': obs['accumulated_reward'] if 'accumulated_reward' in obs else 1000.0,
         }
 
+        obs.update(evidence)
         if obs["is_zoomed"]:
             obs["zoomed_image"] = zoomed_image
             obs["heatmap_on_zoomed"] = heatmap_on_zoomed

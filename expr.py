@@ -13,6 +13,7 @@ from datetime import datetime
 import exploration as expl
 import models
 import tools
+from search_a import SearchAController, actor_action_sequence, check_checkpoint, MODEL_VERSION
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
 
@@ -39,6 +40,23 @@ class LS_Imagine(nn.Module):
         self._dataset = dataset
         self._wm = models.WorldModel(obs_space, act_space, self._step, config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
+        # APM-IMAGINE A STAGE: low-frequency counterfactual exploration control.
+        self._search_a = (SearchAController(
+            horizon=config.search_a_horizon,
+            override_prob=config.search_a_override_prob,
+            low_evidence=config.search_a_low_evidence,
+            new_weight=config.search_a_new_weight,
+            discovery_weight=config.search_a_discovery_weight,
+            revisit_weight=config.search_a_revisit_weight,
+            cost_weight=config.search_a_cost_weight,
+            min_labels=config.search_a_min_labels,
+            min_positives=config.search_a_min_positives,
+            margin=config.search_a_margin,
+            start_step=config.search_a_start_step,
+            # Random macros gather event supervision only while A is learning.
+            epsilon=(config.search_a_epsilon if config.search_a_train
+                     and config.search_a_loss_weight > 0 and config.search_a_event_weight > 0 else 0.0),
+        ) if config.search_a_enabled and config.search_a_control else None)
         if (
             config.compile and os.name != "nt"
         ):  # compilation is not supported on windows
@@ -65,7 +83,8 @@ class LS_Imagine(nn.Module):
                 self._metrics["update_count"] = self._update_count
             if self._should_log(step):
                 for name, values in self._metrics.items():
-                    self._logger.scalar(name, float(np.mean(values)))
+                    if np.size(values):
+                        self._logger.scalar(name, float(np.mean(values)))
                     self._metrics[name] = []
                 if self._config.video_pred_log:
                     openl = self._wm.video_pred(next(self._dataset))
@@ -80,11 +99,16 @@ class LS_Imagine(nn.Module):
         return policy_output, state
 
     def _policy(self, obs, state, training):
+        # APM-IMAGINE A STAGE: keep a macro progress tensor in recurrent policy state.
         if state is None:
-            latent = action = None
-        else:
+            latent = action = search_state = None
+        elif len(state) == 2:  # backward-compatible initial states
             latent, action = state
-        obs = self._wm.preprocess(obs)
+            search_state = None
+        else:
+            latent, action, search_state = state
+        # Strip training-only evidence even before tensor conversion.
+        obs = self._wm.preprocess({k: v for k, v in obs.items() if not k.startswith("search_")})
         embed = self._wm.encoder(obs)
         latent, _ = self._wm.dynamics.obs_step(latent, action, embed, obs["is_first"])
         if self._config.eval_state_mean:
@@ -99,6 +123,17 @@ class LS_Imagine(nn.Module):
         else:
             actor = self._task_behavior.actor(feat)
             action = actor.sample()
+        search_info = {}
+        if self._search_a is not None:
+            proposed_action = action
+            def continuation(indices):
+                return actor_action_sequence(
+                    self._wm.dynamics, self._task_behavior.actor,
+                    {k: v[indices] for k, v in latent.items()},
+                    proposed_action[indices], self._config.search_a_horizon)
+            action, search_state, search_info = self._search_a.choose(
+                self._wm.search_a, feat, obs, proposed_action, search_state,
+                obs["is_first"], self._step, training, continuation)
         logprob = actor.log_prob(action)
         latent = {k: v.detach() for k, v in latent.items()}
         action = action.detach()
@@ -107,7 +142,8 @@ class LS_Imagine(nn.Module):
                 torch.argmax(action, dim=-1), self._config.num_actions
             )
         policy_output = {"action": action, "logprob": logprob}
-        state = (latent, action)
+        policy_output.update(search_info)
+        state = (latent, action, search_state) if self._search_a is not None else (latent, action)
         return policy_output, state
 
     def _train(self, data):
@@ -164,10 +200,30 @@ def make_env(config, mode, id):
         import envs.minedojo as minedojo
         log_dir = os.path.join(config.results_dir, config.name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
-        kwargs=dict(
-                log_dir=log_dir,
-                target_item=config.target_item
-            )
+        collect_labels = (mode == "train" and config.search_a_enabled and config.search_a_train
+                          and config.search_a_loss_weight > 0 and config.search_a_event_weight > 0)
+        kwargs = dict(
+            log_dir=log_dir, target_item=config.target_item,
+            search_evidence_specs=dict(
+                enabled=collect_labels, target=config.target_item,
+                distance=config.search_a_ray_distance, cell_size=config.search_a_cell_size,
+                revisit_gap=config.search_a_horizon),
+            simulator_seed=(config.env_seed + id + (100000 if mode == "eval" else 0)
+                            if config.env_seed >= 0 else None))
+
+        from envs.tasks import get_specs
+        _, specs, _ = get_specs(task, target_item=config.target_item)
+        max_steps = config.episode_max_steps_override or specs["terminal_specs"]["max_steps"]
+        kwargs["terminal_specs"] = dict(specs["terminal_specs"], max_steps=max_steps)
+        if config.episode_max_steps_override:
+            kwargs["terminal_specs"]["stagger_max_steps"] = False
+        kwargs["concentration_specs"] = dict(
+            specs["concentration_specs"], max_steps=max_steps,
+            gaussian_reward_weight=config.gaussian_reward_weight,
+            gaussian_sigma_weight=config.gaussian_sigma_weight)
+        success = specs["success_specs"]
+        target = success["all"]["item"]["type"] if "all" in success else success["any"]["item"]["type"]
+        kwargs["clip_specs"] = dict(specs["clip_specs"], target_object=target)
         env = minedojo.make_env(task, **kwargs)
         env = wrappers.OneHotAction(env)
 
@@ -232,14 +288,12 @@ def main(config): # config is namespace
         )
     task_id, task_specs, sim_specs = get_specs(task, **kwargs)  # Note: additional kwargs end up in task_specs dict
 
-    config.episode_max_steps = task_specs['terminal_specs']['max_steps']
-    task_specs['concentration_specs']['max_steps'] = task_specs['terminal_specs']['max_steps']
-    task_specs['concentration_specs']['gaussian_reward_weight'] = config.gaussian_reward_weight
-    task_specs['concentration_specs']['gaussian_sigma_weight'] = config.gaussian_sigma_weight
-    task_specs['clip_specs']['target_object'] = task_specs['success_specs']['all']['item']['type'] if 'all' in task_specs['success_specs'] else task_specs['success_specs']['any']['item']['type']
+    config.episode_max_steps = (config.episode_max_steps_override
+                                or task_specs['terminal_specs']['max_steps'])
     
     train_envs = [make("train", i) for i in range(config.envs)]
-    eval_envs = [make("eval", i) for i in range(config.envs)]
+    eval_envs = ([make("eval", i) for i in range(config.envs)]
+                 if config.eval_episode_num > 0 else [])
 
     if config.parallel:
         train_envs = [Parallel(env, "process") for env in train_envs]
@@ -308,13 +362,16 @@ def main(config): # config is namespace
     
     if (logdir / "latest.pt").exists():
         checkpoint = torch.load(logdir / "latest.pt")
+        check_checkpoint(checkpoint, config.search_a_enabled)
         agent.load_state_dict(checkpoint["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
+        agent._step = int(checkpoint.get("step", agent._step))
+        logger.step = config.action_repeat * agent._step
 
     
     # make sure eval will be executed once after config.steps
-    while agent._step < config.steps + config.eval_every: 
+    while True:
         logger.write()
         
         if config.eval_episode_num > 0:
@@ -337,6 +394,8 @@ def main(config): # config is namespace
                 video_pred = agent._wm.video_pred(next(eval_dataset))
                 logger.video("eval_openl", to_np(video_pred))
 
+        if agent._step >= config.steps:
+            break
         print("Start training.")
 
         state = tools.simulate(
@@ -349,7 +408,7 @@ def main(config): # config is namespace
             config.episode_max_steps,
             config.discount,
             limit=config.dataset_size,
-            steps=config.eval_every, 
+            steps=min(config.eval_every, config.steps - agent._step),
             state=state,
             is_training=True,
         )
@@ -357,6 +416,9 @@ def main(config): # config is namespace
         items_to_save = {
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+            "step": agent._step,
+            "config": vars(config),
+            "search_a_version": MODEL_VERSION if config.search_a_enabled else None,
         }
         
         torch.save(items_to_save, logdir / "latest.pt")

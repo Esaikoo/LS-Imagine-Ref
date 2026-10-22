@@ -11,6 +11,7 @@ import tools
 from parallel import Parallel, Damy
 
 from expr import LS_Imagine, make_env, make_dataset
+from search_a import check_checkpoint
 
 os.environ["MUJOCO_GL"] = "osmesa"
 sys.path.append(str(pathlib.Path(__file__).parent))
@@ -19,6 +20,9 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 def main(config):
 
+    checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    check_checkpoint(checkpoint, config.search_a_enabled)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
@@ -55,12 +59,8 @@ def main(config):
         )
     task_id, task_specs, sim_specs = get_specs(task, **kwargs)  # Note: additional kwargs end up in task_specs dict
 
-    config.episode_max_steps = task_specs['terminal_specs']['max_steps']
-    task_specs['concentration_specs']['max_steps'] = task_specs['terminal_specs']['max_steps']
-    task_specs['concentration_specs']['gaussian_reward_weight'] = config.gaussian_reward_weight
-    task_specs['concentration_specs']['gaussian_sigma_weight'] = config.gaussian_sigma_weight
-    task_specs['clip_specs']['target_object'] = task_specs['success_specs']['all']['item']['type'] if 'all' in task_specs['success_specs'] else task_specs['success_specs']['any']['item']['type']
-
+    config.episode_max_steps = (config.episode_max_steps_override
+                                or task_specs['terminal_specs']['max_steps'])
     eval_envs = [make("eval", i) for i in range(config.envs)]
     if config.parallel:
         eval_envs = [Parallel(env, "process") for env in eval_envs]
@@ -89,10 +89,13 @@ def main(config):
     
     if checkpoint_path.exists():
         print("Loading checkpoint from", config.agent_checkpoint_dir)
-        checkpoint = torch.load(checkpoint_path)
         agent.load_state_dict(checkpoint["agent_state_dict"])
-        tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
+        agent.requires_grad_(False)  # Optimizer state is unnecessary for evaluation.
         agent._should_pretrain._once = False
+        if getattr(config, "search_a_enabled", False) and "step" not in checkpoint:
+            raise ValueError("A checkpoint has no training step; cannot restore search warmup")
+        agent._step = int(checkpoint.get("step", agent._step))
+        logger.step = config.action_repeat * agent._step
 
     else:
         raise ValueError("no checkpoint found")

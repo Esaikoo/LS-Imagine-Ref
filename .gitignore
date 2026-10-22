@@ -2,6 +2,9 @@
 __pycache__/
 
 # Ignore the ckpt data folder
+.idea
+
+# Ignore the ckpt data folder
 ckpt
 
 # Ignore the entire Minecraft folder

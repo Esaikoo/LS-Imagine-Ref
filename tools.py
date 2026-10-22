@@ -16,6 +16,7 @@ from torch import distributions as torchd
 from torch.utils.tensorboard import SummaryWriter
 from collections import defaultdict
 from bisect import insort
+from search_evidence import complete_episode_labels
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -86,8 +87,29 @@ class TimeRecording:
         print(self._comment, self._st.elapsed_time(self._nd) / 1000)
 
 class Logger:
+    KEY_METRICS = frozenset((
+        "eval_success", "eval_first_success_step", "eval_search_rate",
+        "A/prediction_loss",
+    ))
+    # Keep the terminal concise without discarding essential A diagnostics.
+    DIAGNOSTIC_METRICS = frozenset((
+        "eval_search_decision_rate", "A/future_loss", "A/discovery_loss",
+        "A/valid_windows", "A/discovery_valid", "A/discovery_positive_rate",
+    ))
+
+    def _keep_scalar(self, name):
+        return (self._log_all_metrics or name in self.KEY_METRICS
+                or name in self.DIAGNOSTIC_METRICS)
+
+    @classmethod
+    def _scalar_tag(cls, name):
+        if name in cls.DIAGNOSTIC_METRICS:
+            return "diagnostics/" + name
+        return name if "/" in name else "scalars/" + name
+
     def __init__(self, config, logdir, step):
         self._wandb = config.use_wandb
+        self._log_all_metrics = getattr(config, "log_all_metrics", False)
         self._logdir = logdir
         self._last_step = None
         self._last_time = None
@@ -107,7 +129,8 @@ class Logger:
             self._writer = SummaryWriter(log_dir=str(logdir), max_queue=1000)
 
     def scalar(self, name, value):
-        self._scalars[name] = float(value)
+        if self._keep_scalar(name):
+            self._scalars[name] = float(value)
 
     def image(self, name, value):
         self._images[name] = np.array(value)
@@ -119,15 +142,24 @@ class Logger:
         if not step:
             step = self.step
         scalars = list(self._scalars.items())
-        if fps:
+        if fps and self._log_all_metrics:
             scalars.append(("fps", self._compute_fps(step)))
-        print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
-        with (self._logdir / "metrics.jsonl").open("a") as f:
-            f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
+        visible = scalars if self._log_all_metrics else [
+            (name, value) for name, value in scalars if name in self.KEY_METRICS]
+        if visible:
+            def display(name, value):
+                if name in ("eval_success", "eval_search_rate"):
+                    return f"{name} {value:.1%}"
+                return f"{name} {value:.4g}"
+            print(f"[{step}]", " / ".join(display(k, v) for k, v in visible))
+        if scalars:
+            with (self._logdir / "metrics.jsonl").open("a") as f:
+                f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
 
         if self._wandb:
             for name, value in scalars:
-                wandb.log({name: value}, step=step)
+                tag = "diagnostics/" + name if name in self.DIAGNOSTIC_METRICS else name
+                wandb.log({tag: value}, step=step)
 
             for name, value in self._images.items():
                 wandb.log({name: [wandb.Image(value)]}, step=step)
@@ -146,10 +178,7 @@ class Logger:
 
         else:
             for name, value in scalars:
-                if "/" not in name:
-                    self._writer.add_scalar("scalars/" + name, value, step)
-                else:
-                    self._writer.add_scalar(name, value, step)
+                self._writer.add_scalar(self._scalar_tag(name), value, step)
             for name, value in self._images.items():
                 self._writer.add_image(name, value, step)
             for name, value in self._videos.items():
@@ -177,10 +206,13 @@ class Logger:
         return steps / duration
 
     def offline_scalar(self, name, value, step):
+        if not self._keep_scalar(name):
+            return
         if self._wandb:
-            wandb.log({name: value}, step=step)
+            tag = "diagnostics/" + name if name in self.DIAGNOSTIC_METRICS else name
+            wandb.log({tag: value}, step=step)
         else:
-            self._writer.add_scalar("scalars/" + name, value, step)
+            self._writer.add_scalar(self._scalar_tag(name), value, step)
 
     def offline_video(self, name, value, step):
         if np.issubdtype(value.dtype, np.floating):
@@ -306,8 +338,7 @@ def simulate(
             transition["first_success_step"] = info.get("first_success_step", max_steps)
             add_to_cache(cache, env.id, transition)
 
-            length = len(cache[env.id]["reward"]) 
-            current_step = length - 1
+            current_step = len(cache[env.id]["reward"]) - 1
             if transition["is_zoomed"] == True and not d:
                 step_calculator.add(env.id, current_step, transition["score_on_zoomed"])
 
@@ -331,18 +362,24 @@ def simulate(
                 save_episodes(directory, {envs[i].id: cache[envs[i].id]})
 
                 step_calculator.remove_all(envs[i].id)
-                length = len(cache[envs[i].id]["reward"]) - 1
+                episode_length = len(cache[envs[i].id]["reward"]) - 1
                 score = float(np.array(cache[envs[i].id]["reward"])[0:max_steps+1].sum())
                 suc = 1 if any(np.array(cache[envs[i].id]["success"])[:max_steps+1]) else 0
                 first_success_step = min(cache[envs[i].id]["first_success_step"][-1], max_steps)
                 video = cache[envs[i].id]["image"]
-                
+                # APM-IMAGINE A STAGE: fraction of real actions from search macros.
+                search_rate = float(np.asarray(
+                    cache[envs[i].id].get("log_search_override", [0.0])
+                ).sum()) / max(1, episode_length)
+                search_decision_rate = float(np.asarray(
+                    cache[envs[i].id].get("log_search_decision", [0.0])
+                ).sum()) / max(1, episode_length)
+
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
-                        logger.scalar(
-                            key, float(np.array(cache[envs[i].id][key]).sum())
-                        )
+                        if not key.startswith("log_search_"):
+                            logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
                         cache[envs[i].id].pop(key)
 
@@ -350,9 +387,11 @@ def simulate(
                     step_in_dataset = erase_over_episodes(cache, limit)
                     logger.scalar(f"dataset_size", step_in_dataset)
                     logger.scalar(f"train_return", score)
-                    logger.scalar(f"train_length", length)
+                    logger.scalar(f"train_length", episode_length)
                     logger.scalar(f"train_episodes", len(cache))
                     logger.scalar(f"train_success", suc)
+                    logger.scalar("train_search_rate", search_rate)
+                    logger.scalar("train_search_decision_rate", search_decision_rate)
                     logger.scalar(f"train_first_success_step", first_success_step)
                     logger.write(step=logger.step)
                 else:
@@ -361,15 +400,19 @@ def simulate(
                         eval_scores = []
                         eval_success = []
                         eval_first_success_step = []
+                        eval_search_rates = []
+                        eval_search_decision_rates = []
                         eval_done = False
                     # start counting scores for evaluation
                     eval_scores.append(score)
-                    eval_lengths.append(length)
+                    eval_lengths.append(episode_length)
                     eval_success.append(suc)
+                    eval_search_rates.append(search_rate)
+                    eval_search_decision_rates.append(search_decision_rate)
                     eval_first_success_step.append(first_success_step)
 
                     score = sum(eval_scores) / len(eval_scores)
-                    length = sum(eval_lengths) / len(eval_lengths)
+                    episode_length = sum(eval_lengths) / len(eval_lengths)
                     success_rate = sum(eval_success) / len(eval_success)
                     if len(eval_first_success_step) > 0:
                         first_success_step = sum(eval_first_success_step) / len(eval_first_success_step)
@@ -380,9 +423,11 @@ def simulate(
 
                     if len(eval_scores) >= episodes and not eval_done:
                         logger.scalar(f"eval_return", score)
-                        logger.scalar(f"eval_length", length)
+                        logger.scalar(f"eval_length", episode_length)
                         logger.scalar(f"eval_episodes", len(eval_scores))
                         logger.scalar(f"eval_success", success_rate)
+                        logger.scalar("eval_search_rate", float(np.mean(eval_search_rates)))
+                        logger.scalar("eval_search_decision_rate", float(np.mean(eval_search_decision_rates)))
                         logger.scalar(f"eval_first_success_step", first_success_step)
                         logger.write(step=logger.step)
                         eval_done = True
@@ -400,10 +445,12 @@ def add_to_cache(cache, id, transition):
         for key, val in transition.items():
             cache[id][key] = [convert(val)]
     else:
+        previous_length = len(cache[id]["reward"])
+        for key in cache[id].keys() - transition.keys():
+            cache[id][key].append(np.zeros_like(cache[id][key][-1]))
         for key, val in transition.items():
             if key not in cache[id]:
-                # fill missing data(action, etc.) at second time
-                cache[id][key] = [convert(0 * val)]
+                cache[id][key] = [convert(0 * val) for _ in range(previous_length)]
                 cache[id][key].append(convert(val))
             else:
                 cache[id][key].append(convert(val))
@@ -471,7 +518,7 @@ def save_episodes(directory, episodes):
     return True
 
 def replace_none_with_zeros(episode):
-    if "image" in episode and episode["image"]:
+    if "image" in episode and len(episode["image"]):
         reference_shape = episode["image"][0].shape
     else:
         raise ValueError("Image data is missing or malformed in episode.")
@@ -481,7 +528,7 @@ def replace_none_with_zeros(episode):
             np.zeros(reference_shape) if img is None else img for img in episode["zoomed_image"]
         ]
     
-    if "heatmap" in episode and episode["heatmap"]:
+    if "heatmap" in episode and len(episode["heatmap"]):
         heatmap_shape = episode["heatmap"][0].shape
     else:
         heatmap_shape = None
@@ -525,7 +572,7 @@ def sample_episodes(episodes, length, seed=0):
             if total < 2:
                 continue
 
-            episode_copy = selective_deepcopy(episode)
+            episode_copy = complete_episode_labels(selective_deepcopy(episode))
             episode_copy = replace_none_with_zeros(episode_copy)
 
             if not ret:
@@ -1217,7 +1264,7 @@ def uniform_weight_init(given_scale):
 def tensorstats(tensor, prefix=None):
     metrics = {
         "mean": to_np(torch.mean(tensor)),
-        "std": to_np(torch.std(tensor)),
+        "std": to_np(torch.std(tensor, unbiased=False)),
         "min": to_np(torch.min(tensor)),
         "max": to_np(torch.max(tensor)),
     }
