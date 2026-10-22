@@ -46,3 +46,6 @@ weights/*
 
 # Ignore DynDream_exprs.sh
 DynDream_exprs.sh
+
+# Generated evaluation videos and episode diagnostics
+evaluation_results/
