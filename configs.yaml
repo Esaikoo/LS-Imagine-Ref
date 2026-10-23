@@ -1,7 +1,7 @@
 defaults:
 
   use_wandb: False
-  log_all_metrics: False  # Four console metrics + six saved diagnostics; True logs all.
+  log_all_metrics: False  # Console verbosity only; all scalars are always saved.
   wandb_key: None
   logdir: null
   traindir: null

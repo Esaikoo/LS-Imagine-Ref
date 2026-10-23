@@ -91,15 +91,11 @@ class Logger:
         "eval_success", "eval_first_success_step", "eval_search_rate",
         "A/prediction_loss",
     ))
-    # Keep the terminal concise without discarding essential A diagnostics.
+    # Groups for presentation only. Never filter persisted training scalars.
     DIAGNOSTIC_METRICS = frozenset((
         "eval_search_decision_rate", "A/future_loss", "A/discovery_loss",
         "A/valid_windows", "A/discovery_valid", "A/discovery_positive_rate",
     ))
-
-    def _keep_scalar(self, name):
-        return (self._log_all_metrics or name in self.KEY_METRICS
-                or name in self.DIAGNOSTIC_METRICS)
 
     @classmethod
     def _scalar_tag(cls, name):
@@ -109,7 +105,9 @@ class Logger:
 
     def __init__(self, config, logdir, step):
         self._wandb = config.use_wandb
-        self._log_all_metrics = getattr(config, "log_all_metrics", False)
+        # Legacy option name retained for CLI/checkpoint compatibility.
+        # This controls console verbosity only; all scalars are always saved.
+        self._verbose_console = getattr(config, "log_all_metrics", False)
         self._logdir = logdir
         self._last_step = None
         self._last_time = None
@@ -129,8 +127,7 @@ class Logger:
             self._writer = SummaryWriter(log_dir=str(logdir), max_queue=1000)
 
     def scalar(self, name, value):
-        if self._keep_scalar(name):
-            self._scalars[name] = float(value)
+        self._scalars[name] = float(value)
 
     def image(self, name, value):
         self._images[name] = np.array(value)
@@ -142,9 +139,9 @@ class Logger:
         if not step:
             step = self.step
         scalars = list(self._scalars.items())
-        if fps and self._log_all_metrics:
+        if fps:
             scalars.append(("fps", self._compute_fps(step)))
-        visible = scalars if self._log_all_metrics else [
+        visible = scalars if self._verbose_console else [
             (name, value) for name, value in scalars if name in self.KEY_METRICS]
         if visible:
             def display(name, value):
@@ -206,8 +203,6 @@ class Logger:
         return steps / duration
 
     def offline_scalar(self, name, value, step):
-        if not self._keep_scalar(name):
-            return
         if self._wandb:
             tag = "diagnostics/" + name if name in self.DIAGNOSTIC_METRICS else name
             wandb.log({tag: value}, step=step)

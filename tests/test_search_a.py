@@ -386,5 +386,99 @@ class ReplayAndIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):check_checkpoint(cp,False)
 
 
+class LoggerPersistenceTests(unittest.TestCase):
+    def test_console_setting_never_filters_json_or_tensorboard(self):
+        import contextlib
+        import io
+        import json
+        import tools
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        values = {
+            "eval_success": 0.125, "eval_first_success_step": 123.5,
+            "eval_search_rate": 0.375, "A/prediction_loss": 0.003217,
+            "model_loss": 1234., "actor_loss": -0.25, "value_loss": 0.5,
+            "image_loss": 0.75, "zoomed_image_loss": 0.625,
+            "kl": 3., "model_grad_norm": 2., "train_return": 1.,
+            "eval_return": 2., "A/new_loss": 0.25, "A/revisit_loss": 0.125,
+            "A/discovery_valid": 6., "future_metric_not_in_any_allowlist": 7.,
+        }
+        for verbose in (False, True):
+            with self.subTest(verbose=verbose), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                logger = tools.Logger(SimpleNamespace(use_wandb=False, log_all_metrics=verbose),
+                                      root, 160000)
+                try:
+                    for name, value in values.items():
+                        logger.scalar(name, value)
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        logger.write(fps=True)
+                    row = json.loads((root / "metrics.jsonl").read_text())
+                    self.assertEqual(set(row), set(values) | {"step", "fps"})
+                    self.assertEqual(row["step"], 160000)
+                    for name, value in values.items():
+                        self.assertEqual(row[name], value)
+                    self.assertIn("eval_success 12.5%", output.getvalue())
+                    self.assertIn("A/prediction_loss 0.003217", output.getvalue())
+                    self.assertEqual("model_loss" in output.getvalue(), verbose)
+                    events = EventAccumulator(str(root)).Reload()
+                    expected = {tools.Logger._scalar_tag(k) for k in set(values) | {"fps"}}
+                    self.assertEqual(set(events.Tags()["scalars"]), expected)
+                    self.assertEqual(events.Scalars("scalars/model_loss")[0].value, 1234.)
+                    self.assertEqual(events.Scalars("scalars/actor_loss")[0].value, -0.25)
+                    self.assertEqual(events.Scalars("A/new_loss")[0].value, 0.25)
+                finally:
+                    logger._writer.close()
+
+    def test_non_console_and_offline_metrics_are_still_saved(self):
+        import contextlib
+        import io
+        import json
+        import tools
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            # Older config objects do not contain log_all_metrics.
+            logger = tools.Logger(SimpleNamespace(use_wandb=False), root, 160000)
+            try:
+                logger.scalar("model_grad_norm", 42.)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    logger.write()
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(json.loads((root / "metrics.jsonl").read_text()),
+                                 {"step": 160000, "model_grad_norm": 42.})
+                logger.offline_scalar("original_offline_metric", 5., 160001)
+                logger._writer.flush()
+                events = EventAccumulator(str(root)).Reload()
+                self.assertEqual(events.Scalars("scalars/model_grad_norm")[0].value, 42.)
+                self.assertEqual(events.Scalars("scalars/original_offline_metric")[0].value, 5.)
+            finally:
+                logger._writer.close()
+
+    def test_wandb_keeps_all_scalars_without_console_verbosity(self):
+        import contextlib
+        import io
+        import tools
+        values = {"model_loss": 2., "actor_loss": -0.5, "value_loss": 1.,
+                  "A/prediction_loss": 0.25, "A/revisit_loss": 0.125,
+                  "A/discovery_valid": 6., "new_unlisted_metric": 3.}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(tools, "wandb") as backend:
+            logger = tools.Logger(SimpleNamespace(use_wandb=True, wandb_key="test",
+                                                   log_all_metrics=False),
+                                  pathlib.Path(directory), 160000)
+            for name, value in values.items():
+                logger.scalar(name, value)
+            with contextlib.redirect_stdout(io.StringIO()):
+                logger.write(fps=True)
+            actual = {name: value for call in backend.log.call_args_list
+                      for name, value in call.args[0].items()}
+            expected = {("diagnostics/" + name if name in tools.Logger.DIAGNOSTIC_METRICS else name): value
+                        for name, value in values.items()}
+            self.assertEqual(actual, dict(expected, fps=0))
+            logger.offline_scalar("original_offline_metric", 9., 160001)
+            self.assertEqual(backend.log.call_args.args[0], {"original_offline_metric": 9.})
+
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
