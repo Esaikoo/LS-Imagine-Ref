@@ -46,6 +46,17 @@ defaults:
   search_a_cell_size: 2.0
   env_seed: -1
 
+  # B v2: durable keyframes, recurrent belief and memory-conditioned imagination.
+  search_b_enabled: False
+  search_b_control: True
+  search_b_dim: 128
+  search_b_hidden: 128
+  search_b_slots: 16
+  search_b_lookback: 128
+  search_b_save_every: 8
+  search_b_loss_weight: 1.0
+  search_b_consistency_weight: 1.0
+
   # Environment
   task: 'minedojo'
   size: [64, 64]
@@ -221,3 +232,19 @@ apm_a_smoke:
   accumulated_reward_head: {layers: 2}
   end_head: {layers: 2}
   jump_head: {layers: 2}
+
+# B stage on top of A v2.
+apm_ab:
+  compile: False
+  search_a_enabled: True
+  search_b_enabled: True
+
+# Fixed-checkpoint ablation: zero B inputs for A, Actor and Critic.
+apm_ab_memory_off:
+  search_b_control: False
+
+# B without A: memory still conditions the original Actor/Critic.
+apm_b:
+  compile: False
+  search_a_enabled: False
+  search_b_enabled: True

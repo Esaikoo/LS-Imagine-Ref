@@ -362,6 +362,11 @@ def simulate(
                 suc = 1 if any(np.array(cache[envs[i].id]["success"])[:max_steps+1]) else 0
                 first_success_step = min(cache[envs[i].id]["first_success_step"][-1], max_steps)
                 video = cache[envs[i].id]["image"]
+                # B prediction-derived revisit proxy; NOT oracle true-location coverage.
+                b_values = np.asarray(cache[envs[i].id].get("log_b_revisit_prob", []), dtype=float)
+                b_used = np.asarray(cache[envs[i].id].get("log_b_memory_used", []), dtype=float)
+                b_revisit_rate = float(np.mean(b_values[b_used > 0] > 0.5)) if b_values.size and np.any(b_used > 0) else 0.0
+                b_present = bool(b_values.size)
                 # APM-IMAGINE A STAGE: fraction of real actions from search macros.
                 search_rate = float(np.asarray(
                     cache[envs[i].id].get("log_search_override", [0.0])
@@ -373,7 +378,7 @@ def simulate(
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
-                        if not key.startswith("log_search_"):
+                        if not key.startswith(("log_search_", "log_b_")):
                             logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
                         cache[envs[i].id].pop(key)
@@ -386,6 +391,8 @@ def simulate(
                     logger.scalar(f"train_episodes", len(cache))
                     logger.scalar(f"train_success", suc)
                     logger.scalar("train_search_rate", search_rate)
+                    if b_present:
+                        logger.scalar("train_b_revisit_rate", b_revisit_rate)
                     logger.scalar("train_search_decision_rate", search_decision_rate)
                     logger.scalar(f"train_first_success_step", first_success_step)
                     logger.write(step=logger.step)
@@ -397,12 +404,15 @@ def simulate(
                         eval_first_success_step = []
                         eval_search_rates = []
                         eval_search_decision_rates = []
+                        eval_b_revisit_rates = []
                         eval_done = False
                     # start counting scores for evaluation
                     eval_scores.append(score)
                     eval_lengths.append(episode_length)
                     eval_success.append(suc)
                     eval_search_rates.append(search_rate)
+                    if b_present:
+                        eval_b_revisit_rates.append(b_revisit_rate)
                     eval_search_decision_rates.append(search_decision_rate)
                     eval_first_success_step.append(first_success_step)
 
@@ -422,6 +432,8 @@ def simulate(
                         logger.scalar(f"eval_episodes", len(eval_scores))
                         logger.scalar(f"eval_success", success_rate)
                         logger.scalar("eval_search_rate", float(np.mean(eval_search_rates)))
+                        if eval_b_revisit_rates:
+                            logger.scalar("eval_b_revisit_rate", float(np.mean(eval_b_revisit_rates)))
                         logger.scalar("eval_search_decision_rate", float(np.mean(eval_search_decision_rates)))
                         logger.scalar(f"eval_first_success_step", first_success_step)
                         logger.write(step=logger.step)
@@ -435,6 +447,15 @@ def simulate(
 
 
 def add_to_cache(cache, id, transition):
+    # Policy logs describe the observation BEFORE this transition's action.
+    # Convert B-local ticks to NPZ row indices even after random prefill.
+    if "log_b_observation_index" in transition and id in cache:
+        transition = transition.copy()
+        observed_row = len(cache[id]["reward"]) - 1
+        offset = observed_row - int(transition["log_b_observation_index"])
+        refs = np.asarray(transition["log_b_keyframe_indices"])
+        transition["log_b_keyframe_indices"] = np.where(refs >= 0, refs + offset, -1)
+        transition["log_b_observation_index"] = np.int64(observed_row)
     if id not in cache:
         cache[id] = dict()
         for key, val in transition.items():
@@ -442,10 +463,13 @@ def add_to_cache(cache, id, transition):
     else:
         previous_length = len(cache[id]["reward"])
         for key in cache[id].keys() - transition.keys():
-            cache[id][key].append(np.zeros_like(cache[id][key][-1]))
+            cache[id][key].append(np.full_like(cache[id][key][-1], -1) if key in (
+                "log_b_keyframe_indices", "log_b_observation_index") else np.zeros_like(cache[id][key][-1]))
         for key, val in transition.items():
             if key not in cache[id]:
-                cache[id][key] = [convert(0 * val) for _ in range(previous_length)]
+                cache[id][key] = [convert(np.full_like(val, -1) if key in (
+                    "log_b_keyframe_indices", "log_b_observation_index") else 0 * val)
+                    for _ in range(previous_length)]
                 cache[id][key].append(convert(val))
             else:
                 cache[id][key].append(convert(val))

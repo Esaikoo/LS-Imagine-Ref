@@ -32,7 +32,9 @@ case "$MODE" in
   full) set -- --configs minedojo apm_a "$@" ;;
   off) set -- --configs minedojo apm_a_off "$@" ;;
   loss_only) set -- --configs minedojo apm_a apm_a_loss_only "$@" ;;
-  *) echo "A_MODE must be full, off, or loss_only" >&2; exit 2 ;;
+  ab) set -- --configs minedojo apm_ab "$@" ;;
+  b) set -- --configs minedojo apm_b "$@" ;;
+  *) echo "A_MODE must be full, off, loss_only, ab, or b" >&2; exit 2 ;;
 esac
 
 RUN_LOG_ROOT="$LOG_ROOT/$PROJECT_NAME/$MODE"

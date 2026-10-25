@@ -83,7 +83,7 @@ class LSImagineWrapper(Wrapper, ABC):
         )
 
         for key in SEARCH_LABEL_KEYS:
-            self.observation_space.spaces[key] = spaces.Box(0, 2, shape=(), dtype=np.float32)
+            self.observation_space.spaces[key] = spaces.Box(0, np.inf if key == "search_place_id" else 2, shape=(), dtype=np.float32)
 
         self.action_space = spaces.discrete.Discrete(len(BASIC_ACTIONS))
         self.action_space.discrete = True

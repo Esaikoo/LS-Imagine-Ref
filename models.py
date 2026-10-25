@@ -12,6 +12,7 @@ from torch import nn
 import networks
 import tools
 from search_a import SearchOutcomeHead
+from search_memory import SearchMemory, describe_torch
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -170,7 +171,21 @@ class WorldModel(nn.Module):
             with torch.random.fork_rng(devices=[]):
                 self.search_a = SearchOutcomeHead(
                     feat_size, config.search_a_horizon, config.search_a_hidden,
-                    config.search_a_future_weight, config.search_a_event_weight)
+                    config.search_a_future_weight, config.search_a_event_weight,
+                    memory_dim=config.search_b_dim if config.search_b_enabled else 0)
+
+        # APM-IMAGINE B STAGE: trainable persistent search-memory encoder.
+        self.search_b = None
+        if config.search_b_enabled:
+            if config.expl_behavior not in ("greedy", "random"):
+                raise ValueError("B currently supports greedy/random exploration, not Plan2Explore")
+            with torch.random.fork_rng(devices=[]):
+                self.search_b = SearchMemory(slots=config.search_b_slots,
+                                            dim=config.search_b_dim,
+                                            hidden=config.search_b_hidden,
+                                            save_every=config.search_b_save_every,
+                                            feature_dim=feat_size,
+                                            dynamic_target=config.target_item == "wool")
 
         for name in config.grad_heads:
             assert name in self.heads, name
@@ -357,6 +372,20 @@ class WorldModel(nn.Module):
                     
                     model_loss = sum(scaled.values()) + kl_loss
 
+            # APM-IMAGINE B STAGE: reconstruct past-only memory from replay.
+            b_loss = torch.zeros((), device=model_loss.device)
+            b_context = None
+            b_metrics = {}
+            if self.search_b is not None:
+                b_scene = describe_torch(data["image"], data["heatmap"])
+                b_context, b_loss, b_metrics = self.search_b.train_sequence(b_scene, data)
+                consistency, transition_count = self.search_b.transition_loss(
+                    b_context, self.dynamics.get_feat(post), data, self._config.search_a_horizon)
+                b_loss = b_loss + self._config.search_b_consistency_weight * consistency
+                b_metrics.update({"B/consistency_loss": consistency.detach(),
+                                  "B/transition_valid": transition_count.detach(),
+                                  "B/total_loss": b_loss.detach()})
+
             # APM-IMAGINE A STAGE: real executed H-step windows, no imagined labels.
             a_loss = torch.zeros((), device=model_loss.device)
             a_metrics = {}
@@ -365,12 +394,16 @@ class WorldModel(nn.Module):
             if train_a:
                 with torch.cuda.amp.autocast(self._use_amp):
                     a_loss, a_metrics, counts, positives = self.search_a.training_loss(
-                        self.dynamics.get_feat(post), data)
+                        self.dynamics.get_feat(post), data,
+                        memory=b_context if self._config.search_b_control else None)
             total_loss = torch.mean(model_loss) + (
-                config_search_weight(self._config) * a_loss)
+                config_search_weight(self._config) * a_loss
+                + self._config.search_b_loss_weight * b_loss)
             metrics = self._model_opt(total_loss, self.parameters())
             if train_a and torch.isfinite(a_loss):
                 self.search_a.record_supervision(counts, positives)
+            for b_key, b_val in b_metrics.items():
+                metrics[b_key] = to_np(b_val)
             for a_key, a_val in a_metrics.items():
                 metrics[a_key] = to_np(a_val)
 
@@ -411,6 +444,18 @@ class WorldModel(nn.Module):
                 postent=self.dynamics.get_dist(post).entropy(),
             )
 
+        if b_context is not None:
+            context["search_memory"] = b_context.detach()
+            if zoomed_num > 0:
+                with torch.no_grad():
+                    selected_memory = b_context.detach()[is_zoomed_indices].unsqueeze(1)
+                    selected_feat = self.dynamics.get_feat(post)[is_zoomed_indices].unsqueeze(1)
+                    zoomed_feat = self.dynamics.get_feat(post_zoomed)
+                    dt = self.heads["jumping_steps"](torch.cat((selected_feat, zoomed_feat), -1)).mean().clamp(1, self._config.episode_max_steps)
+                    jump_action = torch.zeros(*selected_memory.shape[:-1], 13, device=selected_memory.device)
+                    jump_action[..., -1] = 1
+                    context["search_memory_zoomed"] = self.search_b.imagine_step(
+                        selected_memory, zoomed_feat, jump_action, dt).detach()
         post = {k: v.detach() for k, v in post.items()}
 
         if zoomed_num > 0:
@@ -421,7 +466,7 @@ class WorldModel(nn.Module):
 
     # this function is called during both rollout and training
     def preprocess(self, obs, zoomed=False):
-        obs = obs.copy()
+        obs = {k:v for k,v in obs.items() if not (zoomed and k.startswith("search_b_"))}
 
         if not zoomed:
             obs["image"] = torch.Tensor(obs["image"]) / 255.0
@@ -508,6 +553,9 @@ class ImagBehavior(nn.Module):
             feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
         else:
             feat_size = config.dyn_stoch + config.dyn_deter
+        self._base_feat_size = feat_size
+        if world_model.search_b is not None:
+            feat_size += config.search_b_dim
         self.actor = networks.MLP(
             feat_size,
             (config.num_actions,),
@@ -578,8 +626,18 @@ class ImagBehavior(nn.Module):
         accumulated_reward_predictor,
         jump_indicator,
         is_end,
+        search_context=None,
+        search_context_zoomed=None,
     ):
 
+        if self._world_model.search_b is not None:
+            if search_context is None:
+                raise ValueError("Memory-conditioned Actor needs replay memory during training")
+            start = dict(start, search_memory=search_context.detach())
+            if start_zoomed is not None:
+                if search_context_zoomed is None:
+                    raise ValueError("Missing memory for post-jump posterior")
+                start_zoomed = dict(start_zoomed, search_memory=search_context_zoomed.detach())
         self._update_slow_target()
         metrics = {}
 
@@ -599,7 +657,7 @@ class ImagBehavior(nn.Module):
                 for k, v in start.items():
                     imag_state[k] = v.unsqueeze(0) # [1, N, xx, xx]
 
-                action_example = self.actor(self._world_model.dynamics.get_feat(start).detach()).sample()
+                action_example = self.actor(self.policy_features(start).detach()).sample()
                 action_dimension = action_example.shape[-1]
 
                 jump_record = torch.empty((0, state_num), device=self._config.device) # [0, N]
@@ -651,7 +709,7 @@ class ImagBehavior(nn.Module):
                 jump_num = torch.sum(jump_record)
 
                 imag_feat = self._world_model.dynamics.get_feat(imag_state) # [L, N, xx, xx]
-                inp = imag_feat[-1].detach()
+                inp = self.policy_features({k:v[-1] for k,v in imag_state.items()}).detach()
                 last_imag_action = self.actor(inp).sample() # [N, xx, xx]
                 imag_action = torch.cat((imag_action, last_imag_action.unsqueeze(0)), dim=0) # [L, N, xx]
 
@@ -702,7 +760,8 @@ class ImagBehavior(nn.Module):
                 reward += intrinsic_reward
 
 
-                actor_ent = self.actor(imag_feat).entropy() 
+                policy_feat = self.policy_features(imag_state)
+                actor_ent = self.actor(policy_feat).entropy()
                 state_ent = self._world_model.dynamics.get_dist(imag_state).entropy()
 
                 jump_sequence_record = torch.any(jump_record, dim=0, keepdim=True).repeat(jump_record.size(0), 1) # [L, N]
@@ -714,7 +773,7 @@ class ImagBehavior(nn.Module):
                 )
 
                 actor_loss, mets = self._compute_actor_loss(
-                    imag_feat,
+                    policy_feat,
                     imag_action,
                     target,
                     weights,
@@ -725,7 +784,7 @@ class ImagBehavior(nn.Module):
                 actor_loss -= self._config.actor["entropy"] * actor_ent[:-1, ..., None]
                 actor_loss = torch.mean(actor_loss)
                 metrics.update(mets)
-                value_input = imag_feat
+                value_input = policy_feat
 
         with tools.RequiresGrad(self.value):
             with torch.cuda.amp.autocast(self._use_amp):
@@ -847,20 +906,41 @@ class ImagBehavior(nn.Module):
         composite_image.save(os.path.join(output_dir, f"{current_time}.png"))
         
 
+    def policy_features(self, state):
+        feat = self._world_model.dynamics.get_feat(state)
+        if self._world_model.search_b is not None:
+            memory = state["search_memory"]
+            if not self._config.search_b_control:
+                memory = torch.zeros_like(memory)
+            feat = torch.cat((feat, memory), -1)
+        return feat
+
+    def _advance_memory(self, state, succ, action, jump=False):
+        if self._world_model.search_b is not None:
+            feature = self._world_model.dynamics.get_feat(succ)
+            elapsed = 1
+            if jump:
+                before = self._world_model.dynamics.get_feat(state)
+                elapsed = self._world_model.heads["jumping_steps"](
+                    torch.cat((before, feature), -1)).mean().clamp(1, self._config.episode_max_steps)
+            succ["search_memory"] = self._world_model.search_b.imagine_step(
+                state["search_memory"], feature, action, elapsed)
+        return succ
+
     def _imagine(self, start, policy, horizon):
         dynamics = self._world_model.dynamics
 
         def step(prev, _):
             state, _, _ = prev
             feat = dynamics.get_feat(state)
-            inp = feat.detach()
+            inp = self.policy_features(state).detach()
             action = policy(inp).sample()
             
             # When interacting with the wm, the action needs to be expanded to 13 dimensions.
             zeros_tensor = torch.zeros(action.shape[0], 1).to(action.device)
             new_action = torch.cat((action, zeros_tensor), dim=-1)
             
-            succ = dynamics.img_step(state, new_action)
+            succ = self._advance_memory(state, dynamics.img_step(state, new_action), new_action)
             return succ, feat, action
 
         succ, feats, actions = tools.static_scan(
@@ -884,12 +964,12 @@ class ImagBehavior(nn.Module):
         def step(prev, _):
             state, _, _ = prev
             feat = dynamics.get_feat(state)
-            inp = feat.detach()
+            inp = self.policy_features(state).detach()
             action = policy(inp).sample()
 
             new_action = torch.zeros(action.shape[0], action.shape[1] + 1).to(action.device)
             new_action[:, -1] = 1
-            succ = dynamics.img_step(state, new_action)
+            succ = self._advance_memory(state, dynamics.img_step(state, new_action), new_action, jump=True)
             return succ, feat, action
         
         succ, feats, actions = tools.static_scan(
@@ -916,7 +996,7 @@ class ImagBehavior(nn.Module):
         
         end = is_end(imag_state) # [L, N, 1]
         gamma = self._config.discount * torch.ones_like(reward)
-        value = self.value(imag_feat).mode()
+        value = self.value(self.policy_features(imag_state)).mode()
         
         jumping_steps = (jumping_steps - 1) * jump_record + 1
         accumulated_reward *= jump_record

@@ -34,6 +34,7 @@ def config_for_test(**overrides):
     for name in ("defaults", "minedojo", "apm_a", "apm_a_smoke"):
         merge(config, raw[name])
     config.update(device="cpu", num_actions=12, episode_max_steps=24, search_a_start_step=0,
+                  logdir=str(pathlib.Path(__file__).resolve().parents[1]/"logs"/"test_apm_a_v2"/"unit"),
                   search_a_override_prob=1.0, search_a_low_evidence=1.1, search_a_min_labels=1,
                   search_a_min_positives=0)
     config.update(overrides)
@@ -401,6 +402,8 @@ class LoggerPersistenceTests(unittest.TestCase):
             "kl": 3., "model_grad_norm": 2., "train_return": 1.,
             "eval_return": 2., "A/new_loss": 0.25, "A/revisit_loss": 0.125,
             "A/discovery_valid": 6., "future_metric_not_in_any_allowlist": 7.,
+            "B/revisit_loss": 0.25, "B/consistency_loss": 0.125, "B/place_valid": 3.,
+            "eval_b_revisit_rate": 0.75,
         }
         for verbose in (False, True):
             with self.subTest(verbose=verbose), tempfile.TemporaryDirectory() as directory:

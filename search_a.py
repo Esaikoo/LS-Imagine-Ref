@@ -55,7 +55,7 @@ def valid_windows(batch, horizon, total_time):
 
 class SearchOutcomeHead(nn.Module):
     def __init__(self, feature_dim, horizon=6, hidden=256, future_weight=1.0,
-                 event_weight=1.0):
+                 event_weight=1.0, memory_dim=0):
         super().__init__()
         self.horizon = int(horizon)
         if self.horizon < 2 or min(future_weight, event_weight) < 0:
@@ -65,18 +65,27 @@ class SearchOutcomeHead(nn.Module):
         self.residual = nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.future = nn.Linear(hidden, feature_dim)
         self.events = nn.Linear(hidden, len(EVENTS))
+        self.memory_adapter = nn.Linear(memory_dim, hidden, bias=False) if memory_dim else None
+        if self.memory_adapter is not None:
+            nn.init.zeros_(self.memory_adapter.weight)
         self.register_buffer("label_counts", torch.zeros(len(EVENTS)))
         self.register_buffer("positive_counts", torch.zeros(len(EVENTS)))
 
-    def forward(self, feat, actions):
+    def forward(self, feat, actions, memory=None):
         if actions.shape[-2:] != (self.horizon, ACTION_DIM) or feat.shape[:-1] != actions.shape[:-2]:
             raise ValueError("A expects matching feature batches and [..., H, 12] actions")
         inp = torch.cat([normalize_feature(feat), actions.flatten(-2)], -1)
         hidden = self.input(inp)
+        if memory is not None:
+            if self.memory_adapter is None:
+                raise ValueError("Memory supplied to an A-only head")
+            if memory.shape[:-1] != feat.shape[:-1]:
+                raise ValueError("B memory context shape mismatch")
+            hidden = hidden + self.memory_adapter(memory)
         hidden = hidden + self.residual(hidden)
         return {"future": self.future(hidden), "event_logits": self.events(hidden)}
 
-    def training_loss(self, posterior_features, batch):
+    def training_loss(self, posterior_features, batch, memory=None):
         batch_size, total_time = posterior_features.shape[:2]
         h = self.horizon
         if total_time <= h:
@@ -84,7 +93,8 @@ class SearchOutcomeHead(nn.Module):
         actions = batch["action"]
         windows = torch.stack([actions[:, t+1:t+h+1, :ACTION_DIM] for t in range(total_time-h)], 1)
         valid = valid_windows(batch, h, total_time)
-        pred = self(posterior_features[:, :-h], windows)
+        pred = (self(posterior_features[:, :-h], windows) if memory is None else
+                self(posterior_features[:, :-h], windows, memory=memory[:, :-h]))
         # Stop-gradient future targets prevent minimizing loss by moving targets.
         target = normalize_feature(posterior_features[:, h:].detach())
         feature_error = F.smooth_l1_loss(pred["future"].float(), target, reduction="none").mean(-1)
@@ -136,16 +146,21 @@ class SearchOutcomeHead(nn.Module):
 
 
 @torch.no_grad()
-def actor_action_sequence(dynamics, actor, latent, first_action, horizon):
+def actor_action_sequence(dynamics, actor, latent, first_action, horizon,
+                          memory=None, memory_transition=None):
     """A candidate for continuing the original actor, using ordinary RSSM steps."""
     state = {k: v.clone() for k, v in latent.items()}
     sequence = []
     action = first_action
     for index in range(horizon):
         if index:
-            action = actor(dynamics.get_feat(state)).mode()
+            feat = dynamics.get_feat(state)
+            inp = torch.cat((feat, memory), -1) if memory is not None else feat
+            action = actor(inp).mode()
         sequence.append(action)
         state = dynamics.img_step(state, F.pad(action, (0, 1)), sample=False)
+        if memory is not None and memory_transition is not None:
+            memory = memory_transition(memory, dynamics.get_feat(state), action)
     return torch.stack(sequence, 1)
 
 
@@ -169,7 +184,7 @@ class SearchAController:
 
     @torch.no_grad()
     def choose(self, head, feat, obs, actor_actions, state, is_first, step, training,
-               actor_sequence):
+               actor_sequence, memory=None):
         batch, device = feat.shape[0], feat.device
         ids, pos, credit = self.initial(batch, device) if state is None else tuple(v.clone() for v in state)
         first = is_first.reshape(batch).bool()
@@ -201,7 +216,11 @@ class SearchAController:
                 continuation = actor_sequence(starts)
                 seq = torch.cat([seq, continuation[:, None]], 1)
                 fs = feat[starts, None].expand(-1, len(MACRO_NAMES), -1)
-                probabilities = head(fs, seq)["event_logits"].sigmoid()
+                memory_for_candidates = (memory[starts, None].expand(-1, len(MACRO_NAMES), -1)
+                                         if memory is not None else None)
+                result = head(fs, seq) if memory_for_candidates is None else head(
+                    fs, seq, memory=memory_for_candidates)
+                probabilities = result["event_logits"].sigmoid()
                 weights = torch.tensor(self.weights, device=device) * ready
                 cost = (1 - seq[..., 0]).mean(-1)  # fraction of non-noop actions
                 scores = (probabilities * weights).sum(-1) - self.cost_weight * cost

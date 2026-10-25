@@ -11,7 +11,8 @@ LABEL_VERSION = 2
 EVENTS = ("new", "discovery", "revisit")
 SEARCH_LABEL_KEYS = tuple(
     key for event in EVENTS for key in ("search_" + event, "search_" + event + "_valid")
-) + ("search_visible", "search_visible_valid", "search_label_version")
+) + ("search_visible", "search_visible_valid", "search_label_version",
+     "search_place_id", "search_place_valid")
 RAY_PITCHES = np.deg2rad(np.linspace(-25, 25, 5))
 RAY_YAWS = np.deg2rad(np.linspace(-40, 40, 9))
 
@@ -66,6 +67,7 @@ class SearchEvidence:
 
     def reset(self):
         self.first_seen = {}
+        self.place_ids = {}
         self.previous_visible = None
         self.step = 0
 
@@ -75,6 +77,18 @@ class SearchEvidence:
         else:
             self.step += 1
         result = empty_labels()
+        # Opaque within-episode place/view IDs are targets, never policy inputs.
+        location = obs.get("location_stats", {})
+        position = location.get("pos")
+        if position is not None and "yaw" in location and "pitch" in location:
+            pose = np.concatenate((np.asarray(position).reshape(-1),
+                                   np.asarray([location["yaw"], location["pitch"]]).reshape(-1)))
+            if len(pose) == 5 and np.isfinite(pose).all():
+                cell = tuple(np.floor(pose[:3] / self.cell_size).astype(np.int64))
+                view = (int(np.floor((pose[3] % 360) / 45)), int(np.floor(pose[4] / 45)))
+                place = self.place_ids.setdefault(cell + view, len(self.place_ids) + 1)
+                result["search_place_id"] = np.float32(place)
+                result["search_place_valid"] = np.float32(1)
         rays = obs.get("rays", {})
         fields = ("block_name", "block_distance", "entity_name", "entity_distance",
                   "traced_block_x", "traced_block_y", "traced_block_z")

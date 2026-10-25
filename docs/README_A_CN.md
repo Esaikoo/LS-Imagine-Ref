@@ -1,5 +1,8 @@
 # A v2 实现、数据流与消融实验报告
 
+后续 B 阶段的改动、数据流、完整指标、消融入口与测试结论见 [B 阶段实现与验收报告](README_B_CN.md)。以下保留 A 阶段及此前日志修复的历史说明。
+
+
 更新日期：2026-10-23。项目：`/home/user1/dl/projects/LS-Imagine-Ref`。环境：WSL Ubuntu-20.04 / conda `ls_imagine`。
 
 ## 1. 这次完成了什么

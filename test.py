@@ -10,7 +10,7 @@ from datetime import datetime
 import tools
 from parallel import Parallel, Damy
 
-from expr import LS_Imagine, make_env, make_dataset
+from expr import LS_Imagine, make_env, make_dataset, check_b_checkpoint
 from search_a import check_checkpoint
 
 os.environ["MUJOCO_GL"] = "osmesa"
@@ -23,6 +23,7 @@ def main(config):
     checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     check_checkpoint(checkpoint, config.search_a_enabled)
+    check_b_checkpoint(checkpoint, config.search_b_enabled)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
