@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python tests/test_search_a.py
-python -m py_compile search_a.py search_evidence.py expr.py models.py tools.py test.py \
+python -m py_compile search_a.py search_evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
   envs/tasks/minedojo/__init__.py envs/tasks/base/ls_imagine_wrapper.py
 bash -n scripts/test_a.sh
 sh -n scripts/train.sh

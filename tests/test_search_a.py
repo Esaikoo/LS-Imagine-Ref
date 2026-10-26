@@ -483,5 +483,82 @@ class LoggerPersistenceTests(unittest.TestCase):
             self.assertEqual(backend.log.call_args.args[0], {"original_offline_metric": 9.})
 
 
+class EvaluationAControlTests(unittest.TestCase):
+    def test_disable_only_control_retains_model_and_strict_checkpoint(self):
+        from evaluate_checkpoints import apply_a_control_mode
+        cfg = config_for_test()
+        before = copy.deepcopy(vars(cfg))
+        apply_a_control_mode(vars(cfg), 'off')
+        changed = {k for k in before if before[k] != vars(cfg)[k]}
+        self.assertEqual(changed, {'search_a_control'})
+        enabled = make_agent(config_for_test())
+        disabled = make_agent(cfg)
+        disabled.load_state_dict(enabled.state_dict(), strict=True)
+        self.assertIsNotNone(disabled._wm.search_a)
+        self.assertIsNone(disabled._search_a)
+        self.assertEqual(set(enabled.state_dict()), set(disabled.state_dict()))
+
+    def test_checkpoint_mode_unchanged_and_non_a_rejected(self):
+        from evaluate_checkpoints import apply_a_control_mode
+        config = dict(search_a_enabled=False, search_a_control=True)
+        before = dict(config)
+        apply_a_control_mode(config, 'checkpoint')
+        self.assertEqual(config, before)
+        with self.assertRaises(ValueError):
+            apply_a_control_mode(config, 'off')
+
+    def test_scene_retry_never_retries_policy_failures_or_changed_spawn(self):
+        import json
+        from evaluate_checkpoints import retryable_initial_scene
+        with tempfile.TemporaryDirectory() as directory:
+            folder = pathlib.Path(directory)
+            (folder/'episodes').mkdir()
+            (folder/'initials').mkdir()
+            record = dict(status='error',steps=0,success=False,termination='error',
+                          error='Initial scene mismatch')
+            checks = dict(match=False,checks=dict(terrain_sha256=False,pos=True,life_stats=True))
+            rp=folder/'episodes/episode_006.json'
+            cp=folder/'initials/episode_006_comparison.json'
+            rp.write_text(json.dumps(record));cp.write_text(json.dumps(checks))
+            self.assertTrue(retryable_initial_scene(folder,6))
+            rp.write_text(json.dumps(dict(record,steps=1)))
+            self.assertFalse(retryable_initial_scene(folder,6))
+            rp.write_text(json.dumps(dict(record,status='completed',termination='time_limit')))
+            self.assertFalse(retryable_initial_scene(folder,6))
+            rp.write_text(json.dumps(record))
+            checks['checks']['pos']=False;cp.write_text(json.dumps(checks))
+            self.assertFalse(retryable_initial_scene(folder,6))
+
+    def test_reference_requires_same_weights_and_search_settings(self):
+        import json
+        from evaluate_checkpoints import validate_reference
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            reference = root/'reference'
+            folder = reference/'harvest_sand'/'run_00'
+            folder.mkdir(parents=True)
+            checkpoint_root = root/'ckpt'
+            args = SimpleNamespace(reference_output=reference,worker_episode=18,
+                checkpoint_root=checkpoint_root,a_control='off',
+                seed=2026102600,runs=1,episodes=20,fps=20,heatmap_mode='unet')
+            (reference/'manifest.json').write_text(json.dumps(dict(seed=args.seed,runs=1,episodes=20,fps=20)))
+            config = dict(search_a_enabled=True,search_a_control=True,search_a_horizon=6,
+                          search_b_enabled=False,seed=args.seed,device='cpu')
+            specs = dict(fast_reset=None)
+            sim = dict(seed=2026102618,world_seed='2026102618')
+            settings = dict(config=config,task_specs=specs,sim_specs=sim,
+                            checkpoint=str(checkpoint_root/'harvest_sand'/'latest.pt'))
+            path = folder/'settings_episode_018.json'
+            path.write_text(json.dumps(settings))
+            off = dict(config,search_a_control=False)
+            self.assertTrue(validate_reference(args,'harvest_sand',0,off,specs,sim)['common_config_matches'])
+            with self.assertRaises(ValueError):
+                validate_reference(args,'harvest_sand',0,dict(off,search_a_horizon=9),specs,sim)
+            settings['checkpoint'] = str(root/'different.pt')
+            path.write_text(json.dumps(settings))
+            with self.assertRaises(ValueError):
+                validate_reference(args,'harvest_sand',0,off,specs,sim)
+
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
