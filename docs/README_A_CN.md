@@ -696,11 +696,12 @@ python evaluate_checkpoints.py \
 ```bash
 TASK=harvest_sand
 mkdir -p logs/train/$TASK
-A_MODE=full nohup bash -c "sh ./scripts/train.sh $TASK && shutdown -h now" \
+NTFY_TOPIC="§{NTFY_TOPIC:?请先按第14节设置通知主题}" A_MODE=full \
+  nohup bash -c "sh ./scripts/train.sh $TASK" \
   > logs/train/$TASK/train_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 ```
 
-这是用户手动运行的示例，本轮没有执行它。默认仍为 seed=0、1M 步，env_seed=-1；没有循环多种子或更换任务预算。程序创建新时间戳目录，从头训练 A v3，不能将这个入口当作旧 A v2 的续训命令。
+这是用户手动运行的示例，本轮没有执行它。通知配置与推荐启动方式见第 14 节。默认仍为 seed=0、1M 步，env_seed=-1；没有循环多种子或更换任务预算。程序创建新时间戳目录，从头训练 A v3，不能将这个入口当作旧 A v2 的续训命令。
 
 消融继续用 `A_MODE=off`（无 A）或 `A_MODE=loss_only`（训练 A、不接管）；`--search_a_shared_grad_scale 0` 可隔离共享梯度。旧 A v2 的重现实验使用显式 `apm_a_legacy` 配置，不能混淆 full 的新默认含义。
 
@@ -715,3 +716,54 @@ A_MODE=full nohup bash -c "sh ./scripts/train.sh $TASK && shutdown -h now" \
 - 新 v3 检查点及两组优化器严格恢复通过；最终版“探索前缀 + 各分支 Actor 接续”候选已在 GPU 运行，并使用真实采沙 Replay 完成一次训练更新。记录为 `logs/test_apm_a_v3/checkpoint_reload_check.json`，运行输出为 `reload_20261027.log`。
 - 96 步真实环境检查完成于最终候选接续调整之前；后续候选接续改动由上述 CPU/GPU 检查覆盖，没有再启动一轮游戏或完整测评。
 - 核心代码变更在 search_a.py、models.py、expr.py、configs.yaml、tools.py；评测/测试沿用现有入口，没有新增重复训练启动脚本。
+
+
+## 14. 训练结束 ntfy 通知（2026-10-27）
+
+本地 `scripts/train.sh` 已加入可选通知。服务器代码和设置本轮均未修改，用户先完成 Git 提交与同步，再在启动训练的终端配置环境变量。
+
+### 启用和测试
+
+手机订阅的服务器默认是 `https://ntfy.sh`。在服务器终端填写手机已经订阅的主题，主题只通过环境变量传入，不写入 Git：
+
+```bash
+export NTFY_TOPIC='你在手机订阅的主题'
+
+curl -fsS --connect-timeout 5 --max-time 15 \
+  -H 'Title: Server notification test' \
+  -H 'Priority: high' \
+  --data-binary '这是服务器的通知测试，不代表训练已经结束。' \
+  "https://ntfy.sh/$NTFY_TOPIC"
+```
+
+手机收到这条消息后，说明本次服务器出口与手机接收链路可用。接口返回成功本身不能证明手机已经弹出提醒。
+
+### 新的推荐启动命令
+
+完成上述环境变量配置、激活训练环境，并进入服务器项目目录后：
+
+```bash
+TASK=harvest_sand
+mkdir -p logs/train/$TASK
+LOG_FILE="logs/train/$TASK/train_$(date +%Y%m%d_%H%M%S).log"
+
+A_MODE=full TRAIN_LOG_FILE="$LOG_FILE" \
+  nohup bash -c "sh ./scripts/train.sh $TASK" \
+  > "$LOG_FILE" 2>&1 &
+```
+
+这里保留 TASK、nohup 和时间戳日志风格，结束后由通知提醒用户去平台手动关闭实例；不接系统 shutdown，也不设置定时关机。NTFY_TOPIC 需与启动命令处于同一个终端会话，或者在启动命令前直接传入。
+
+### 行为和边界
+
+- 设置 NTFY_TOPIC 时启用通知；未设置则延用原入口的直接执行方式。
+- 正常退出、Python 报错退出都会发一条结束通知；TERM/INT/HUP 的可处理中断也会通知，并向训练子进程转交停止请求。
+- 内容包括项目、任务、模式、退出码、北京时间、数据日志根目录、可选输出日志路径，以及手动关闭实例提醒。
+- 正常退出指训练命令以 0 退出，不能用通知文字替代 checkpoint 的真实训练步数核验。
+- 默认 NTFY_SERVER=https://ntfy.sh，可通过环境变量覆盖以适配自己的 ntfy 服务。
+- 请求有连接/总时限和有限重试；发送失败记录到启动日志，并保留训练本来的退出码。
+- 启用通知时脚本保留一个等待训练结束的轻量 shell；不改变 Python 的训练参数、种子、预算、原有标量保存和 A/B 模式选择。
+- 整机断网、掉电或 kill -9 等无法执行退出处理的情况，不能依赖同机通知发送。
+- 本次用户确认尚未启动训练，因此直接用新入口即可，不需要外挂监控。
+
+本地验证仅使用回环 HTTP 服务与模拟训练进程，覆盖成功、训练错误、通知拒绝、未启用通知、原参数透传、信号中断与退出码保留；测试通过。脚本通过 sh 语法检查，没有调用远程服务器或发送模拟训练完成消息到真实主题。记录：`logs/test_train_notification/local_20261027.log`。

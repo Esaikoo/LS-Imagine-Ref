@@ -801,5 +801,98 @@ class RepairTrainingTests(unittest.TestCase):
         self.assertEqual(result["a_interrupt_rate"],1)
         self.assertEqual(result["a_mean_execution_length"],2)
 
+
+class TrainNotificationTests(unittest.TestCase):
+    def test_shell_notifications_preserve_result_arguments_and_signals(self):
+        import http.server
+        import json
+        import os
+        import signal
+        import subprocess
+        import threading
+        import time
+
+        requests = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body=self.rfile.read(int(self.headers.get("Content-Length","0"))).decode("utf-8")
+                requests.append(dict(path=self.path,body=body,title=self.headers.get("Title"),
+                                     priority=self.headers.get("Priority")))
+                self.send_response(403 if self.path=="/reject" else 200)
+                self.end_headers()
+                self.wfile.write(b'{"event":"message"}')
+            def log_message(self,*args):
+                pass
+
+        server=http.server.ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        worker=threading.Thread(target=server.serve_forever,daemon=True)
+        worker.start()
+        script=pathlib.Path(__file__).resolve().parents[1]/"scripts"/"train.sh"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root=pathlib.Path(tmp)
+                binary=root/"bin"
+                binary.mkdir()
+                fake=binary/"python"
+                fake.write_text(
+                    "#!/usr/bin/python3\nimport json,os,pathlib,sys,time\n"
+                    "pathlib.Path(os.environ['CAPTURE_ARGS']).write_text(json.dumps(sys.argv[1:]))\n"
+                    "time.sleep(30) if os.environ.get('FAKE_WAIT') else None\n"
+                    "sys.exit(int(os.environ.get('FAKE_TRAIN_STATUS','0')))\n")
+                fake.chmod(0o755)
+                base=dict(os.environ,PATH=str(binary)+os.pathsep+os.environ["PATH"],
+                          LOG_ROOT=str(root/"logs"),A_MODE="full",
+                          NTFY_SERVER="http://127.0.0.1:%d"%server.server_port,
+                          TRAIN_LOG_FILE="logs/train/unit/example.log")
+                for index,(status,topic,rejected) in enumerate(
+                        ((0,"unit-training",False),(7,"unit-training",False),
+                         (7,"reject",True),(0,"reject",True),(9,"",False))):
+                    with self.subTest(status=status,topic=topic):
+                        capture=root/("args_%d.json"%index)
+                        env=dict(base,NTFY_TOPIC=topic,CAPTURE_ARGS=str(capture),FAKE_TRAIN_STATUS=str(status))
+                        previous=len(requests)
+                        result=subprocess.run(["sh",str(script),"harvest_sand","--seed","7"],env=env,
+                                              capture_output=True,text=True,timeout=10)
+                        self.assertEqual(result.returncode,status,result.stderr)
+                        args=json.loads(capture.read_text())
+                        self.assertEqual(args[-2:],["--seed","7"])
+                        self.assertIn("apm_a",args)
+                        if not topic:
+                            self.assertEqual(len(requests),previous)
+                        else:
+                            self.assertEqual(len(requests),previous+1)
+                            record=requests[-1]
+                            self.assertIn("退出码：%d"%status,record["body"])
+                            self.assertIn("日志：logs/train/unit/example.log",record["body"])
+                            self.assertEqual(record["priority"],"high")
+                            self.assertTrue(record["title"].startswith(
+                                "Training completed:" if status==0 else "Training stopped:"))
+                            if rejected:
+                                self.assertIn("notification request failed",result.stderr)
+                for sig,expected in ((signal.SIGTERM,143),(signal.SIGINT,130)):
+                    capture=root/("signal_args_%d.json"%expected)
+                    env=dict(base,NTFY_TOPIC="unit-signal",CAPTURE_ARGS=str(capture),FAKE_WAIT="1")
+                    previous=len(requests)
+                    proc=subprocess.Popen(["sh",str(script),"harvest_sand"],env=env,
+                                          stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                    try:
+                        deadline=time.monotonic()+5
+                        while not capture.exists() and time.monotonic()<deadline:
+                            time.sleep(.02)
+                        self.assertTrue(capture.exists())
+                        proc.send_signal(sig)
+                        out,err=proc.communicate(timeout=5)
+                        self.assertEqual(proc.returncode,expected,out+err)
+                        self.assertEqual(len(requests),previous+1,out+err)
+                        self.assertIn("退出码：%d"%expected,requests[-1]["body"])
+                    finally:
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.communicate()
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
