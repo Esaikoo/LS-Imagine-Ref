@@ -6,7 +6,7 @@ python -m py_compile search_a.py search_evidence.py expr.py models.py tools.py t
   envs/tasks/minedojo/__init__.py envs/tasks/base/ls_imagine_wrapper.py
 bash -n scripts/test_a.sh
 sh -n scripts/train.sh
-echo '[A v2] CPU tests and syntax: PASS'
+echo '[A v3] CPU tests and syntax: PASS'
 if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" ]]; then
   MODE=full
   EXTRA=()
@@ -15,12 +15,12 @@ if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" ]]; then
     EXTRA=(--search_a_enabled False)
   fi
   # Fresh run root prevents stale checkpoints from satisfying verification.
-  RUN_ROOT="./logs/test_apm_a_v2/${MODE}_$(date +%Y%m%dT%H%M%S)_$$"
+  RUN_ROOT="./logs/test_apm_a_v3/${MODE}_$(date +%Y%m%dT%H%M%S)_$$"
   export MINEDOJO_HEADLESS=1 PYTHONUNBUFFERED=1
-  echo "[A v2] MineDojo $MODE: 96 train steps including 32 prefill; short eval."
+  echo "[A v3] MineDojo $MODE: 96 train steps including 32 prefill; short eval."
   python expr.py \
     --configs minedojo apm_a apm_a_smoke \
-    --task minedojo_harvest_log_in_plains --target_item log \
+    --task minedojo_harvest_sand --target_item sand \
     --steps 96 --prefill 32 --eval_every 96 --eval_episode_num 1 \
     --episode_max_steps_override 32 --log_every 16 --train_ratio 4 \
     --search_a_start_step 32 --search_a_override_prob 1.0 --search_a_epsilon 1.0 \
@@ -56,9 +56,12 @@ for episode in episodes:
         if episode.parent.name == 'train_eps' and 'log_search_override' in data.files:
             override += data['log_search_override'].sum()
 if mode == 'full':
-    assert checkpoint['search_a_version'] == 2
-    for key in ('A/future_loss','A/prediction_loss','A/new_loss','A/discovery_loss','A/revisit_loss'):
+    assert checkpoint['search_a_version'] == 3
+    for key in ('A/future_loss','A/prediction_loss','A/new_loss','A/discovery_loss','A/revisit_loss','A/current_visible_loss','A/future_visible_loss','A/shared_grad_scale'):
         assert any(key in row for row in rows), key
+    assert any('_a_opt' in key for key in checkpoint['optims_state_dict'])
+    assert checkpoint['search_a_control_version'] == 3
+    assert checkpoint['search_a_label_version'] == 2
     assert known > 0 and override > 0, (known, override)
     assert any(row.get('A/new_valid',0) > 0 for row in rows)
     assert any(row.get('A/discovery_valid',0) > 0 for row in rows)
@@ -67,9 +70,9 @@ else:
     assert not any('.search_a.' in key for key in checkpoint['agent_state_dict'])
     assert not any(row.get('eval_search_rate',0) for row in rows)
     assert not any('A/prediction_loss' in row for row in rows)
-print('[A v2] Verified model, real labels, eval isolation, replay and mode:', mode, latest)
+print('[A v3] Verified model, real labels, eval isolation, replay and mode:', mode, latest)
 CHECK
-  echo "[A v2] MineDojo $MODE: PASS"
+  echo "[A v3] MineDojo $MODE: PASS"
 elif [[ -n "${1:-}" ]]; then
   echo 'Usage: bash scripts/test_a.sh [--minedojo|--minedojo-off]' >&2
   exit 2

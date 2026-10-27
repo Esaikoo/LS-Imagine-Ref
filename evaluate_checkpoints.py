@@ -195,8 +195,9 @@ def configure_search_checkpoint(config, checkpoint):
     config['search_b_enabled'] = has_b
     if has_a and 'step' not in checkpoint:
         raise ValueError('A checkpoint requires training step to restore warmup')
-    from search_a import check_checkpoint
+    from search_a import check_checkpoint, restore_a_config
     from search_memory import check_b_checkpoint
+    restore_a_config(config, checkpoint)
     check_checkpoint(checkpoint, has_a)
     check_b_checkpoint(checkpoint, has_b)
     return int(checkpoint.get('step', 0))
@@ -205,6 +206,10 @@ def configure_search_checkpoint(config, checkpoint):
 def apply_a_control_mode(config, mode):
     """A runtime-only ablation: keep every trained module and its saved weights."""
     if mode == 'checkpoint':
+        return
+    if mode == 'repaired':
+        from search_a import apply_repaired_control
+        apply_repaired_control(config)
         return
     if mode != 'off':
         raise ValueError('Unknown A control mode')
@@ -232,14 +237,18 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
     different = [key for key, value in saved['config'].items()
                  if key not in runtime and not key.startswith(('search_a_', 'search_b_'))
                  and config.get(key) != value]
-    if getattr(args, 'a_control', 'checkpoint') == 'off':
+    if getattr(args, 'a_control', 'checkpoint') in ('off', 'repaired'):
         if not saved['config'].get('search_a_control') or not saved['config'].get('search_a_enabled'):
             raise ValueError('A-off ablation requires a reference with A control enabled')
         expected_path = (args.checkpoint_root / task / 'latest.pt').resolve()
         if Path(saved['checkpoint']).resolve() != expected_path:
             raise ValueError('A-off ablation must load exactly the reference checkpoint')
+        from search_a import REPAIRED_CONTROL_DEFAULTS
+        allowed = {'search_a_control'}
+        if args.a_control == 'repaired':
+            allowed.update(REPAIRED_CONTROL_DEFAULTS)
         for key, value in saved['config'].items():
-            if key.startswith(('search_a_', 'search_b_')) and key != 'search_a_control':
+            if key.startswith(('search_a_', 'search_b_')) and key not in allowed:
                 if config.get(key) != value:
                     different.append(key)
     clean = lambda spec: {k: v for k, v in spec.items() if k != 'log_dir'}
@@ -250,6 +259,10 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
     if different:
         raise ValueError('Reference settings differ: ' + ', '.join(different))
     return dict(output=str(root), common_config_matches=True,
+                a_control_mode=getattr(args, 'a_control', 'checkpoint'),
+                runtime_changes={k: dict(before=saved['config'].get(k), after=v)
+                    for k, v in config.items() if k.startswith("search_a_")
+                    and saved['config'].get(k) != v},
                 task_specs_match=True, sim_specs_match=True,
                 note='Same configured seeds and protocol; world identity checked separately from traces.')
 
@@ -493,6 +506,29 @@ def paired_main(args):
 
 
 def a_control_ablation_summary(args):
+    if args.a_control == "repaired":
+        task = args.tasks[0]
+        pairs = []
+        for episode in range(args.episodes):
+            stem = "episode_%03d.json" % episode
+            old_path = args.reference_output/task/"run_00"/"episodes"/stem
+            new_path = args.output/task/"run_00"/"episodes"/stem
+            if not old_path.exists() or not new_path.exists():
+                continue
+            old, new = json.loads(old_path.read_text()), json.loads(new_path.read_text())
+            if old["status"] != "completed" or new["status"] != "completed":
+                continue
+            if new.get("a_control_mode") != "repaired":
+                raise ValueError("Mixed controller versions in repaired results")
+            pairs.append(dict(episode=episode, world_seed=args.world_seed_start+episode,
+                              old_success=bool(old["success"]), repaired_success=bool(new["success"]),
+                              old_steps=old["steps"], repaired_steps=new["steps"],
+                              repaired_search_rate=new.get("search_rate", 0)))
+        summary = dict(completed=len(pairs), requested=args.episodes,
+                       old_successes=sum(p["old_success"] for p in pairs),
+                       repaired_successes=sum(p["repaired_success"] for p in pairs), pairs=pairs)
+        write_json(args.output/"a_repaired_comparison.json", summary)
+        return summary
     """Compare only maps completed in both the existing on run and the new off run."""
     task = args.tasks[0]
     pairs = []
@@ -589,7 +625,7 @@ def fixed_reference_main(args, manifest):
                 record_path = folder/'episodes'/('episode_%03d.json'%episode)
                 if record_path.exists():
                     record = json.loads(record_path.read_text())
-                    if record['status']=='completed' and record.get('a_control_mode')=='off':
+                    if record['status']=='completed' and record.get('a_control_mode')==args.a_control:
                         continue
                 command=[sys.executable,'-u',str(Path(__file__).resolve()),
                     '--checkpoint-root',str(args.checkpoint_root),'--output',str(args.output),
@@ -599,7 +635,7 @@ def fixed_reference_main(args, manifest):
                     '--heatmap-mode',args.heatmap_mode,'--reference-output',str(args.reference_output),
                     '--a-control',args.a_control,'--worker-task',task,'--worker-run','0',
                     '--worker-episode',str(episode)]
-                progress=dict(status='running',phase='a_control_off',episode=episode,
+                progress=dict(status='running',phase='a_control_' + args.a_control,episode=episode,
                     world_seed=args.world_seed_start+episode,pid=os.getpid())
                 write_json(args.output/'status.json',progress)
                 print(json.dumps(progress),flush=True)
@@ -628,11 +664,11 @@ def fixed_reference_main(args, manifest):
                 print(json.dumps({k:v for k,v in result.items() if k!='pairs'}),flush=True)
             result=a_control_ablation_summary(args)
             assert result['completed']==args.episodes
-            write_json(args.output/'status.json',dict(status='completed',phase='a_control_off',
-                completed_rollouts=result['completed'],on_successes=result['on_successes'],
-                off_successes=result['off_successes']))
+            write_json(args.output/'status.json',dict(status='completed',phase='a_control_' + args.a_control,
+                completed_rollouts=result['completed'],
+                comparison={k:v for k,v in result.items() if k != 'pairs'}))
         except BaseException:
-            write_json(args.output/'status.json',dict(status='failed',phase='a_control_off',
+            write_json(args.output/'status.json',dict(status='failed',phase='a_control_' + args.a_control,
                 episode=episode,error=traceback.format_exc(),console=str(folder/'console.log')))
             raise
 
@@ -733,6 +769,7 @@ def worker(args, manifest):
                checkpoint=str(checkpoint_path), checkpoint_step=checkpoint_step,
                a_control_mode=args.a_control,
                search_a_version=checkpoint.get('search_a_version'),
+               search_a_control_version=config.search_a_control_version,
                search_b_version=checkpoint.get('search_b_version'),
                reference_check=reference_check, max_steps=max_steps, heatmap_mode=args.heatmap_mode,
                seed_note=('Fresh world/client, explicit world/Java/mission seed; XML forces new world at time 6000.'
@@ -802,6 +839,12 @@ def worker(args, manifest):
                 if agent._wm.search_a is None or agent._search_a is not None:
                     raise RuntimeError('A-off must retain A weights and disable only the controller')
                 print('A control OFF: A network retained, identical weights loaded strictly.', flush=True)
+            if agent._search_a is not None:
+                write_json(folder / "search_control.json", dict(
+                    model_version=config.search_a_model_version,
+                    control_version=agent._search_a.control_version,
+                    macro_names=list(agent._search_a.macro_names),
+                    interrupt_codes={"1":"evidence", "2":"interaction", "3":"budget"}))
             agent._step = checkpoint_step
             agent._should_pretrain._once = False
             agent._logger.step = checkpoint_step * config.action_repeat
@@ -992,8 +1035,8 @@ def main():
                         help='zero skips U-Net generation and supplies zero heatmaps to the existing checkpoint')
     parser.add_argument('--reference-output', type=Path,
                         help='Existing evaluation root whose common config, seeds and task specs must match')
-    parser.add_argument('--a-control',choices=['checkpoint','off'],default='checkpoint',
-                        help='off retains the A checkpoint weights but disables online A intervention')
+    parser.add_argument('--a-control',choices=['checkpoint','off','repaired'],default='checkpoint',
+                        help='off disables A control; repaired applies v3 control to the same strictly loaded weights')
     parser.add_argument('--episode-order',type=int,nargs='+',
                         help='Permutation of all episode indices for a fixed-world A-off diagnosis')
     parser.add_argument('--paired-checkpoint-root', type=Path,
@@ -1030,18 +1073,18 @@ def main():
         if not 0 < args.seed < 2**31 - args.episodes - 1001:
             parser.error('Fixed evaluation requires a positive policy seed below signed 32-bit maximum')
         if not args.paired_checkpoint_root and args.worker_episode is None:
-            if not (args.a_control == 'off' and args.reference_output):
+            if not (args.a_control in ('off', 'repaired') and args.reference_output):
                 parser.error('Fixed-world evaluation requires paired mode or an A-off reference run')
     if args.worker_episode is not None and not 0 <= args.worker_episode < args.episodes:
         parser.error('worker-episode out of range')
-    if args.a_control == 'off' and args.paired_checkpoint_root:
+    if args.a_control in ('off', 'repaired') and args.paired_checkpoint_root:
         parser.error('A-off diagnosis reuses reference-output; do not pass paired-checkpoint-root')
-    if args.a_control == 'off' and (args.world_seed_start is None or args.reference_output is None):
+    if args.a_control in ('off', 'repaired') and (args.world_seed_start is None or args.reference_output is None):
         parser.error('A-off diagnosis requires fixed-world-seed and reference-output')
-    if args.a_control == 'off' and (len(args.tasks) != 1 or args.runs != 1):
+    if args.a_control in ('off', 'repaired') and (len(args.tasks) != 1 or args.runs != 1):
         parser.error('A-off diagnosis requires one task and runs=1')
     if args.episode_order is not None:
-        if args.a_control != 'off' or sorted(args.episode_order) != list(range(args.episodes)):
+        if args.a_control not in ('off', 'repaired') or sorted(args.episode_order) != list(range(args.episodes)):
             parser.error('episode-order must be a permutation of all A-off episodes')
     if args.probe_only and not args.paired_checkpoint_root:
         parser.error('probe-only requires paired mode')
@@ -1083,7 +1126,7 @@ def main():
             initial_audit='location, orientation, life/inventory, local terrain hash; not policy inputs',
             fixed_time=6000,allow_time_passage=False,weather='clear')
     if args.a_control != 'checkpoint':
-        manifest.update(a_control=args.a_control,ablation='Same A weights, only online control disabled')
+        manifest.update(a_control=args.a_control,ablation='Same A weights, explicit online control override: ' + args.a_control)
     manifest_path = args.output / 'manifest.json'
     if manifest_path.exists():
         if json.loads(manifest_path.read_text()) != manifest:

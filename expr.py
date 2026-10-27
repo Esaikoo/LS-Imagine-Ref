@@ -54,9 +54,24 @@ class LS_Imagine(nn.Module):
             min_positives=config.search_a_min_positives,
             margin=config.search_a_margin,
             start_step=config.search_a_start_step,
+            control_version=config.search_a_control_version,
+            commit_steps=config.search_a_commit_steps,
+            budget_window=config.search_a_budget_window,
+            budget_fraction=config.search_a_budget_fraction,
+            cooldown=config.search_a_cooldown,
+            revisit_gain_cap=config.search_a_revisit_gain_cap,
+            min_information_gain=config.search_a_min_information_gain,
+            repeat_cost=config.search_a_repeat_cost,
+            visible_score_weight=config.search_a_visible_score_weight,
+            visible_high=config.search_a_visible_high,
+            visible_low=config.search_a_visible_low,
+            conflict_steps=config.search_a_conflict_steps,
+            protect_interaction=config.search_a_protect_interaction,
+            seed=config.seed,
             # Random macros gather event supervision only while A is learning.
             epsilon=(config.search_a_epsilon if config.search_a_train
-                     and config.search_a_loss_weight > 0 and config.search_a_event_weight > 0 else 0.0),
+                     and config.search_a_loss_weight > 0 and (config.search_a_event_weight > 0
+                         or (config.search_a_model_version >= 3 and config.search_a_visible_weight > 0)) else 0.0),
         ) if config.search_a_enabled and config.search_a_control else None)
         if (
             config.compile and os.name != "nt"
@@ -148,10 +163,32 @@ class LS_Imagine(nn.Module):
                     memory=policy_memory[indices] if policy_memory is not None else None,
                     memory_transition=self._wm.search_b.imagine_step
                     if self._wm.search_b is not None and self._config.search_b_control else None)
+            def candidate_continuations(indices, templates):
+                # Imagine the committed exploration prefix, then Actor in each resulting state.
+                candidate_ids = torch.tensor([0, 1, 2, 3, 4, 6, 7], device=feat.device)
+                count, num = len(indices), len(candidate_ids)
+                prefix = templates[candidate_ids, :self._search_a.commit_steps]
+                prefix = prefix[None].expand(count, -1, -1, -1).reshape(
+                    count * num, self._search_a.commit_steps, self._config.num_actions)
+                expanded = {k: v[indices, None].expand(-1, num, *v.shape[1:]).reshape(
+                    count * num, *v.shape[1:]) for k, v in latent.items()}
+                expanded_memory = (policy_memory[indices, None].expand(-1, num, -1).reshape(
+                    count * num, -1) if policy_memory is not None else None)
+                imagined = actor_action_sequence(
+                    self._wm.dynamics, self._task_behavior.actor, expanded, prefix[:, 0],
+                    self._config.search_a_horizon, memory=expanded_memory,
+                    memory_transition=self._wm.search_b.imagine_step
+                    if self._wm.search_b is not None and self._config.search_b_control else None,
+                    prefix_actions=prefix)
+                result = templates[None].expand(count, -1, -1, -1).clone()
+                result[:, candidate_ids] = imagined.reshape(
+                    count, num, self._config.search_a_horizon, self._config.num_actions)
+                return result
             action, search_state, search_info = self._search_a.choose(
                 self._wm.search_a, feat, obs, proposed_action, search_state,
                 obs["is_first"], self._step, training, continuation,
-                memory=(memory_context if self._config.search_b_control else None))
+                memory=(memory_context if self._config.search_b_control else None),
+                candidate_sequence=candidate_continuations)
         logprob = actor.log_prob(action)
         latent = {k: v.detach() for k, v in latent.items()}
         action = action.detach()
@@ -170,7 +207,7 @@ class LS_Imagine(nn.Module):
 
     def _train(self, data):
         metrics = {}
-        post, post_zoomed, context, mets = self._wm._train(data)
+        post, post_zoomed, context, mets = self._wm._train(data, step=self._step)
         metrics.update(mets)
         # start = (post, post_zoomed)
 
@@ -230,7 +267,8 @@ def make_env(config, mode, id):
 
         collect_labels = (mode == "train" and (
             (config.search_a_enabled and config.search_a_train
-             and config.search_a_loss_weight > 0 and config.search_a_event_weight > 0)
+             and config.search_a_loss_weight > 0 and (config.search_a_event_weight > 0
+                  or (config.search_a_model_version >= 3 and config.search_a_visible_weight > 0)))
             or (config.search_b_enabled and config.search_b_loss_weight > 0)))
         kwargs = dict(
             log_dir=log_dir, target_item=config.target_item,
@@ -392,12 +430,16 @@ def main(config): # config is namespace
     
     if (logdir / "latest.pt").exists():
         checkpoint = torch.load(logdir / "latest.pt")
-        check_checkpoint(checkpoint, config.search_a_enabled)
+        check_checkpoint(checkpoint, config.search_a_enabled, config.search_a_model_version)
         check_b_checkpoint(checkpoint, config.search_b_enabled)
         agent.load_state_dict(checkpoint["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
         agent._step = int(checkpoint.get("step", agent._step))
+        if agent._search_a is not None:
+            agent._search_a.load_rng_state(checkpoint.get("search_a_rng_state"))
+        if "model_amp_scaler" in checkpoint:
+            agent._wm._model_opt._scaler.load_state_dict(checkpoint["model_amp_scaler"])
         logger.step = config.action_repeat * agent._step
 
     
@@ -449,7 +491,12 @@ def main(config): # config is namespace
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
             "step": agent._step,
             "config": vars(config),
-            "search_a_version": MODEL_VERSION if config.search_a_enabled else None,
+            "search_a_version": config.search_a_model_version if config.search_a_enabled else None,
+            "search_a_control_version": config.search_a_control_version if config.search_a_enabled else None,
+            "search_a_label_version": 2 if config.search_a_enabled else None,
+            "search_a_rng_state": agent._search_a.rng_state() if agent._search_a is not None else None,
+            "search_a_macro_names": list(agent._search_a.macro_names) if agent._search_a is not None else [],
+            "model_amp_scaler": agent._wm._model_opt._scaler.state_dict(),
             "search_b_version": B_VERSION if config.search_b_enabled else None,
         }
         

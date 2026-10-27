@@ -27,7 +27,7 @@ case "$TASK_NAME" in
   *) echo "Unknown task: $TASK_NAME" >&2; exit 2 ;;
 esac
 
-# Prepend the mode configuration; explicit extra arguments remain last.
+# full selects repaired A v3 (B disabled); explicit extra arguments remain last.
 case "$MODE" in
   full) set -- --configs minedojo apm_a "$@" ;;
   off) set -- --configs minedojo apm_a_off "$@" ;;

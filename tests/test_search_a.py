@@ -14,7 +14,7 @@ from torch.nn import functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from search_a import (SearchOutcomeHead, SearchAController, macro_actions, actor_action_sequence,
-                      check_checkpoint, normalize_feature, MODEL_VERSION)
+                      check_checkpoint, normalize_feature, MODEL_VERSION, LABEL_VERSION)
 from search_evidence import (SearchEvidence, SearchEvidenceWrapper, SEARCH_LABEL_KEYS,
                              complete_episode_labels, lidar_rays)
 
@@ -36,7 +36,7 @@ def config_for_test(**overrides):
     config.update(device="cpu", num_actions=12, episode_max_steps=24, search_a_start_step=0,
                   logdir=str(pathlib.Path(__file__).resolve().parents[1]/"logs"/"test_apm_a_v2"/"unit"),
                   search_a_override_prob=1.0, search_a_low_evidence=1.1, search_a_min_labels=1,
-                  search_a_min_positives=0)
+                  search_a_min_positives=0, search_a_protect_interaction=False)
     config.update(overrides)
     return SimpleNamespace(**config)
 
@@ -55,7 +55,7 @@ def replay_batch(time=12):
     data["heatmap_on_zoomed"] = data["heatmap"].copy()
     for key in SEARCH_LABEL_KEYS:
         data[key] = np.zeros((1,time),np.float32)
-    data["search_label_version"][:] = MODEL_VERSION
+    data["search_label_version"][:] = LABEL_VERSION
     for event in ("new","discovery","revisit"):
         data["search_"+event+"_valid"][:] = 1
         data["search_"+event][:, 7] = 1
@@ -159,7 +159,7 @@ class PredictionTests(unittest.TestCase):
             "action":F.pad(F.one_hot(torch.arange(18)[None]%12,12).float(),(0,1)),
             "is_first":torch.zeros(1,18),
             "is_zoomed":torch.ones(1,18),
-            "search_label_version":torch.full((1,18),MODEL_VERSION)}
+            "search_label_version":torch.full((1,18),LABEL_VERSION)}
         self.batch["is_first"][:,0]=1
 
     def test_shapes_alignment_and_stop_gradient_targets(self):
@@ -371,7 +371,7 @@ class ReplayAndIntegrationTests(unittest.TestCase):
         for k,v in frozen._wm.search_a.state_dict().items():
             torch.testing.assert_close(v,before[k])
         for overrides in (dict(search_a_train=False), dict(search_a_loss_weight=0.),
-                          dict(search_a_event_weight=0.)):
+                          dict(search_a_event_weight=0.,search_a_visible_weight=0.)):
             inactive=make_agent(config_for_test(search_a_epsilon=1., **overrides))
             self.assertEqual(inactive._search_a.epsilon,0.)
             data=replay_batch()
@@ -559,6 +559,247 @@ class EvaluationAControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_reference(args,'harvest_sand',0,off,specs,sim)
 
+
+
+class RepairedControlTests(unittest.TestCase):
+    setUp = ControlTests.setUp
+    choose = ControlTests.choose
+
+    def controller(self, **kwargs):
+        settings = dict(control_version=3,start_step=0,override_prob=1.,epsilon=0.,
+                        min_labels=1,min_positives=1)
+        settings.update(kwargs)
+        return SearchAController(**settings)
+
+    def test_new_evidence_interrupts_on_same_step_without_restart(self):
+        ctrl = self.controller()
+        _, state, info = self.choose(ctrl)
+        self.assertEqual(info["log_search_override"].sum().item(),2)
+        self.obs["heatmap"].fill_(1.)
+        out, state, info = self.choose(ctrl,state)
+        self.assertEqual(out.argmax(-1).tolist(),[0,0])
+        self.assertEqual(info["log_search_interrupt"].tolist(),[1,1])
+        self.assertEqual(info["log_search_completed_length"].tolist(),[1,1])
+        self.assertEqual(info["log_search_decision"].sum().item(),0)
+        self.obs["heatmap"].zero_()
+        _, _, info = self.choose(ctrl,state)
+        self.assertEqual(info["log_search_override"].sum().item(),0)
+
+    def test_actor_interaction_preempts_macro(self):
+        ctrl = self.controller()
+        _, state, _ = self.choose(ctrl)
+        self.actor = F.one_hot(torch.tensor([1,11]),12).float()
+        out, _, info = self.choose(ctrl,state)
+        torch.testing.assert_close(out,self.actor)
+        self.assertEqual(info["log_search_interrupt"].tolist(),[2,2])
+
+    def test_repeated_ineffective_interaction_does_not_lock_out_search(self):
+        ctrl = self.controller()
+        self.actor = F.one_hot(torch.tensor([1,11]),12).float()
+        state = None
+        for _ in range(2):
+            _, state, info = self.choose(ctrl,state)
+            self.assertEqual(info["log_search_override"].sum().item(),0)
+        _, _, info = self.choose(ctrl,state)
+        self.assertEqual(info["log_search_override"].sum().item(),2)
+
+    def test_rolling_budget_commit_limit_and_episode_reset(self):
+        ctrl = self.controller(cooldown=0)
+        state, actions = None, []
+        for _ in range(240):
+            _,state,info = self.choose(ctrl,state)
+            actions.append(int(info["log_search_override"][0]))
+            self.assertLessEqual(info["log_search_completed_length"].max().item(),2)
+        for start in range(len(actions)-99):
+            self.assertLessEqual(sum(actions[start:start+100]),20)
+        self.assertGreater(sum(actions),0)
+        _,state,info = self.choose(ctrl,state,first=torch.ones(2))
+        self.assertEqual(info["log_search_override"].sum().item(),2)
+        self.assertEqual(state[3].sum(-1).tolist(),[1.,1.])
+
+    def test_vertical_candidates_keep_actor_id_and_twelve_actions(self):
+        for candidate, action in ((6,3),(7,2)):
+            out,_,info = self.choose(self.controller(),best=candidate)
+            self.assertEqual(out.argmax(-1).tolist(),[action,action])
+            self.assertEqual(tuple(out.shape),(2,12))
+            self.assertEqual(tuple(info["log_search_scores"].shape),(2,8))
+            self.assertEqual(info["log_search_macro_id"].tolist(),[candidate,candidate])
+        out,_,info = self.choose(self.controller(),best=5)
+        torch.testing.assert_close(out,self.actor)
+        self.assertEqual(info["log_search_override"].sum().item(),0)
+
+    def test_predictor_compares_conditional_actor_followup(self):
+        ctrl=self.controller()
+        def tails(indices,templates):
+            result=templates[None].expand(len(indices),-1,-1,-1).clone()
+            result[:,:,2:]=self.actor[indices,None,None]
+            return result
+        def prediction(feat,seq):
+            self.assertTrue((seq[:,:5,2:].argmax(-1)==0).all())
+            logits=torch.full((*feat.shape[:-1],3),-8.)
+            logits[:,0,1]=8.
+            return dict(future=torch.zeros_like(feat),event_logits=logits)
+        with mock.patch.object(self.head,"forward",side_effect=prediction):
+            out,_,_=ctrl.choose(self.head,self.feat,self.obs,self.actor,None,torch.zeros(2),100,False,
+                               lambda i:self.actor[i,None].expand(-1,6,-1),candidate_sequence=tails)
+        self.assertEqual(out.argmax(-1).tolist(),[4,4])
+
+    def test_revisit_improvement_alone_does_not_justify_override(self):
+        def predict(feat,actions):
+            logits = torch.full((*feat.shape[:-1],3),-8.)
+            logits[:,5,2] = 8.
+            return dict(future=torch.zeros_like(feat),event_logits=logits)
+        ctrl = self.controller()
+        with mock.patch.object(self.head,"forward",side_effect=predict):
+            out,_,info=ctrl.choose(self.head,self.feat,self.obs,self.actor,None,torch.zeros(2),100,False,
+                                  lambda i:self.actor[i,None].expand(-1,6,-1))
+        torch.testing.assert_close(out,self.actor)
+        self.assertEqual(info["log_search_override"].sum().item(),0)
+
+    def test_training_exploration_has_private_restorable_rng(self):
+        ctrl = self.controller(epsilon=1.,cooldown=0)
+        self.head.label_counts.zero_()
+        global_rng = torch.random.get_rng_state()
+        _,state,_ = self.choose(ctrl,training=True)
+        saved_rng = ctrl.rng_state()
+        restored = self.controller(epsilon=1.,cooldown=0)
+        restored.load_rng_state(saved_rng)
+        one = self.choose(ctrl,state,training=True)
+        two = self.choose(restored,state,training=True)
+        torch.testing.assert_close(one[0],two[0])
+        self.assertTrue(torch.equal(global_rng,torch.random.get_rng_state()))
+        history, state = [], None
+        for _ in range(120):
+            _,state,info = self.choose(ctrl,state,training=True)
+            history.append(int(info["log_search_override"][0]))
+        self.assertTrue(all(sum(history[i:i+100])<=20 for i in range(21)))
+
+    def test_visibility_conflict_uses_only_trained_prediction(self):
+        ctrl = self.controller(conflict_steps=3)
+        self.obs["heatmap"].fill_(1.)
+        state = None
+        with mock.patch.object(self.head,"visibility",return_value=torch.zeros(2)):
+            # Unready prediction cannot overrule the old heatmap gate.
+            _,state,info = self.choose(ctrl,state)
+            self.assertEqual(info["log_search_override"].sum().item(),0)
+            self.head.visible_counts[:] = 10
+            self.head.visible_positives[:] = 5
+            for _ in range(2):
+                _,state,info = self.choose(ctrl,state)
+                self.assertEqual(info["log_search_override"].sum().item(),0)
+            _,_,info = self.choose(ctrl,state)
+            self.assertEqual(info["log_search_override"].sum().item(),2)
+
+
+class RepairTrainingTests(unittest.TestCase):
+    def test_visibility_targets_use_label_v2_and_mask_unknowns(self):
+        head=SearchOutcomeHead(32,hidden=32)
+        feat=torch.randn(1,12,32,requires_grad=True)
+        data={k:torch.as_tensor(v) for k,v in replay_batch().items()}
+        data["search_visible_valid"][:]=1
+        data["search_visible"][:,6:]=1
+        loss,metrics,counts,positive=head.training_loss(feat,data)
+        self.assertEqual(metrics["A/current_visible_valid"].item(),12)
+        self.assertEqual(metrics["A/future_visible_valid"].item(),6)
+        self.assertEqual(metrics["A/future_visible_positive_rate"].item(),1)
+        loss.backward()
+        self.assertGreater(head.current_visible[0].weight.grad.abs().sum().item(),0)
+        self.assertGreater(head.future_visible.weight.grad.abs().sum().item(),0)
+        head.record_supervision(counts,positive)
+        self.assertTrue(head.ready_visibility(1,1)[0])
+        self.assertFalse(head.ready_visibility(1,1)[1])  # All terminal labels positive.
+        data["search_visible_valid"].zero_()
+        _,metrics,_,_=head.training_loss(feat,data)
+        self.assertEqual(metrics["A/current_visible_loss"].item(),0)
+        self.assertEqual(metrics["A/future_visible_loss"].item(),0)
+
+    def test_scaled_input_changes_only_shared_gradient(self):
+        head=SearchOutcomeHead(32,hidden=32)
+        source=torch.randn(1,12,32)
+        data={k:torch.as_tensor(v) for k,v in replay_batch().items()}
+        grads, losses = [], []
+        for alpha in (0.,0.1,1.):
+            feat=source.clone().requires_grad_(True)
+            head.zero_grad()
+            scaled=feat.detach()+alpha*(feat-feat.detach())
+            loss,_,_,_=head.training_loss(scaled,data)
+            loss.backward()
+            losses.append(loss.item())
+            grads.append(feat.grad.clone())
+            self.assertGreater(head.input[0].weight.grad.abs().sum().item(),0)
+        self.assertEqual(losses[0],losses[2])
+        self.assertEqual(grads[0].abs().sum().item(),0)
+        torch.testing.assert_close(grads[1],grads[2]*0.1)
+
+    def test_detached_A_does_not_change_base_model_update(self):
+        baseline=make_agent(config_for_test(search_a_enabled=False))
+        repaired=make_agent(config_for_test(search_a_shared_grad_scale=0.))
+        before=next(repaired._wm.search_a.parameters()).detach().clone()
+        data=replay_batch()
+        rng=torch.random.get_rng_state()
+        baseline._wm._train(copy.deepcopy(data),step=20000)
+        torch.random.set_rng_state(rng)
+        _,_,_,metrics=repaired._wm._train(copy.deepcopy(data),step=20000)
+        for name,param in baseline._wm.named_parameters():
+            torch.testing.assert_close(param,dict(repaired._wm.named_parameters())[name],
+                                       atol=1e-7,rtol=1e-5,msg=name)
+        self.assertFalse(torch.equal(before,next(repaired._wm.search_a.parameters())))
+        self.assertEqual(metrics["A/shared_grad_scale"],0)
+        self.assertEqual(metrics["search_a_update_applied"],1)
+
+    def test_shared_gradient_schedule_uses_restored_environment_step(self):
+        agent=make_agent(config_for_test(search_a_grad_warmup=10,search_a_grad_ramp=20,
+                                        search_a_shared_grad_scale=0.1))
+        for step, expected in ((5,0.),(20,0.05),(30,0.1)):
+            _,_,_,metrics=agent._wm._train(replay_batch(),step=step)
+            self.assertAlmostEqual(float(metrics["A/shared_grad_scale"]),expected,places=6)
+            self.assertEqual(metrics["model_update_applied"],1)
+            self.assertEqual(metrics["search_a_update_applied"],1)
+
+    def test_independent_clipping_and_atomic_nonfinite_skip(self):
+        import tools
+        base=torch.nn.Parameter(torch.tensor(1.))
+        extra=torch.nn.Parameter(torch.tensor(1.))
+        primary=tools.Optimizer("base",[base],.1,clip=1.,wd=0.,opt="sgd")
+        auxiliary=tools.Optimizer("extra",[extra],.1,clip=1.,wd=0.,opt="sgd")
+        primary(base.square()+extra.square()*1e6,[base],auxiliary=auxiliary)
+        self.assertAlmostEqual(base.item(),.9,places=5)
+        saved=base.detach().clone(),extra.detach().clone()
+        result=primary(base.square()+extra*float("inf"),[base],auxiliary=auxiliary)
+        torch.testing.assert_close(base,saved[0])
+        torch.testing.assert_close(extra,saved[1])
+        self.assertEqual(result["extra_update_applied"],0)
+
+    def test_old_checkpoint_remains_strictly_loadable(self):
+        from search_a import restore_a_config,apply_repaired_control
+        old_cfg=config_for_test(search_a_model_version=2,search_a_control_version=2,
+                                search_a_separate_optimizer=False)
+        old=make_agent(old_cfg)
+        saved={k:v for k,v in vars(old_cfg).items() if k.startswith("search_a_")
+               and k not in ("search_a_model_version","search_a_control_version")}
+        checkpoint=dict(agent_state_dict=old.state_dict(),search_a_version=2,config=saved,step=1000000)
+        new_cfg=vars(config_for_test())
+        restore_a_config(new_cfg,checkpoint)
+        self.assertEqual(new_cfg["search_a_model_version"],2)
+        self.assertEqual(new_cfg["search_a_control_version"],2)
+        new=make_agent(SimpleNamespace(**new_cfg))
+        new.load_state_dict(checkpoint["agent_state_dict"],strict=True)
+        apply_repaired_control(new_cfg)
+        repaired=make_agent(SimpleNamespace(**new_cfg))
+        repaired.load_state_dict(checkpoint["agent_state_dict"],strict=True)
+        self.assertEqual(repaired._search_a.control_version,3)
+        self.assertEqual(repaired._wm.search_a.model_version,2)
+
+    def test_control_diagnostics_count_actual_actions(self):
+        import tools
+        episode=dict(action=np.eye(12)[[0,4,4,1]],
+                     log_search_decision=[0,1,0,0],log_search_macro_id=[-1,0,0,-1],
+                     log_search_completed_length=[0,0,0,2],log_search_interrupt=[0,0,0,1])
+        result=tools.search_episode_diagnostics(episode)
+        self.assertAlmostEqual(result["action_turn_rate"],2/3)
+        self.assertAlmostEqual(result["action_interaction_rate"],1/3)
+        self.assertEqual(result["a_interrupt_rate"],1)
+        self.assertEqual(result["a_mean_execution_length"],2)
 
 if __name__=="__main__":
     unittest.main(verbosity=2)

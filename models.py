@@ -52,6 +52,7 @@ class WorldModel(nn.Module):
         super(WorldModel, self).__init__()
         self._use_amp = True if config.precision == 16 else False
         self._config = config
+        self._training_step = int(step)
         shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items() if not k.startswith("search_")} # 'image': (64, 64, 3)
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
         self.embed_size = self.encoder.outdim
@@ -172,7 +173,9 @@ class WorldModel(nn.Module):
                 self.search_a = SearchOutcomeHead(
                     feat_size, config.search_a_horizon, config.search_a_hidden,
                     config.search_a_future_weight, config.search_a_event_weight,
-                    memory_dim=config.search_b_dim if config.search_b_enabled else 0)
+                    memory_dim=config.search_b_dim if config.search_b_enabled else 0,
+                    version=config.search_a_model_version,
+                    visible_weight=config.search_a_visible_weight)
 
         # APM-IMAGINE B STAGE: trainable persistent search-memory encoder.
         self.search_b = None
@@ -190,9 +193,14 @@ class WorldModel(nn.Module):
         for name in config.grad_heads:
             assert name in self.heads, name
 
+        self._a_opt = None
+        a_parameters = list(self.search_a.parameters()) if self.search_a is not None else []
+        separate = self.search_a is not None and config.search_a_separate_optimizer
+        a_ids = set(map(id, a_parameters)) if separate else set()
+        self._base_parameters = [p for p in self.parameters() if id(p) not in a_ids]
         self._model_opt = tools.Optimizer(
             "model",
-            self.parameters(),
+            self._base_parameters,
             config.model_lr,
             config.opt_eps,
             config.grad_clip,
@@ -201,9 +209,14 @@ class WorldModel(nn.Module):
             use_amp=self._use_amp,
         )
 
-        print(
-            f"Optimizer model_opt has {sum(param.numel() for param in self.parameters())} variables."
-        )
+        if separate:
+            self._a_opt = tools.Optimizer(
+                "search_a", a_parameters, config.model_lr, config.opt_eps,
+                config.grad_clip, config.weight_decay, opt=config.opt, use_amp=self._use_amp)
+            self._a_opt._scaler = self._model_opt._scaler
+        print(f"Optimizer model_opt has {sum(p.numel() for p in self._base_parameters)} variables.")
+        if separate:
+            print(f"Optimizer search_a has {sum(p.numel() for p in a_parameters)} variables.")
 
         # other losses are scaled by 1.0.
         self._scales = dict(
@@ -215,8 +228,10 @@ class WorldModel(nn.Module):
             accumulated_reward=config.accumulated_reward_head["loss_scale"],
         )
 
-    def _train(self, data_origin):
+    def _train(self, data_origin, step=None):
         
+        if step is not None:
+            self._training_step = int(step)
         data = self.preprocess(data_origin, zoomed=False)
         data_zoomed = self.preprocess(data_origin, zoomed=True)
 
@@ -393,14 +408,27 @@ class WorldModel(nn.Module):
                        and config_search_weight(self._config) > 0)
             if train_a:
                 with torch.cuda.amp.autocast(self._use_amp):
+                    a_feat = self.dynamics.get_feat(post)
+                    alpha = 1.0
+                    if self.search_a.model_version >= 3:
+                        fraction = max(0., min(1., (self._training_step - self._config.search_a_grad_warmup)
+                                               / max(1, self._config.search_a_grad_ramp)))
+                        alpha = self._config.search_a_shared_grad_scale * fraction
+                        if not 0 <= alpha <= 1:
+                            raise ValueError("A shared gradient scale must be in [0, 1]")
+                        a_feat = a_feat.detach() + alpha * (a_feat - a_feat.detach())
                     a_loss, a_metrics, counts, positives = self.search_a.training_loss(
-                        self.dynamics.get_feat(post), data,
-                        memory=b_context if self._config.search_b_control else None)
+                        a_feat, data, memory=b_context if self._config.search_b_control else None)
+                    a_metrics["A/shared_grad_scale"] = torch.tensor(alpha)
             total_loss = torch.mean(model_loss) + (
                 config_search_weight(self._config) * a_loss
                 + self._config.search_b_loss_weight * b_loss)
-            metrics = self._model_opt(total_loss, self.parameters())
-            if train_a and torch.isfinite(a_loss):
+            metrics = self._model_opt(
+                total_loss, self._base_parameters,
+                auxiliary=self._a_opt if train_a else None)
+            metrics["model_total_loss"] = to_np(total_loss)
+            updated = metrics.get("search_a_update_applied", metrics["model_update_applied"])
+            if train_a and updated and torch.isfinite(a_loss):
                 self.search_a.record_supervision(counts, positives)
             for b_key, b_val in b_metrics.items():
                 metrics[b_key] = to_np(b_val)

@@ -237,6 +237,28 @@ def calculate_accumulated_reward(rewards, intrinsics, gamma):
     
     return total_reward / gamma_sum  
 
+
+def search_episode_diagnostics(episode):
+    """Action names are commands, not proof of physical motion (jump moves forward)."""
+    result = {}
+    actions = np.asarray(episode.get("action", []))
+    if actions.ndim == 2 and len(actions) > 1:
+        ids = actions[1:].argmax(-1)
+        result["action_turn_rate"] = float(np.isin(ids, [2, 3, 4, 5]).mean())
+        result["action_interaction_rate"] = float(np.isin(ids, [1, 11]).mean())
+    if "log_search_completed_length" in episode:
+        lengths = np.asarray(episode["log_search_completed_length"], dtype=float)
+        completed = lengths[lengths > 0]
+        decisions = np.asarray(episode["log_search_decision"]) > 0
+        macro_ids = np.asarray(episode["log_search_macro_id"])
+        starts = int((decisions & (macro_ids >= 0) & (macro_ids != 5)).sum())
+        interruptions = np.asarray(episode["log_search_interrupt"], dtype=float)
+        result["a_mean_execution_length"] = float(completed.mean()) if len(completed) else 0.
+        result["a_interrupt_rate"] = float((interruptions > 0).sum()) / max(1, starts)
+        for code, name in ((1, "evidence"), (2, "interaction"), (3, "budget")):
+            result["a_interrupt_" + name] = float((interruptions == code).sum())
+    return result
+
 def simulate(
     agent,
     envs, 
@@ -375,6 +397,7 @@ def simulate(
                     cache[envs[i].id].get("log_search_decision", [0.0])
                 ).sum()) / max(1, episode_length)
 
+                a_diagnostics = search_episode_diagnostics(cache[envs[i].id])
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
@@ -394,6 +417,8 @@ def simulate(
                     if b_present:
                         logger.scalar("train_b_revisit_rate", b_revisit_rate)
                     logger.scalar("train_search_decision_rate", search_decision_rate)
+                    for key, value in a_diagnostics.items():
+                        logger.scalar("train_" + key, value)
                     logger.scalar(f"train_first_success_step", first_success_step)
                     logger.write(step=logger.step)
                 else:
@@ -405,6 +430,7 @@ def simulate(
                         eval_search_rates = []
                         eval_search_decision_rates = []
                         eval_b_revisit_rates = []
+                        eval_a_diagnostics = []
                         eval_done = False
                     # start counting scores for evaluation
                     eval_scores.append(score)
@@ -414,6 +440,7 @@ def simulate(
                     if b_present:
                         eval_b_revisit_rates.append(b_revisit_rate)
                     eval_search_decision_rates.append(search_decision_rate)
+                    eval_a_diagnostics.append(a_diagnostics)
                     eval_first_success_step.append(first_success_step)
 
                     score = sum(eval_scores) / len(eval_scores)
@@ -435,6 +462,9 @@ def simulate(
                         if eval_b_revisit_rates:
                             logger.scalar("eval_b_revisit_rate", float(np.mean(eval_b_revisit_rates)))
                         logger.scalar("eval_search_decision_rate", float(np.mean(eval_search_decision_rates)))
+                        for key in set().union(*(d.keys() for d in eval_a_diagnostics)):
+                            logger.scalar("eval_" + key, float(np.mean(
+                                [d[key] for d in eval_a_diagnostics if key in d])))
                         logger.scalar(f"eval_first_success_step", first_success_step)
                         logger.write(step=logger.step)
                         eval_done = True
@@ -1030,6 +1060,7 @@ class Optimizer:
         assert 0 <= wd < 1
         assert not clip or 1 <= clip
         self._name = name
+        parameters = list(parameters)
         self._parameters = parameters
         self._clip = clip
         self._wd = wd
@@ -1043,22 +1074,34 @@ class Optimizer:
         }[opt]()
         self._scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
-    def __call__(self, loss, params, retain_graph=True):
+    def __call__(self, loss, params, retain_graph=True, auxiliary=None):
+        """One backward pass, disjoint parameter groups and independent clipping."""
         assert len(loss.shape) == 0, loss.shape
-        metrics = {}
-        metrics[f"{self._name}_loss"] = loss.detach().cpu().numpy()
-        self._opt.zero_grad()
+        groups = [(self, list(params))]
+        if auxiliary is not None:
+            groups.append((auxiliary, auxiliary._parameters))
+            if set(map(id, groups[0][1])) & set(map(id, groups[1][1])):
+                raise ValueError("Optimizer groups must not overlap")
+        metrics = {f"{self._name}_loss": loss.detach().cpu().numpy()}
+        for opt, _ in groups:
+            opt._opt.zero_grad()
         self._scaler.scale(loss).backward(retain_graph=retain_graph)
-        self._scaler.unscale_(self._opt)
-        # loss.backward(retain_graph=retain_graph)
-        norm = torch.nn.utils.clip_grad_norm_(params, self._clip)
-        if self._wd:
-            self._apply_weight_decay(params)
-        self._scaler.step(self._opt)
+        finite = True
+        for opt, parameters in groups:
+            self._scaler.unscale_(opt._opt)
+            norm = torch.nn.utils.clip_grad_norm_(parameters, opt._clip)
+            metrics[f"{opt._name}_grad_norm"] = norm.item()
+            finite = finite and bool(torch.isfinite(norm))
+        # An AMP/nonfinite skip must not count as completed A supervision.
+        for opt, parameters in groups:
+            if finite:
+                if opt._wd:
+                    opt._apply_weight_decay(parameters)
+                self._scaler.step(opt._opt)
+            metrics[f"{opt._name}_update_applied"] = float(finite)
         self._scaler.update()
-        # self._opt.step()
-        self._opt.zero_grad()
-        metrics[f"{self._name}_grad_norm"] = norm.item()
+        for opt, _ in groups:
+            opt._opt.zero_grad()
         return metrics
 
     def _apply_weight_decay(self, varibs):

@@ -11,7 +11,7 @@ import tools
 from parallel import Parallel, Damy
 
 from expr import LS_Imagine, make_env, make_dataset, check_b_checkpoint
-from search_a import check_checkpoint
+from search_a import check_checkpoint, restore_a_config, apply_repaired_control
 
 os.environ["MUJOCO_GL"] = "osmesa"
 sys.path.append(str(pathlib.Path(__file__).parent))
@@ -22,7 +22,15 @@ def main(config):
 
     checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    check_checkpoint(checkpoint, config.search_a_enabled)
+    requested_control = config.search_a_control
+    restore_a_config(vars(config), checkpoint)
+    if not requested_control or config.search_a_eval_mode == "off":
+        config.search_a_control = False
+    elif config.search_a_eval_mode == "repaired":
+        apply_repaired_control(vars(config))
+    elif config.search_a_eval_mode != "checkpoint":
+        raise ValueError("search_a_eval_mode must be checkpoint, off, or repaired")
+    check_checkpoint(checkpoint, config.search_a_enabled, config.search_a_model_version)
     check_b_checkpoint(checkpoint, config.search_b_enabled)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:

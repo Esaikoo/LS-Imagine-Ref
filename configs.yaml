@@ -22,7 +22,7 @@ defaults:
   debug: False
   video_pred_log: True
 
-  # A v2 switches: architecture, auxiliary learning, and real action control.
+  # A switches: architecture, auxiliary learning, and real action control.
   search_a_enabled: False
   search_a_train: True
   search_a_control: True
@@ -44,6 +44,26 @@ defaults:
   search_a_margin: 0.0
   search_a_ray_distance: 32.0
   search_a_cell_size: 2.0
+  search_a_model_version: 2  # Old presets retain their architecture.
+  search_a_control_version: 2
+  search_a_visible_weight: 0.5
+  search_a_separate_optimizer: False
+  search_a_shared_grad_scale: 0.1
+  search_a_grad_warmup: 10000
+  search_a_grad_ramp: 20000
+  search_a_commit_steps: 2
+  search_a_budget_window: 100
+  search_a_budget_fraction: 0.2
+  search_a_cooldown: 2
+  search_a_revisit_gain_cap: 0.02
+  search_a_min_information_gain: 0.005
+  search_a_repeat_cost: 0.03
+  search_a_visible_score_weight: 1.0
+  search_a_visible_high: 0.6
+  search_a_visible_low: 0.2
+  search_a_conflict_steps: 8
+  search_a_protect_interaction: True
+  search_a_eval_mode: checkpoint
   env_seed: -1
 
   # B v2: durable keyframes, recurrent belief and memory-conditioned imagination.
@@ -194,10 +214,29 @@ debug:
   batch_size: 10
   batch_length: 20
 
-# A v2: future posterior features + verified exploration events.
+# Repaired A v3: bounded control, learned visibility and controlled shared gradients.
 apm_a:
   compile: False
   search_a_enabled: True
+  search_b_enabled: False
+  search_a_model_version: 3
+  search_a_control_version: 3
+  search_a_separate_optimizer: True
+  search_a_revisit_weight: 0.15
+  search_a_margin: 0.02
+  search_a_min_labels: 512
+  search_a_min_positives: 8
+
+# Historical A v2, retained for explicit reproductions rather than new runs.
+apm_a_legacy:
+  compile: False
+  search_a_enabled: True
+  search_b_enabled: False
+  search_a_model_version: 2
+  search_a_control_version: 2
+  search_a_separate_optimizer: False
+  search_a_revisit_weight: 0.5
+  search_a_margin: 0.0
 
 # Same training budget and base model, no A architecture or privileged sensors.
 apm_a_off:
