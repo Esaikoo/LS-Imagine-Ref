@@ -12,6 +12,7 @@ from torch import nn
 import networks
 import tools
 from search_a import SearchOutcomeHead
+from search_feedback import FullSearchOutcomeHead, actor_search_bonus
 from search_memory import SearchMemory, describe_torch
 
 
@@ -170,12 +171,13 @@ class WorldModel(nn.Module):
                 raise ValueError("A requires 12 actions and batch_length > horizon")
             # Enabling A must not perturb initialization of the original Actor.
             with torch.random.fork_rng(devices=[]):
-                self.search_a = SearchOutcomeHead(
+                self.search_a = (FullSearchOutcomeHead if config.search_a_model_version >= 5 else SearchOutcomeHead)(
                     feat_size, config.search_a_horizon, config.search_a_hidden,
                     config.search_a_future_weight, config.search_a_event_weight,
                     memory_dim=config.search_b_dim if config.search_b_enabled else 0,
                     version=config.search_a_model_version,
-                    visible_weight=config.search_a_visible_weight)
+                    visible_weight=config.search_a_visible_weight,
+                    **({"feedback_config": config} if config.search_a_model_version >= 5 else {}))
 
         # APM-IMAGINE B STAGE: trainable persistent search-memory encoder.
         self.search_b = None
@@ -188,7 +190,7 @@ class WorldModel(nn.Module):
                                             hidden=config.search_b_hidden,
                                             save_every=config.search_b_save_every,
                                             feature_dim=feat_size,
-                                            dynamic_target=config.target_item == "wool")
+                                            dynamic_target=config.target_item == "wool", version=config.search_b_model_version)
 
         for name in config.grad_heads:
             assert name in self.heads, name
@@ -393,9 +395,15 @@ class WorldModel(nn.Module):
             b_metrics = {}
             if self.search_b is not None:
                 b_scene = describe_torch(data["image"], data["heatmap"])
-                b_context, b_loss, b_metrics = self.search_b.train_sequence(b_scene, data)
+                if self.search_b.model_version >= 3:
+                    data["search_b_history_features"] = self.memory_history_features(data_origin)
+                b_context, b_loss, b_metrics = self.search_b.train_sequence(
+                    b_scene, data, features=self.dynamics.get_feat(post).detach())
+                durations = ([1, self._config.search_a_commit_steps, self._config.search_a_horizon]
+                             if self._config.search_a_model_version >= 4 or self._config.search_c_enabled
+                             else [self._config.search_a_horizon])
                 consistency, transition_count = self.search_b.transition_loss(
-                    b_context, self.dynamics.get_feat(post), data, self._config.search_a_horizon)
+                    b_context, self.dynamics.get_feat(post), data, durations)
                 b_loss = b_loss + self._config.search_b_consistency_weight * consistency
                 b_metrics.update({"B/consistency_loss": consistency.detach(),
                                   "B/transition_valid": transition_count.detach(),
@@ -491,6 +499,32 @@ class WorldModel(nn.Module):
             return post, post_zoomed, context, metrics
         else:
             return post, None, context, metrics
+
+    @torch.no_grad()
+    def memory_history_features(self, raw):
+        keys = list(self.encoder.cnn_shapes) + list(self.encoder.mlp_shapes)
+        valid = torch.as_tensor(raw["search_b_history_valid"], device=self._config.device).bool()
+        b, t = valid.shape
+        inputs = {}
+        for key in keys:
+            value = torch.as_tensor(raw["search_b_history_obs_" + key], device=self._config.device).float()
+            if key in ("image", "heatmap"):
+                if key == "heatmap" and value.ndim == 4:
+                    value = value.unsqueeze(-1)
+                value = value / 255.
+            inputs[key] = value.reshape(b*t, *value.shape[2:])
+        embed = torch.zeros(b*t, self.embed_size, device=self._config.device)
+        indices = valid.flatten().nonzero().squeeze(-1)
+        # Bound encoder workspace independently of the 128-step memory horizon.
+        for chunk in indices.split(32):
+            if len(chunk):
+                embed[chunk] = self.encoder({key: value[chunk] for key, value in inputs.items()}).float()
+        actions = torch.as_tensor(raw["search_b_history_action"], device=self._config.device).float()
+        actions = torch.nn.functional.pad(actions, (0, 1))
+        previous_valid = torch.cat((torch.zeros_like(valid[:, :1]), valid[:, :-1]), 1)
+        first = ~valid | ~previous_valid
+        post, _ = self.dynamics.observe(embed.reshape(b, t, -1), actions, first)
+        return self.dynamics.get_feat(post).detach()
 
     # this function is called during both rollout and training
     def preprocess(self, obs, zoomed=False):
@@ -786,6 +820,15 @@ class ImagBehavior(nn.Module):
                 
                 intrinsic_reward = intrinsic_objective(imag_feat, imag_state, imag_action)
                 reward += intrinsic_reward
+                if self._config.search_c_enabled:
+                    if self._config.search_c_actor_bonus > 0 and self._config.imag_gradient == "dynamics":
+                        raise ValueError("Search-return Actor learning requires reinforce or both gradients")
+                    bonus, bonus_metrics = actor_search_bonus(
+                        self._world_model.search_a, imag_feat, imag_action,
+                        imag_state.get("search_memory") if self._config.search_b_control else None,
+                        jump_record, self._config)
+                    reward = reward + bonus
+                    metrics.update(bonus_metrics)
 
 
                 policy_feat = self.policy_features(imag_state)

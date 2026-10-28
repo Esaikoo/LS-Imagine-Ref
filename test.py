@@ -12,18 +12,36 @@ from parallel import Parallel, Damy
 
 from expr import LS_Imagine, make_env, make_dataset, check_b_checkpoint
 from search_a import check_checkpoint, restore_a_config, apply_repaired_control
+from search_c import restore_c_config, apply_c_control_mode
 
 os.environ["MUJOCO_GL"] = "osmesa"
 sys.path.append(str(pathlib.Path(__file__).parent))
 
 to_np = lambda x: x.detach().cpu().numpy()
 
-def main(config):
-
-    checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+def configure_evaluation(config, checkpoint):
+    """Restore trained shapes, then honor explicit runtime control-off flags."""
     requested_control = config.search_a_control
+    requested_b_control = config.search_b_control
+    requested_c_control = config.search_c_control
+    requested_c_mode = config.search_c_eval_mode
+    requested_a_mode = config.search_a_eval_mode
     restore_a_config(vars(config), checkpoint)
+    for key, value in checkpoint.get("config", {}).items():
+        if key.startswith("search_b_"):
+            setattr(config, key, value)
+    config.search_b_enabled = any(".search_b." in k for k in checkpoint["agent_state_dict"])
+    config.search_b_model_version = checkpoint.get("search_b_version") or 2
+    if not requested_b_control:
+        config.search_b_control = False
+    restore_c_config(vars(config), checkpoint)
+    apply_c_control_mode(vars(config), requested_c_mode)
+    if not requested_c_control:
+        config.search_c_control = False
+    config.search_a_eval_mode = requested_a_mode
+    if (config.search_c_enabled and config.search_c_control
+            and (not requested_control or requested_a_mode != "checkpoint")):
+        raise ValueError("Disable C explicitly before overriding A control")
     if not requested_control or config.search_a_eval_mode == "off":
         config.search_a_control = False
     elif config.search_a_eval_mode == "repaired":
@@ -32,6 +50,15 @@ def main(config):
         raise ValueError("search_a_eval_mode must be checkpoint, off, or repaired")
     check_checkpoint(checkpoint, config.search_a_enabled, config.search_a_model_version)
     check_b_checkpoint(checkpoint, config.search_b_enabled)
+    if (config.search_a_enabled or config.search_c_enabled) and "step" not in checkpoint:
+        raise ValueError("A/C checkpoint requires step to restore control warmup")
+
+
+def main(config):
+
+    checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    configure_evaluation(config, checkpoint)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()

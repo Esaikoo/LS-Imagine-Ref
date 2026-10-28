@@ -37,6 +37,7 @@ def config_for_test(**overrides):
                   logdir=str(pathlib.Path(__file__).resolve().parents[1]/"logs"/"test_apm_a_v2"/"unit"),
                   search_a_override_prob=1.0, search_a_low_evidence=1.1, search_a_min_labels=1,
                   search_a_min_positives=0, search_a_protect_interaction=False)
+    config.update(search_a_model_version=3, search_a_control_version=3, search_a_commit_steps=2)
     config.update(overrides)
     return SimpleNamespace(**config)
 
@@ -433,6 +434,26 @@ class LoggerPersistenceTests(unittest.TestCase):
                 finally:
                     logger._writer.close()
 
+    def test_finish_saves_pending_partial_interval_and_video(self):
+        import json
+        import tools
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(tools, "SummaryWriter") as writer:
+            logger = tools.Logger(SimpleNamespace(use_wandb=False), pathlib.Path(directory), 1000000)
+            agent = make_agent()
+            agent._logger = logger
+            agent._metrics = {"actor_loss": [2., 4.], "C/updates": [7., 9.]}
+            agent.flush_metrics()
+            logger.video("eval_openl", np.zeros((1, 2, 4, 4, 3), np.uint8))
+            logger.finish()
+            row = json.loads((pathlib.Path(directory)/"metrics.jsonl").read_text())
+            self.assertEqual(row["actor_loss"], 3.)
+            self.assertEqual(row["C/updates"], 8.)
+            self.assertEqual(row["step"], 1000000)
+            self.assertFalse(any(agent._metrics.values()))
+            writer.return_value.add_video.assert_called_once()
+            writer.return_value.flush.assert_called_once()
+            writer.return_value.close.assert_called_once()
+
     def test_non_console_and_offline_metrics_are_still_saved(self):
         import contextlib
         import io
@@ -506,6 +527,47 @@ class EvaluationAControlTests(unittest.TestCase):
         self.assertEqual(config, before)
         with self.assertRaises(ValueError):
             apply_a_control_mode(config, 'off')
+
+    def test_evaluation_restore_preserves_requested_B_and_C_off(self):
+        from test import configure_evaluation
+        saved = dict(vars(config_for_test()), search_b_enabled=True, search_b_control=True,
+                     search_c_enabled=True, search_c_control=True,
+                     search_a_model_version=4, search_a_control_version=4)
+        checkpoint = dict(config=saved, step=10000, search_a_version=4,
+                          search_b_version=2, search_c_version=1,
+                          agent_state_dict={"_wm.search_a.x": torch.zeros(1),
+                                            "_wm.search_b.x": torch.zeros(1),
+                                            "_search_c.x": torch.zeros(1)})
+        cfg = config_for_test(search_b_control=False, search_c_control=False)
+        configure_evaluation(cfg, checkpoint)
+        self.assertTrue(cfg.search_b_enabled)
+        self.assertTrue(cfg.search_c_enabled)
+        self.assertFalse(cfg.search_b_control)
+        self.assertFalse(cfg.search_c_control)
+        self.assertEqual(cfg.search_a_model_version, 4)
+
+    def test_v4_rejects_old_repaired_control_and_C_requires_step(self):
+        from evaluate_checkpoints import apply_a_control_mode, configure_search_checkpoint
+        with self.assertRaises(ValueError):
+            apply_a_control_mode(dict(search_a_enabled=True, search_a_model_version=4), "repaired")
+        with self.assertRaises(ValueError):
+            configure_search_checkpoint(vars(config_for_test()), dict(
+                config={"search_c_enabled": True}, search_c_version=1,
+                agent_state_dict={"_search_c.x": torch.zeros(1)}))
+
+    def test_AC_and_BC_presets_can_be_selected_directly(self):
+        import yaml
+        raw = yaml.safe_load((pathlib.Path(__file__).resolve().parents[1]/"configs.yaml").read_text())
+        for preset in ("apm_ac", "apm_bc"):
+            values = {}
+            for name in ("defaults", "minedojo", preset):
+                values.update(raw[name])
+            self.assertFalse(values["compile"])
+            self.assertEqual(values["search_a_control_version"], 4)
+            self.assertTrue(values["search_c_enabled"])
+            if preset == "apm_ac":
+                self.assertTrue(values["search_a_enabled"])
+                self.assertEqual(values["search_a_model_version"], 4)
 
     def test_scene_retry_never_retries_policy_failures_or_changed_spawn(self):
         import json
@@ -894,5 +956,787 @@ class TrainNotificationTests(unittest.TestCase):
             server.server_close()
             worker.join(timeout=2)
 
+
+
+class PrefixAndFeedbackTests(unittest.TestCase):
+    def test_prefix_targets_and_loss_scale(self):
+        head = SearchOutcomeHead(32, hidden=32, version=4)
+        features = torch.randn(1, 12, 32, requires_grad=True)
+        batch = {k: torch.as_tensor(v) for k, v in replay_batch().items()}
+        batch["search_visible_valid"][:] = 1
+        batch["search_visible"][:, 5:8] = 1
+        with mock.patch.object(head, "forward", wraps=head.forward) as calls:
+            loss, metrics, counts, positives = head.training_loss(features, batch)
+        lengths = [c.args[1].shape[-2] for c in calls.call_args_list]
+        self.assertEqual(lengths, [1, 2, 3, 4, 6])
+        for call, k in zip(calls.call_args_list, lengths):
+            torch.testing.assert_close(call.args[1][:, 0], batch["action"][:, 1:k+1])
+            torch.testing.assert_close(call.args[0], features[:, :-k])
+        self.assertAlmostEqual(float(loss), np.mean([
+            float(metrics[f"A/H{k}/prediction_loss"]) for k in lengths]), places=6)
+        loss.backward()
+        self.assertTrue(torch.isfinite(features.grad).all())
+        head.record_supervision(counts, positives)
+        self.assertEqual(float(head.prefix_counts[4].sum()), 0)
+        self.assertTrue(head.ready_prefix(3, 1, 0)[3])
+        self.assertEqual(float(metrics["A/H3/valid_windows"]), 9)
+
+    def test_prefix_has_no_future_action_input_and_masks_padding(self):
+        head = SearchOutcomeHead(16, hidden=16, version=4)
+        feat = torch.randn(2, 16)
+        actions = F.one_hot(torch.randint(12, (2, 6)), 12).float()
+        with mock.patch.object(head.input[0], "forward", wraps=head.input[0].forward) as call:
+            predicted = head(feat, actions[:, :3])
+        x = call.call_args.args[0]
+        torch.testing.assert_close(x[:, -6:], torch.tensor([[1, 1, 1, 0, 0, 0.]]).expand(2, -1))
+        self.assertEqual(float(x[:, 16+36:16+72].abs().sum()), 0)
+        actions[:, 3:] = torch.flip(actions[:, 3:], (-1,))
+        torch.testing.assert_close(predicted["event_logits"], head(feat, actions[:, :3])["event_logits"])
+
+    def test_explicit_migration_does_not_claim_new_prefixes_are_trained(self):
+        from search_a import migrate_v3_head
+        old, new = SearchOutcomeHead(16, hidden=16, version=3), SearchOutcomeHead(16, hidden=16, version=4)
+        old.label_counts[:] = 10000
+        report = migrate_v3_head(old, new)
+        self.assertTrue(report["warm_start_only"])
+        torch.testing.assert_close(new.current_visible[0].weight, old.current_visible[0].weight)
+        self.assertFalse(new.ready_prefix(3, 1, 0).any())
+        self.assertEqual(float(new.label_counts.sum()), 0)
+
+    def test_untrained_duration_is_rejected(self):
+        from search_a import PrefixSearchController
+        with self.assertRaises(ValueError):
+            PrefixSearchController(horizon=6, commit_steps=5)
+
+    def test_first_discovery_is_not_repeated_reacquisition(self):
+        evidence = SearchEvidence("sand")
+        evidence.observe(fake_rays(), initial=True)
+        first = evidence.observe(fake_rays("sand"))
+        evidence.observe(fake_rays("air"))
+        second = evidence.observe(fake_rays("sand"))
+        self.assertEqual(first["search_first_discovery"], 1)
+        self.assertEqual(second["search_first_discovery"], 0)
+        self.assertEqual(second["search_discovery"], 1)
+        evidence.observe({}, initial=True)
+        unknown = evidence.observe(fake_rays("sand"))
+        self.assertEqual(unknown["search_first_discovery_valid"], 0)
+
+    def test_default_prefix_really_moves_and_has_bounded_budget(self):
+        from search_a import PrefixSearchController, prefix_macro_actions
+        seq = prefix_macro_actions(3, "cpu").argmax(-1)
+        self.assertEqual(seq[6].tolist(), [3, 6, 6])
+        self.assertEqual(seq[7].tolist(), [2, 6, 6])
+        c = PrefixSearchController(commit_steps=3, budget_window=20, budget_fraction=.2,
+                                   start_step=0, override_prob=1., epsilon=1.,
+                                   low_evidence=1.1, protect_interaction=False)
+        head = SearchOutcomeHead(16, hidden=16, version=4)
+        feat = torch.randn(1, 16)
+        actor = F.one_hot(torch.tensor([6]), 12).float()
+        state, taken = None, []
+        for i in range(80):
+            _, state, info = c.choose(head, feat, {"heatmap": torch.zeros(1, 64, 64, 1)},
+                actor, state, torch.tensor([i == 0]), 50, True,
+                lambda idx: actor[:, None].expand(len(idx), 6, -1))
+            taken.append(int(info["log_search_override"]))
+            self.assertLessEqual(sum(taken[-20:]), 4)
+            self.assertLessEqual(float(info["log_search_completed_length"].max()), 3)
+
+    def test_evaluation_resets_on_timeout_without_real_done(self):
+        import tools
+        class Env:
+            id = "unused"
+            def __init__(self, name="episode", duration=2, kind="timeout"):
+                self.name, self.duration, self.kind = name, duration, kind
+                self.resets = self.steps = self.t = 0
+            def observation(self, done=False):
+                return dict(image=np.zeros((4, 4, 3), np.uint8),
+                            heatmap=np.zeros((4, 4), np.uint8),
+                            is_first=self.t == 0, is_last=done, is_terminal=done and self.kind == "terminal",
+                            is_zoomed=False, score=0., score_on_zoomed=0.,
+                            jumping_steps=0, accumulated_reward=0., is_calculated=False,
+                            intrinsic=0.)
+            def reset(self):
+                self.resets += 1
+                self.id = "%s_%d" % (self.name, self.resets)
+                self.t = 0
+                return lambda: self.observation()
+            def step(self, action):
+                self.steps += 1
+                self.t += 1
+                done = self.t >= self.duration
+                return lambda: (self.observation(done), 0., done,
+                                {"real_done": False, "first_success_step": self.duration,
+                                 "success": done and self.kind == "success"})
+        env = Env()
+        storage = mock.Mock()
+        storage.count_data_pairs.return_value = 1  # expose deferred-target bug
+        storage.get_and_remove_less_than.return_value = []
+        values, saved = {}, []
+        logger = SimpleNamespace(step=0, scalar=lambda k, v: values.update({k: v}),
+                                 video=lambda *a: None, write=lambda **k: None)
+        def policy(obs, done, state):
+            return {"action": torch.eye(12)[[6]*len(done)]}, None
+        cases = [([env], 3), ([Env("a", 2, "success"), Env("b", 3, "terminal")], 3),
+                 ([Env("a"), Env("b"), Env("c")], 1)]
+        for envs, count in cases:
+            saved.clear()
+            with mock.patch.object(tools, "save_episodes",
+                                   side_effect=lambda d, eps: saved.extend(eps.keys())):
+                tools.simulate(policy, envs, collections.OrderedDict(), ".", logger,
+                               storage, 3, .99, is_eval=True, episodes=count)
+            self.assertEqual(sum(e.resets for e in envs), count)
+            self.assertEqual(len(saved), count)
+            self.assertEqual(len(set(saved)), count)
+            self.assertEqual(values["eval_episodes"], count)
+            self.assertEqual(values["eval_protocol_version"], 5)
+        self.assertEqual(env.steps, 6)
+
+
+class SearchFeedbackLearningTests(unittest.TestCase):
+    def config(self, **changes):
+        return config_for_test(search_a_model_version=4, search_a_control_version=4,
+                               search_a_commit_steps=3, search_c_enabled=True, **changes)
+
+    def dataset(self):
+        from search_c import complete_c_fields
+        data = replay_batch(time=12)
+        episode = complete_c_fields({k: v[0] for k, v in data.items()})
+        data = {k: v[None] for k, v in episode.items()}
+        data["search_c_version"][:] = 1
+        for r in (1, 4, 7, 10):
+            data["search_c_decision"][0, r] = 1
+            data["search_c_choice"][0, r] = 2
+            data["search_c_mask"][0, r] = 1
+            data["search_c_context"][0, r, 8+6] = 1
+        data["search_visible_valid"][:] = 1
+        data["search_first_discovery_valid"][:] = 1
+        data["search_first_discovery"][0, 3] = 1
+        return data
+
+    def test_semimarkov_discount_true_feedback_and_censoring(self):
+        from search_c import build_transitions
+        cfg, data = self.config(), self.dataset()
+        data["is_last"][0, 8] = 1
+        data["is_first"][0, 9] = 1
+        records = build_transitions(data, cfg, 3)
+        self.assertEqual([(r["start"], r["end"], r["duration"]) for r in records],
+                         [(0, 3, 3), (3, 6, 3), (6, 8, 2)])
+        self.assertAlmostEqual(records[0]["discount"], cfg.search_c_discount**3)
+        self.assertAlmostEqual(records[-1]["discount"], cfg.search_c_discount ** records[-1]["duration"])
+        self.assertGreater(records[0]["reward_discovery"], 0)
+        self.assertEqual(records[1]["reward_discovery"], 0)
+        data["search_first_discovery_valid"][:] = 0
+        records = build_transitions(data, cfg, 3)
+        self.assertTrue(all(r["reward_discovery"] == 0 for r in records))
+
+    def test_real_rollout_records_replay_train_and_strict_reload(self):
+        import tools
+        from search_c import check_c_checkpoint
+        from evaluate_checkpoints import configure_search_checkpoint
+        for enabled_b in (False, True):
+            cfg = self.config(search_b_enabled=enabled_b, search_b_lookback=4, search_b_slots=2)
+            agent = make_agent(cfg)
+            source = replay_batch(time=12)
+            state, episode = None, {}
+            for t in range(12):
+                obs = {k: v[:, t] for k, v in source.items() if k != "action"}
+                action, state = agent._policy(obs, state, training=True)
+                for name, val in action.items():
+                    episode.setdefault(name, []).append(val.detach().cpu().numpy()[0])
+            self.assertGreater(sum(episode["search_c_decision"]), 0)
+            data = self.dataset()
+            # Observation row t+1 stores the policy decision made at observation t.
+            for name, values in episode.items():
+                if name == "action" or name.startswith("search_c_"):
+                    array = np.asarray(values)
+                    data[name] = np.concatenate([np.zeros_like(array[:1]), array[:-1]], 0)[None]
+            if enabled_b:
+                data["search_b_real_first"] = data["is_first"].copy()
+            before = agent._search_c.actor[-1].weight.detach().clone()
+            post, _, context, _ = agent._wm._train(data, step=24000)
+            metrics = agent._train_search_c(post, context.get("search_memory"), data)
+            self.assertGreater(metrics["C/transitions"], 0)
+            self.assertFalse(torch.equal(before, agent._search_c.actor[-1].weight))
+            self.assertTrue(all(np.isfinite(value) for value in metrics.values()))
+            self.assertTrue(all(p.grad is None or torch.isfinite(p.grad).all()
+                                for p in agent._search_c.parameters()))
+            checkpoint = dict(agent_state_dict=agent.state_dict(),
+                              optims_state_dict=tools.recursively_collect_optim_state_dict(agent),
+                              config=vars(cfg), step=24000, search_a_version=4,
+                              search_b_version=2 if enabled_b else None, search_c_version=1)
+            check_c_checkpoint(checkpoint, True)
+            restored_cfg = vars(config_for_test())
+            configure_search_checkpoint(restored_cfg, checkpoint)
+            restored = make_agent(SimpleNamespace(**restored_cfg))
+            restored.load_state_dict(checkpoint["agent_state_dict"], strict=True)
+            tools.recursively_load_optim_state_dict(restored, checkpoint["optims_state_dict"])
+            self.assertEqual(int(restored._search_c.updates), int(agent._search_c.updates))
+
+    def test_offline_and_random_prefill_missing_C_is_unknown(self):
+        import tools
+        data = replay_batch()
+        ep = {k: v[0] for k, v in data.items()}
+        ep = {k: v for k, v in ep.items() if not k.startswith("search_c_")}
+        source = collections.OrderedDict(old=ep, new=self.dataset_episode())
+        batch = next(tools.from_generator(tools.sample_episodes(source, 20), 2))
+        self.assertEqual(batch["search_c_context"].shape, (2, 20, 20))
+        self.assertTrue(np.isfinite(batch["search_c_context"]).all())
+
+    def dataset_episode(self):
+        return {k: v[0] for k, v in self.dataset().items()}
+
+    def test_C_ablation_masks_A_visibility_and_has_private_rng(self):
+        from search_c import SearchBehavior
+        cfg = self.config(search_c_use_predictions=False)
+        c = SearchBehavior(16, cfg)
+        state = torch.randn(2, 16)
+        a, b = torch.rand(2, 8, 11), torch.rand(2, 8, 11)
+        b[..., 8:] = a[..., 8:]  # candidate metadata is kept in this ablation
+        context = torch.randn(2, 20)
+        other = context.clone()
+        other[:, [1, 2, 5]] += 10
+        torch.testing.assert_close(c._input(state, a, context), c._input(state, b, other))
+        rng = torch.random.get_rng_state()
+        c.choose(state, a, context, torch.ones(2, 8), True)
+        torch.testing.assert_close(rng, torch.random.get_rng_state())
+        _, probability = c.choose(state, a, context, torch.ones(2, 8), False)
+        torch.testing.assert_close(probability, torch.ones(2))
+
+    def test_C_runtime_ablation_keeps_strict_weights_and_is_explicit(self):
+        from search_c import apply_c_control_mode
+        from evaluate_checkpoints import apply_a_control_mode
+        agent = make_agent(self.config())
+        saved = agent.state_dict()
+        config = vars(self.config()).copy()
+        with self.assertRaises(ValueError):
+            apply_a_control_mode(config, "off")
+        apply_c_control_mode(config, "off")
+        apply_a_control_mode(config, "off")
+        restored = make_agent(SimpleNamespace(**config))
+        restored.load_state_dict(saved, strict=True)
+        self.assertIsNone(restored._search_a)
+        config = vars(self.config()).copy()
+        apply_c_control_mode(config, "no_predictions")
+        restored = make_agent(SimpleNamespace(**config))
+        restored.load_state_dict(saved, strict=True)
+        self.assertFalse(restored._search_c.config.search_c_use_predictions)
+        with self.assertRaises(ValueError):
+            apply_c_control_mode({"search_c_enabled": False}, "off")
+
+    def test_C_without_A_and_B_works(self):
+        for use_b in (False, True):
+            agent = make_agent(self.config(search_a_enabled=False, search_b_enabled=use_b,
+                                           search_b_lookback=4, search_b_slots=2))
+            data = self.dataset()
+            obs = {k: v[:, 0] for k, v in data.items() if k != "action"}
+            action, _ = agent._policy(obs, None, training=True)
+            self.assertEqual(action["action"].shape, (1, 12))
+            self.assertEqual(float(action["search_c_decision"]), 1)
+            self.assertIsNone(agent._wm.search_a)
+            if use_b:
+                data["search_b_real_first"] = data["is_first"].copy()
+            post, _, context, _ = agent._wm._train(data, step=24000)
+            metrics = agent._train_search_c(post, context.get("search_memory"), data)
+            self.assertGreater(metrics["C/transitions"], 0)
+            self.assertTrue(np.isfinite(metrics["search_c_value_loss"]))
+
+
+def audit_replay(argv):
+    """Bounded development audit; freezes the actual RSSM, never starts a game.
+
+    Historical RSSM may have seen every episode. Held-out refers only to this
+    new head fitting, not whole-system generalization or counterfactual truth.
+    """
+    import argparse
+    import gc
+    import hashlib
+    import json
+    import time
+    import gym
+    import networks
+    from search_a import migrate_v3_head
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=pathlib.Path, required=True)
+    parser.add_argument("--replay", type=pathlib.Path, required=True)
+    parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--updates", type=int, default=1000)
+    parser.add_argument("--evaluate-head", type=pathlib.Path,
+                        help="Score an existing development head; no parameter updates")
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--seed", type=int, default=1028)
+    args = parser.parse_args(argv)
+    if not 1 <= args.updates <= 3000:
+        parser.error("The bounded audit allows 1..3000 updates; not a training launcher")
+    args.output.mkdir(parents=True, exist_ok=True)
+    torch.set_num_threads(4)
+    torch.manual_seed(args.seed)
+    rng = np.random.RandomState(args.seed)
+    # mmap avoids holding the original optimizer tensors in RAM.
+    checkpoint = torch.load(str(args.checkpoint), map_location="cpu", mmap=True)
+    config = SimpleNamespace(**checkpoint["config"])
+    if checkpoint.get("search_a_version") != 3 or config.search_b_enabled:
+        raise ValueError("This migration audit expects an A-only v3 reference")
+    config.device = args.device
+    config.num_actions = 12
+    state = checkpoint["agent_state_dict"]
+    digest = hashlib.sha256()
+    for prefix in ("_wm.encoder.", "_wm.dynamics.", "_wm.search_a."):
+        for key in sorted(k for k in state if k.startswith(prefix)):
+            digest.update(key.encode())
+            digest.update(state[key].contiguous().numpy().tobytes())
+    identity = digest.hexdigest()
+    shapes = {"image": (64, 64, 3), "heatmap": (64, 64, 1), "obs_reward": (1,)}
+    encoder = networks.MultiEncoder(shapes, **config.encoder)
+    dynamics = networks.RSSM(config.dyn_stoch, config.dyn_deter, config.dyn_hidden,
+        config.dyn_rec_depth, config.dyn_discrete, config.act, config.norm,
+        config.dyn_mean_act, config.dyn_std_act, config.dyn_min_std,
+        config.unimix_ratio, config.initial, config.num_actions, encoder.outdim, config.device)
+    for name, module in (("encoder", encoder), ("dynamics", dynamics)):
+        prefix = "_wm."+name+"."
+        module.load_state_dict({k[len(prefix):]: v for k, v in state.items()
+                                if k.startswith(prefix)}, strict=True)
+        module.to(args.device).eval().requires_grad_(False)
+    feature_dim = config.dyn_deter + config.dyn_stoch * config.dyn_discrete
+    head_args = dict(feature_dim=feature_dim, horizon=config.search_a_horizon,
+                    hidden=config.search_a_hidden, future_weight=config.search_a_future_weight,
+                    event_weight=config.search_a_event_weight,
+                    visible_weight=config.search_a_visible_weight)
+    old = SearchOutcomeHead(**head_args, version=3)
+    prefix = "_wm.search_a."
+    old.load_state_dict({k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}, strict=True)
+    old.to(args.device).eval().requires_grad_(False)
+    model = SearchOutcomeHead(**head_args, version=4).to(args.device)
+    migration = migrate_v3_head(old, model)
+
+    class StateOnlyHead(SearchOutcomeHead):
+        def forward(self, feat, actions, memory=None):
+            return super().forward(feat, torch.zeros_like(actions), memory)
+    state_only = StateOnlyHead(**head_args, version=4).to(args.device)
+    state_only.load_state_dict(model.state_dict(), strict=True)
+    step = int(checkpoint.get("step", 0))
+    del state, checkpoint
+    gc.collect()
+    episodes, carry = [], None
+    for index, path in enumerate(sorted(args.replay.glob("*.npz"))):
+        replay_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        cache_path = args.output / (path.stem + ".features.npz")
+        metadata = dict(reference_modules_sha256=identity, replay_sha256=replay_digest,
+                        posterior_sampling_seed=args.seed+index, format_version=1)
+        meta_path = cache_path.with_suffix(".json")
+        cached = cache_path.exists() and meta_path.exists() and json.loads(meta_path.read_text()) == metadata
+        with np.load(path) as z:
+            episode = {k: z[k] for k in z.files if not k.startswith("log_")}
+        if not cached:
+            torch.manual_seed(args.seed+index)
+            features, carry = [], None
+            with torch.no_grad():
+                for start in range(0, len(episode["reward"]), 32):
+                    end = start+32
+                    obs = {k: torch.as_tensor(v[start:end][None], device=args.device).float()
+                           for k, v in episode.items() if k in ("image", "heatmap", "obs_reward", "is_first")}
+                    obs["image"] = obs["image"]/255.
+                    obs["heatmap"] = obs["heatmap"].unsqueeze(-1)/255.
+                    action = F.pad(torch.as_tensor(episode["action"][start:end][None],
+                                                   device=args.device).float(), (0, 1))
+                    post, _ = dynamics.observe(encoder(obs), action, obs["is_first"], state=carry)
+                    features.append(dynamics.get_feat(post).cpu().numpy()[0].astype(np.float16))
+                    carry = {k: v[:, -1] for k, v in post.items()}
+            np.savez(cache_path, features=np.concatenate(features))
+            meta_path.write_text(json.dumps(metadata, indent=2)+"\n")
+        with np.load(cache_path) as z:
+            features = z["features"]
+        slim = {k: v for k, v in episode.items()
+                if k in ("action", "is_first", "is_last", "is_terminal") or k.startswith("search_")}
+        episodes.append(dict(name=path.name, features=features, data=slim,
+                             success=bool(np.asarray(episode.get("success", [])).any())))
+        print("Cached", index+1, path.name, features.shape, flush=True)
+    del encoder, dynamics, episode, carry
+    gc.collect()
+    if args.device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    if len(episodes) < 8 and args.evaluate_head is None:
+        raise ValueError("At least 8 complete episodes required for a development split")
+    train, heldout = [], []
+    for success in (False, True):
+        group = [e for e in episodes if e["success"] == success]
+        rng.shuffle(group)
+        split = max(1, len(group)//3) if len(group) >= 3 else 0
+        heldout.extend(group[:split])
+        train.extend(group[split:])
+    if not heldout and args.evaluate_head is None:
+        raise ValueError("No episode-level held-out set")
+
+    def tensors(ep, start, end):
+        feat = torch.as_tensor(ep["features"][None, start:end], device=args.device).float()
+        data = {k: torch.as_tensor(v[None, start:end], device=args.device)
+                for k, v in ep["data"].items()}
+        return feat, data
+
+    def evaluate(head, selection, k, shuffled=False):
+        # Accumulate numerators and denominators, never average rare labels
+        # with unknown windows. A permutation is a diagnostic, not branch truth.
+        accum, weights = {}, {}
+        gen = torch.Generator(device=args.device).manual_seed(args.seed+100)
+        original_forward = head.forward
+        def permuted(feat, actions, memory=None):
+            flat = actions.reshape(-1, *actions.shape[-2:])
+            idx = torch.randperm(len(flat), device=flat.device, generator=gen)
+            return original_forward(feat, flat[idx].reshape_as(actions), memory)
+        if shuffled:
+            head.forward = permuted
+        try:
+            with torch.no_grad():
+                for ep in selection:
+                    for start in range(0, len(ep["features"])-k, 128-k):
+                        feat, data = tensors(ep, start, start+128)
+                        _, values, _, _ = head._loss_at_horizon(feat, data, None, k)
+                        for name, value in values.items():
+                            metric = name[2:]
+                            if metric in ("future_loss",):
+                                count = float(values["A/valid_windows"])
+                            else:
+                                count = 0
+                                for suffix in ("positive_rate", "positive_prediction", "positive_recall",
+                                               "negative_prediction", "loss", "brier"):
+                                    if metric.endswith("_"+suffix):
+                                        event = metric[:-len(suffix)-1]
+                                        count = float(values.get("A/"+event+"_valid", 0))
+                                        positives = float(values.get("A/"+event+"_positive_count", 0))
+                                        if suffix in ("positive_prediction", "positive_recall"):
+                                            count = positives
+                                        elif suffix == "negative_prediction":
+                                            count -= positives
+                                        break
+                            if count:
+                                accum[metric] = accum.get(metric, 0.) + float(value)*count
+                                weights[metric] = weights.get(metric, 0.)+count
+        finally:
+            head.forward = original_forward
+        return {k: dict(value=accum[k]/weights[k], count=weights[k]) for k in accum}
+
+    if args.evaluate_head is not None:
+        saved = torch.load(str(args.evaluate_head), map_location=args.device)
+        if saved["reference_modules_sha256"] != identity:
+            raise ValueError("Development head and frozen RSSM identity differ")
+        model.load_state_dict(saved["head"], strict=True)
+        report = dict(mode="challenge_evaluation_only", updates=0,
+            episodes=[e["name"] for e in episodes], reference_modules_sha256=identity,
+            after={str(k): evaluate(model, episodes, k) for k in (1, 2, 3, 4, 6)},
+            shuffled_actions={str(k): evaluate(model, episodes, k, shuffled=True) for k in (1, 2, 3, 4, 6)},
+            old_v3_h6=evaluate(old, episodes, old.horizon),
+            caveats=["Selected development challenge cases, not natural-frequency validation.",
+                     "No refitting or test-driven parameter selection performed."])
+        (args.output/"audit.json").write_text(json.dumps(report, indent=2)+"\n")
+        print("Challenge evaluation saved:", args.output/"audit.json", flush=True)
+        return
+
+    before = {str(k): evaluate(model, heldout, k) for k in (1, 2, 3, 4, 6)}
+    old_metrics = evaluate(old, heldout, old.horizon)
+    opt = torch.optim.Adam(model.parameters(), lr=1.e-4)
+    noact_opt = torch.optim.Adam(state_only.parameters(), lr=1.e-4)
+    trainable = [ep for ep in train if len(ep["features"]) >= 32]
+    start_time = time.time()
+    for update in range(args.updates):
+        # Identical sampled windows and update count for both heads.
+        picks = [trainable[rng.randint(len(trainable))] for _ in range(4)]
+        windows = [tensors(ep, offset, offset+32)
+                   for ep in picks for offset in [rng.randint(len(ep["features"])-31)]]
+        feat = torch.cat([w[0] for w in windows], 0)
+        data = {k: torch.cat([w[1][k] for w in windows], 0) for k in windows[0][1]}
+        for head, optimizer in ((model, opt), (state_only, noact_opt)):
+            optimizer.zero_grad(set_to_none=True)
+            loss, _, counts, positives = head.training_loss(feat, data)
+            if not torch.isfinite(loss):
+                raise RuntimeError("Nonfinite offline audit loss")
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(head.parameters(), 100.)
+            optimizer.step()
+            head.record_supervision(counts, positives)
+        if (update+1) % 100 == 0:
+            print("Offline updates", update+1, "seconds", round(time.time()-start_time), flush=True)
+    after, shuffled, no_action, constant = {}, {}, {}, {}
+    for k in (1, 2, 3, 4, 6):
+        key = str(k)
+        after[key] = evaluate(model, heldout, k)
+        shuffled[key] = evaluate(model, heldout, k, shuffled=True)
+        no_action[key] = evaluate(state_only, heldout, k)
+        rates = evaluate(model, train, k)
+        constant[key] = {}
+        for event in ("new", "discovery", "revisit", "future_visible"):
+            name = event+"_positive_rate"
+            if name in rates and name in after[key]:
+                q, p = rates[name]["value"], after[key][name]["value"]
+                constant[key][event+"_brier"] = (1-p)*q*q+p*(1-q)**2
+    report = dict(reference_modules_sha256=identity, reference_checkpoint_step=step,
+        training_episodes=[e["name"] for e in train], heldout_episodes=[e["name"] for e in heldout],
+        updates_per_head=args.updates, seed=args.seed, migration=migration,
+        before=before, after=after, shuffled_actions=shuffled, no_action_head=no_action,
+        train_frequency_baseline=constant, old_v3_h6=old_metrics,
+        caveats=["Development split only: historical RSSM/old head may have seen these episodes.",
+                 "Episodes were deliberately selected to include successes and failures, not a success-rate estimate.",
+                 "Unexecuted candidate branches have no truth in this replay.",
+                 "Constant and state-only comparisons diagnose dependence, not causal proof.",
+                 "No environment interaction or original Actor/world-model update."])
+    (args.output/"audit.json").write_text(json.dumps(report, indent=2)+"\n")
+    torch.save(dict(head=model.state_dict(), model_version=4, config=head_args,
+                    reference_modules_sha256=identity, audit_only=True),
+               args.output/"a_v4_development_head.pt")
+    print("Development audit saved:", args.output/"audit.json", flush=True)
+
+class FullPlanTests(unittest.TestCase):
+    def cfg(self, **kw):
+        values = dict(search_a_model_version=5, search_a_control_version=4, search_a_horizon=8,
+            search_a_commit_steps=3, search_b_enabled=True, search_b_model_version=3,
+            search_b_dim=16, search_b_hidden=32, search_b_slots=2, search_b_lookback=4,
+            search_c_enabled=True, search_c_model_version=2, search_c_imagined_weight=.25,
+            search_c_actor_bonus=.25, search_c_imagined_starts=2,
+            search_a_min_labels=1, search_a_min_positives=0)
+        values.update(kw)
+        return config_for_test(**values)
+
+    def dataset(self, cfg):
+        from expr import make_dataset
+        data = SearchFeedbackLearningTests().dataset()
+        data["search_c_version"][:] = 2
+        return next(make_dataset(__import__("collections").OrderedDict(one={k:v[0] for k,v in data.items()}), cfg))
+
+    def test_full_joint_training_imagination_memory_and_checkpoint(self):
+        from evaluate_checkpoints import configure_search_checkpoint
+        cfg = self.cfg()
+        agent = make_agent(cfg)
+        data = self.dataset(cfg)
+        before = agent._wm.search_b.latent_adapter.weight.detach().clone()
+        agent._train(data)
+        agent._train(data)
+        self.assertTrue(any(value > 0 for value in agent._metrics["C/imagined_transitions"]))
+        self.assertTrue(np.isfinite(agent._metrics["C/task_actor_search_bonus"]).all())
+        self.assertGreater(float((agent._wm.search_b.latent_adapter.weight-before).abs().sum()), 0)
+        self.assertTrue(torch.isfinite(agent._wm.search_a.prefix_counts).all())
+        self.assertEqual(tuple(agent._wm.search_a.prefix_counts.shape), (8,12))
+        ckpt = dict(agent_state_dict=agent.state_dict(), config=vars(cfg).copy(), step=10,
+                    search_a_version=5, search_b_version=3, search_c_version=2)
+        restored = vars(config_for_test()).copy()
+        configure_search_checkpoint(restored, ckpt)
+        clone = make_agent(SimpleNamespace(**restored))
+        clone.load_state_dict(ckpt["agent_state_dict"], strict=True)
+        batch = replay_batch()
+        obs = {k:v[:,0] for k,v in batch.items() if k != "action"}
+        with torch.no_grad():
+            output, state = clone._policy(obs, None, False)
+        self.assertEqual(output["action"].shape, (1,12))
+        self.assertEqual(output["search_c_version"].item(), 2)
+
+    def test_memory_off_is_preserved_in_full_imagined_search(self):
+        from unittest import mock
+        cfg=self.cfg(search_b_control=False)
+        agent=make_agent(cfg)
+        data=self.dataset(cfg)
+        post,_,context,_=agent._wm._train(data)
+        with mock.patch.object(agent._wm.search_b,"imagine_step",
+                side_effect=AssertionError("B-off imagination must keep zero memory")):
+            metrics=agent._train_search_c(post,context["search_memory"],data)
+        self.assertGreater(metrics["C/imagined_transitions"],0)
+
+    def test_return_targets_unknown_masks_terminal_and_reliability_gradient(self):
+        from search_feedback import window_targets, FullSearchOutcomeHead
+        cfg = self.cfg(search_b_enabled=False)
+        raw = SearchFeedbackLearningTests().dataset()
+        data = {k:torch.tensor(v) for k,v in raw.items()}
+        target, known, first, fk = window_targets(data, 3, cfg)
+        self.assertAlmostEqual(target[0,0,1].item(), cfg.search_c_discount**2, places=5)
+        data["search_first_discovery_valid"][:] = 0
+        _, known, _, fk = window_targets(data, 3, cfg)
+        self.assertFalse(known[...,1].any())
+        self.assertFalse(fk.any())
+        head = FullSearchOutcomeHead(16, 8, 32, version=5, feedback_config=cfg)
+        features = torch.randn(1,12,16)
+        loss, metrics, counts, positives = head.training_loss(features, data)
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertGreater(float(head.return_head.weight.grad.abs().sum()), 0)
+        head.zero_grad()
+        result = head(features[:,:1], torch.nn.functional.one_hot(torch.zeros(1,1,3,dtype=torch.long),12).float())
+        result["reliability_logits"].sum().backward()
+        self.assertIsNone(head.input[0].weight.grad)
+        self.assertIsNotNone(head.reliability[0].weight.grad)
+        head.record_supervision(counts, positives)
+        self.assertFalse(head.return_support(3)[1])
+        projected = head.project_returns({"returns": torch.full((2,6), 100.)}, 3)
+        self.assertTrue((projected[:,4] < 0).all())  # moving cannot mint a cost bonus
+        self.assertTrue((projected[:,3] <= 0).all())
+        self.assertTrue((projected[:,1] <= cfg.search_c_discovery_weight).all())
+
+    def test_terminal_differs_from_truncation(self):
+        from search_c import build_transitions
+        data = SearchFeedbackLearningTests().dataset()
+        data["is_last"][0,8] = 1
+        cfg = self.cfg()
+        rec = build_transitions(data,cfg,3)
+        self.assertGreater(rec[-1]["discount"],0)
+        data["is_terminal"][0,8] = 1
+        rec = build_transitions(data,cfg,3)
+        self.assertEqual(rec[-1]["discount"],0)
+
+    def test_actor_bonus_alignment_masks_long_jumps_and_excludes_task_reward(self):
+        from search_feedback import actor_search_bonus, FullSearchOutcomeHead
+        cfg = self.cfg(search_b_enabled=False, search_c_step_cost=0., search_c_reverse_cost=0.)
+        head = FullSearchOutcomeHead(16,8,32,version=5,feedback_config=cfg)
+        head.prefix_counts.fill_(100)
+        head.prefix_positives.fill_(10)
+        with torch.no_grad():
+            head.return_head.weight.zero_()
+            head.return_head.bias.zero_()
+            head.return_head.bias[0] = 5
+        features=torch.randn(4,2,16)
+        actions=torch.nn.functional.one_hot(torch.zeros(4,2,dtype=torch.long),12).float()
+        jumps=torch.zeros(4,2)
+        bonus,_=actor_search_bonus(head,features,actions,None,jumps,cfg)
+        self.assertEqual(float(bonus.abs().sum()),0)
+        with torch.no_grad():
+            head.return_head.bias[2]=.1
+        jumps[1]=1
+        bonus,_=actor_search_bonus(head,features,actions,None,jumps,cfg)
+        self.assertEqual(float(bonus[0].sum()),0)
+        self.assertEqual(float(bonus[2].sum()),0)
+        self.assertGreater(float(bonus[1].sum()),0)
+
+    def test_branch_comparison_rejects_same_seed_different_scene(self):
+        from search_branches import compare_branch_scenes
+        base=dict(world_seed=1,mission_seed=1,java_launch_seed=1,terrain_sha256="x",rays_sha256="r",
+            inventory={},life_stats={},policy_observation_keys=["image"],
+            image_sha256="i",heatmap_sha256="h",
+            location_stats=dict(pos=[0,1,0],pitch=0,yaw=0,biome_id=1,is_raining=False,sea_level=64))
+        self.assertTrue(compare_branch_scenes(base,copy.deepcopy(base))["match"])
+        changed=copy.deepcopy(base);changed["image_sha256"]="other"
+        self.assertFalse(compare_branch_scenes(base,changed)["match"])
+        changed=copy.deepcopy(base);changed["location_stats"]["pos"][0]=2
+        self.assertFalse(compare_branch_scenes(base,changed)["match"])
+        prefix={"image":np.zeros((3,64,64,3),np.uint8),"heatmap":np.zeros((3,64,64),np.uint8),
+                "action":np.zeros((3,12),np.float32)}
+        noise={k:v.copy() for k,v in prefix.items()}
+        noise["image"][:]=1
+        self.assertTrue(compare_branch_scenes(base,base,prefix,noise)["match"])
+        noise["image"][:]=20
+        self.assertFalse(compare_branch_scenes(base,base,prefix,noise)["match"])
+        different=copy.deepcopy(base);different["rays_sha256"]="different"
+        self.assertFalse(compare_branch_scenes(base,different,prefix,prefix)["match"])
+
+    def test_real_branch_budget_replay_and_training_with_native_heatmap_shape(self):
+        from search_branches import collect_real_branches
+        from expr import make_dataset
+        from unittest import mock
+        import tempfile
+        from collections import OrderedDict
+        cfg=self.cfg()
+        agent=make_agent(cfg)
+        initial_step=agent._step
+        raw=replay_batch(12)
+        class Env:
+            def reset(self):
+                self.t=0
+                return {k:v[0,0].copy() for k,v in raw.items() if k!="action"}
+            def step(self,action):
+                self.t+=1
+                return ({k:v[0,self.t].copy() for k,v in raw.items() if k!="action"},
+                        0.,False,{"real_done":False,"success":False})
+            def close(self): pass
+        scene=dict(world_seed=1,mission_seed=1,java_launch_seed=1,terrain_sha256="x",rays_sha256="r",
+            inventory={},life_stats={},policy_observation_keys=["image"],
+            image_sha256="i",heatmap_sha256="h",
+            location_stats=dict(pos=[0,1,0],pitch=0,yaw=0,biome_id=1,is_raining=False,sea_level=64))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg.logdir=tmp;cfg.traindir=str(pathlib.Path(tmp)/"train_eps")
+            cfg.steps=initial_step+10;cfg.search_branch_count=2;cfg.search_branch_prefix=2
+            replay=OrderedDict()
+            logger=SimpleNamespace(step=initial_step,scalar=lambda *a:None,write=lambda:None)
+            with mock.patch("search_branches.make_branch_env",side_effect=lambda *a:(Env(),None)), mock.patch(
+                    "search_branches.scene_record",return_value=scene):
+                used=collect_real_branches(agent,cfg,replay,logger,1)
+            self.assertEqual(used,10)
+            self.assertEqual(agent._step,cfg.steps)
+            self.assertEqual(len(replay),2)
+            for episode in replay.values():
+                self.assertEqual(set(len(v) for v in episode.values()),{6})
+                self.assertTrue(episode["search_branch_verified"].all())
+                self.assertEqual(episode["search_c_decision"].sum(),1)
+                self.assertFalse(episode["is_terminal"][-1])
+                self.assertTrue(episode["is_last"][-1])
+            agent._train(next(make_dataset(replay,cfg)))
+            self.assertGreater(agent._metrics["C/transitions"][-1],0)
+            self.assertTrue((pathlib.Path(tmp)/"branches/000001/feedback.json").exists())
+
+    def test_full_presets_and_default_launcher(self):
+        import ruamel.yaml as yaml
+        root=pathlib.Path(__file__).resolve().parents[1]
+        config=yaml.YAML(typ="safe").load((root/"configs.yaml").read_text())["apm_full"]
+        self.assertEqual([config["search_"+x+"_model_version"] for x in ("a","b","c")],[5,3,2])
+        self.assertTrue(config["search_branch_enabled"])
+        text=(root/"scripts/train.sh").read_text()
+        self.assertIn('MODE="${A_MODE:-abc}"',text)
+        self.assertIn('abc) set -- --configs minedojo apm_a apm_full',text)
+
+def audit_real_branches(argv):
+    """Bounded real branch + replay/GPU training check using an existing smoke checkpoint."""
+    import argparse, json, re, gym
+    import tools
+    from collections import OrderedDict
+    from datetime import datetime
+    from expr import LS_Imagine, make_dataset
+    from search_branches import collect_real_branches
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--checkpoint",type=pathlib.Path,required=True)
+    parser.add_argument("--output",type=pathlib.Path,required=True)
+    parser.add_argument("--group",type=int,default=1)
+    args=parser.parse_args(argv)
+    if args.output.exists():
+        raise ValueError("Use a new audit output directory")
+    args.output.mkdir(parents=True)
+    ckpt=torch.load(args.checkpoint,map_location="cpu")
+    cfg=SimpleNamespace(**ckpt["config"])
+    cfg.logdir=str(args.output);cfg.traindir=str(args.output/"train_eps")
+    cfg.results_dir=str(args.output);cfg.use_wandb=False;cfg.log_all_metrics=False
+    cfg.search_branch_count=2;cfg.search_branch_prefix=2
+    cfg.steps=int(ckpt["step"])+2*(cfg.search_branch_prefix+cfg.search_a_commit_steps)
+    sample=next((args.checkpoint.parent/"train_eps").glob("*.npz"))
+    raw=np.load(sample)
+    spaces={"image":gym.spaces.Box(0,255,(64,64,3),np.uint8),
+            "heatmap":gym.spaces.Box(0,255,(64,64,1),np.uint8)}
+    for key in raw.files:
+        if re.match(cfg.encoder["mlp_keys"],key) and not key.startswith("search_"):
+            spaces[key]=gym.spaces.Box(-np.inf,np.inf,raw[key].shape[1:],np.float32)
+    logger=tools.Logger(cfg,args.output,ckpt["step"])
+    agent=LS_Imagine(gym.spaces.Dict(spaces),gym.spaces.Discrete(12),cfg,logger,None).to(cfg.device)
+    agent.load_state_dict(ckpt["agent_state_dict"],strict=True)
+    tools.recursively_load_optim_state_dict(agent,ckpt["optims_state_dict"])
+    agent.requires_grad_(False)
+    replay=OrderedDict()
+    consumed=collect_real_branches(agent,cfg,replay,logger,args.group)
+    assert 0 < consumed <= 2*(cfg.search_branch_prefix+cfg.search_a_commit_steps)
+    assert agent._step == int(ckpt["step"])+consumed
+    assert len(replay)==2
+    report=json.loads((args.output/"branches"/("%06d"%args.group)/"feedback.json").read_text())
+    for ep in replay.values():
+        assert len({len(v) for v in ep.values()})==1
+        assert ep["search_branch_verified"].all(), report
+    before=agent._wm.search_b.latent_adapter.weight.detach().clone()
+    for _ in range(2):
+        agent._train(next(make_dataset(replay,cfg)))
+    assert any(x>0 for x in agent._metrics["C/transitions"])
+    assert any(x>0 for x in agent._metrics["C/imagined_transitions"])
+    assert float((before-agent._wm.search_b.latent_adapter.weight).abs().sum())>0
+    agent.flush_metrics()
+    assert all(torch.isfinite(v).all() for v in agent.state_dict().values())
+    ckpt.update(agent_state_dict=agent.state_dict(),step=agent._step,config=vars(cfg),
+                optims_state_dict=tools.recursively_collect_optim_state_dict(agent))
+    torch.save(ckpt,args.output/"latest.pt")
+    logger.finish()
+    print("PASS: verified same-scene real branches, exact budget, shared Replay, GPU ABC updates and checkpoint",args.output,flush=True)
+
+
 if __name__=="__main__":
-    unittest.main(verbosity=2)
+    if len(sys.argv) > 1 and sys.argv[1] == "--branch-checkpoint":
+        audit_real_branches(sys.argv[2:])
+    elif len(sys.argv) > 1 and sys.argv[1] == "--audit-replay":
+        audit_replay(sys.argv[2:])
+    else:
+        unittest.main(verbosity=2)

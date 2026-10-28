@@ -127,6 +127,19 @@ class MemoryTests(unittest.TestCase):
         self.assertFalse(torch.equal(one,jump))
         self.assertTrue(torch.isfinite(feat.grad).all())
 
+    def test_prefix_transition_durations_are_not_repeated(self):
+        data = tensors(batch())
+        model = SearchMemory(slots=4, dim=16, hidden=32, feature_dim=32)
+        memory = torch.randn(1, 12, 16)
+        features = torch.randn(1, 12, 32)
+        with mock.patch.object(model, "imagine_step", wraps=model.imagine_step) as calls:
+            loss, count = model.transition_loss(memory, features, data, (1, 3, 6))
+        durations = [call.kwargs["elapsed"] for call in calls.call_args_list]
+        self.assertEqual(durations, [1, 2, 3, 4, 6, 8, 11])
+        self.assertEqual(len(durations), len(set(durations)))
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(float(count), 0)
+
     def test_evidence_decay_leaves_raw_keys_intact(self):
         static=SearchMemory(slots=4,dim=16,hidden=32)
         dynamic=SearchMemory(slots=4,dim=16,hidden=32,dynamic_target=True)

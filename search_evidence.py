@@ -12,7 +12,9 @@ EVENTS = ("new", "discovery", "revisit")
 SEARCH_LABEL_KEYS = tuple(
     key for event in EVENTS for key in ("search_" + event, "search_" + event + "_valid")
 ) + ("search_visible", "search_visible_valid", "search_label_version",
-     "search_place_id", "search_place_valid")
+     "search_place_id", "search_place_valid",
+     "search_first_discovery", "search_first_discovery_valid",
+     "search_surface_coverage", "search_surface_coverage_valid")
 RAY_PITCHES = np.deg2rad(np.linspace(-25, 25, 5))
 RAY_YAWS = np.deg2rad(np.linspace(-40, 40, 9))
 
@@ -34,7 +36,8 @@ def complete_episode_labels(episode):
     for key in SEARCH_LABEL_KEYS:
         if key not in result:
             result[key] = np.zeros(length, np.float32)
-    return result
+    from search_c import complete_c_fields
+    return complete_c_fields(result)
 
 
 def _name(value):
@@ -69,6 +72,8 @@ class SearchEvidence:
         self.first_seen = {}
         self.place_ids = {}
         self.previous_visible = None
+        self.ever_visible = False
+        self.history_known = True
         self.step = 0
 
     def observe(self, obs, initial=False):
@@ -94,14 +99,17 @@ class SearchEvidence:
                   "traced_block_x", "traced_block_y", "traced_block_z")
         if not all(k in rays for k in fields):
             self.previous_visible = None
+            self.history_known = False
             return result
         arrays = {k: np.asarray(rays[k]).reshape(-1) for k in fields}
         if any(len(v) != self.expected_rays for v in arrays.values()):
             self.previous_visible = None
+            self.history_known = False
             return result
         numeric = [arrays[k].astype(float) for k in fields if k not in ("block_name", "entity_name")]
         if not all(np.isfinite(v).all() for v in numeric):
             self.previous_visible = None
+            self.history_known = False
             return result
         blocks = np.array([_name(x) for x in arrays["block_name"]])
         entities = np.array([_name(x) for x in arrays["entity_name"]])
@@ -113,6 +121,11 @@ class SearchEvidence:
                        or np.any(entity_hit & np.isin(entities, list(ENTITY_TARGETS.get(self.target, ())))))
         result["search_visible"] = np.float32(visible)
         result["search_visible_valid"] = np.float32(1)
+        # Distinct from legacy discovery (reacquisition). Never pay repeatedly
+        # for looking away and back, nor infer first discovery across unknowns.
+        result["search_first_discovery_valid"] = np.float32(self.history_known or self.ever_visible)
+        result["search_first_discovery"] = np.float32(visible and not self.ever_visible and self.history_known)
+        self.ever_visible = self.ever_visible or visible
         if not initial and (self.previous_visible is not None or not visible):
             result["search_discovery"] = np.float32(visible and not self.previous_visible)
             result["search_discovery_valid"] = np.float32(1)
@@ -129,6 +142,8 @@ class SearchEvidence:
             result["search_new_valid"] = result["search_revisit_valid"] = np.float32(1)
             for cell in cells:
                 self.first_seen.setdefault(cell, self.step)
+            result["search_surface_coverage"] = np.float32(len(self.first_seen))
+            result["search_surface_coverage_valid"] = np.float32(1)
         return result
 
 

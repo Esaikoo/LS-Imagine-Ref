@@ -1,6 +1,6 @@
-"""B v2: recurrent search belief, durable visual keyframes and imagined memory.
+"""B v2/v3: persistent search belief; v3 additionally conditions on RSSM state.
 
-Only RGB, heatmap and executed actions are inference inputs. Place IDs and ray
+Only visual observations, RSSM features and executed actions are inference inputs. Place IDs and ray
 events are supervision, never retrieval keys or policy inputs. Replay rebuilds
 the bank from the entire past and burns in the recurrent belief on recent history.
 """
@@ -13,7 +13,7 @@ from torch.nn import functional as F
 GRID = 8
 DESC_DIM = GRID * GRID * 4
 META_DIM = 7  # created, last_seen, visits, candidate, negative, ambiguity, novelty
-B_VERSION = 2
+B_VERSION = 3
 MATCH_DISTANCE = 0.012
 
 
@@ -91,7 +91,7 @@ def make_prefix(episode, index, slots=16, lookback=256, save_every=8):
     return bank, valid.astype(np.float32)
 
 
-def sample_episodes_with_history(episodes, length, slots=16, lookback=128, seed=0, save_every=8):
+def sample_episodes_with_history(episodes, length, slots=16, lookback=128, seed=0, save_every=8, observation_keys=()):
     """Normal stitched RSSM windows + one past-only bank and bounded belief burn-in.
 
     History tensors are batch metadata, not per-transition NPZ fields. At any
@@ -147,6 +147,15 @@ def sample_episodes_with_history(episodes, length, slots=16, lookback=128, seed=
                                search_b_prefix_place=prefix_place, search_b_prefix_tick=np.float32(start),
                                search_b_history=hscene, search_b_history_action=haction,
                                search_b_history_valid=hvalid, search_b_history_place=hplace)
+                # B3 rebuilds historical RSSM features with current weights (no stale latent cache).
+                for obs_key in observation_keys:
+                    if obs_key not in episode:
+                        continue
+                    values = np.asarray(episode[obs_key])
+                    hist = np.zeros((lookback, *values.shape[1:]), values.dtype)
+                    if count:
+                        hist[-count:] = values[start:index]
+                    history["search_b_history_obs_" + obs_key] = hist
                 ret = part
             else:
                 ret = {k: np.concatenate([ret[k], part[k]], 0) for k in ret}
@@ -158,11 +167,15 @@ def sample_episodes_with_history(episodes, length, slots=16, lookback=128, seed=
 
 class SearchMemory(nn.Module):
     def __init__(self, slots=16, dim=128, hidden=128, save_every=8, feature_dim=None,
-                 dynamic_target=False):
+                 dynamic_target=False, version=2):
         super().__init__()
         self.slots, self.dim, self.save_every = int(slots), int(dim), int(save_every)
         if min(self.slots, self.dim, self.save_every) < 1:
             raise ValueError("Invalid B memory dimensions")
+        self.model_version = int(version)
+        if self.model_version not in (2, 3):
+            raise ValueError("Unsupported B architecture")
+        self.latent_adapter = (nn.Linear(feature_dim, dim, bias=False) if version >= 3 else None)
         self.encoder = nn.Sequential(nn.Linear(DESC_DIM, hidden), nn.SiLU(), nn.Linear(hidden, dim))
         self.combine = nn.Sequential(nn.Linear(2 * dim + 7, hidden), nn.SiLU(), nn.Linear(hidden, dim))
         self.belief = nn.GRUCell(dim + 12, dim)
@@ -254,15 +267,19 @@ class SearchMemory(nn.Module):
             indices[rows, si] = tick[rows]
         return bank, valid, meta, indices, tick + 1
 
-    def step(self, scene, action, state):
+    def step(self, scene, action, state, feature=None):
         bank, valid, meta, indices, tick, belief = state
         retrieved, cosine = self.retrieve(scene, bank, valid, meta, tick)
+        if self.latent_adapter is not None:
+            if feature is None:
+                raise ValueError("B3 requires current RSSM features, including history burn-in")
+            retrieved = retrieved + self.latent_adapter(F.layer_norm(feature.float(), (feature.shape[-1],)))
         belief = self.belief(torch.cat((retrieved, action[..., :12].float()), -1), belief.float())
         next_bank = self.add(bank, valid, meta, indices, tick, scene)
         return belief, (*next_bank, belief), cosine
 
     @torch.no_grad()
-    def online_step(self, scene, state=None, is_first=None, previous_action=None):
+    def online_step(self, scene, state=None, is_first=None, previous_action=None, feature=None):
         if scene.ndim != 2:
             raise ValueError("B online_step expects [batch, descriptor]")
         state = self.initial(len(scene), scene.device) if state is None else tuple(x.detach() for x in state)
@@ -271,7 +288,7 @@ class SearchMemory(nn.Module):
         action = torch.zeros(len(scene), 12, device=scene.device) if previous_action is None else previous_action[..., :12]
         action = action * (~reset).float()[:, None]
         used = state[1].any(-1).float()
-        context, state, _ = self.step(scene, action, state)
+        context, state, _ = self.step(scene, action, state, feature=feature)
         return context.detach(), tuple(x.detach() for x in state), {
             "log_b_revisit_prob": self.revisit_head(context).sigmoid().squeeze(-1),
             "log_b_memory_used": used,
@@ -316,7 +333,8 @@ class SearchMemory(nn.Module):
                 if not active.any():
                     continue
                 old = state
-                _, new, _ = self.step(batch["search_b_history"][:, i], batch["search_b_history_action"][:, i], state)
+                _, new, _ = self.step(batch["search_b_history"][:, i], batch["search_b_history_action"][:, i], state,
+                    feature=batch["search_b_history_features"][:, i] if self.latent_adapter is not None else None)
                 changed = new[3] != old[3]
                 places = torch.where(changed & active[:, None],
                                      batch["search_b_history_place"][:, i, None], places)
@@ -324,7 +342,7 @@ class SearchMemory(nn.Module):
                               for x, y in zip(new, old))
         return tuple(x.detach() for x in state), places
 
-    def train_sequence(self, scene, batch):
+    def train_sequence(self, scene, batch, features=None):
         b, t, _ = scene.shape
         state, bank_places = self._burn_in(scene, batch)
         first = batch["search_b_real_first"].reshape(b, t).bool()
@@ -336,7 +354,7 @@ class SearchMemory(nn.Module):
             bank_places = torch.where(reset[:, None], torch.zeros_like(bank_places), bank_places)
             old_ids, valid_bank = state[3], state[1]
             action = actions[:, i, :12] * (~reset).float()[:, None]
-            context, state, cosine = self.step(scene[:, i], action, state)
+            context, state, cosine = self.step(scene[:, i], action, state, feature=features[:, i] if features is not None else None)
             contexts.append(context)
             place = batch.get("search_place_id", torch.zeros(b, t, device=scene.device))[:, i]
             known = batch.get("search_place_valid", torch.zeros(b, t, device=scene.device))[:, i].bool()
@@ -379,7 +397,11 @@ class SearchMemory(nn.Module):
         losses, counts = [], []
         if total < 2:
             return memory.sum()*0, torch.zeros((),device=memory.device)
-        horizons = {1, min(horizon, total-1), total-1}
+        requested = (horizon,) if isinstance(horizon, (int, np.integer)) else tuple(horizon)
+        if not requested or any(int(h) < 1 for h in requested):
+            raise ValueError("B transition horizons must be positive")
+        horizons = {1, total-1, *(min(int(h), total-1) for h in requested)}
+        # Train each elapsed time once, including caller-specified short prefixes.
         # Train multiple elapsed times, not just a single fixed jump length.
         h = 2
         while h < total:
@@ -402,7 +424,7 @@ class SearchMemory(nn.Module):
 
 def check_b_checkpoint(checkpoint, enabled):
     has_b = any(".search_b." in k for k in checkpoint["agent_state_dict"])
-    if enabled and (not has_b or checkpoint.get("search_b_version") != B_VERSION):
-        raise ValueError("B v2 needs a B v2 checkpoint; A-only and package B v1 are not compatible")
+    if enabled and (not has_b or checkpoint.get("search_b_version") not in (2, 3)):
+        raise ValueError("B needs an explicitly versioned B2/B3 checkpoint; package B1 is not compatible")
     if not enabled and has_b:
         raise ValueError("B checkpoint requires apm_ab; use search_b_control=False for fixed-checkpoint ablation")

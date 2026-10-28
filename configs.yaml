@@ -66,8 +66,38 @@ defaults:
   search_a_eval_mode: checkpoint
   env_seed: -1
 
+  # C: real-feedback semi-Markov discrete actor-critic; optional and independent.
+  search_c_model_version: 1
+  search_c_imagined_weight: 0.0
+  search_c_imagined_starts: 8
+  search_c_actor_bonus: 0.0
+  search_c_return_clip: 5.0
+  search_branch_enabled: False
+  search_branch_every: 100000
+  search_branch_count: 3
+  search_branch_prefix: 8
+  search_branch_seed: 910000
+  search_eval_evidence: False
+  search_c_eval_mode: checkpoint
+  search_c_enabled: False
+  search_c_control: True
+  search_c_use_predictions: True
+  search_c_hidden: 128
+  search_c_lr: 0.0001
+  search_c_discount: 0.99
+  search_c_entropy: 0.03
+  search_c_target_tau: 0.01
+  search_c_task_weight: 5.0
+  search_c_discovery_weight: 1.0
+  search_c_new_weight: 0.03
+  search_c_revisit_weight: 0.01
+  search_c_step_cost: 0.005
+  search_c_reverse_cost: 0.02
+  search_c_visibility_potential: 0.1
+
   # B v2: durable keyframes, recurrent belief and memory-conditioned imagination.
   search_b_enabled: False
+  search_b_model_version: 2
   search_b_control: True
   search_b_dim: 128
   search_b_hidden: 128
@@ -214,13 +244,14 @@ debug:
   batch_size: 10
   batch_length: 20
 
-# Repaired A v3: bounded control, learned visibility and controlled shared gradients.
+# Repaired A v4: actual-prefix prediction; v3 weights need explicit migration.
 apm_a:
   compile: False
+  search_a_model_version: 4
+  search_a_control_version: 4
+  search_a_commit_steps: 3
   search_a_enabled: True
   search_b_enabled: False
-  search_a_model_version: 3
-  search_a_control_version: 3
   search_a_separate_optimizer: True
   search_a_revisit_weight: 0.15
   search_a_margin: 0.02
@@ -287,3 +318,68 @@ apm_b:
   compile: False
   search_a_enabled: False
   search_b_enabled: True
+
+
+# Explicit historical v3 reproduction (apply after apm_a).
+apm_a_v3:
+  search_a_model_version: 3
+  search_a_control_version: 3
+  search_a_commit_steps: 2
+
+# New combinations explicitly select A v4, never inherit historical A v2.
+apm_ab_v4:
+  compile: False
+  search_a_enabled: True
+  search_a_model_version: 4
+  search_a_control_version: 4
+  search_a_commit_steps: 3
+  search_a_separate_optimizer: True
+  search_b_enabled: True
+
+apm_abc:
+  compile: False
+  search_a_enabled: True
+  search_a_model_version: 4
+  search_a_control_version: 4
+  search_a_commit_steps: 3
+  search_a_separate_optimizer: True
+  search_b_enabled: True
+  search_c_enabled: True
+
+apm_ac:
+  compile: False
+  search_a_enabled: True
+  search_a_model_version: 4
+  search_a_control_version: 4
+  search_a_commit_steps: 3
+  search_a_separate_optimizer: True
+  search_b_enabled: False
+  search_c_enabled: True
+
+apm_bc:
+  compile: False
+  search_a_enabled: False
+  search_b_enabled: True
+  search_c_enabled: True
+  search_a_control_version: 4
+  search_a_commit_steps: 3
+
+# Complete plan: A5 + B2 + C2, including calibrated imagined returns and real branches.
+apm_full:
+  compile: False
+  search_a_enabled: True
+  search_a_model_version: 5
+  search_a_control_version: 4
+  search_a_horizon: 8
+  search_a_commit_steps: 3
+  search_a_separate_optimizer: True
+  search_a_min_labels: 512
+  search_a_min_positives: 8
+  search_b_enabled: True
+  search_c_enabled: True
+  search_c_model_version: 2
+  search_b_model_version: 3
+  search_c_imagined_weight: 0.25
+  search_c_actor_bonus: 0.25
+  search_branch_enabled: True
+  search_eval_evidence: True

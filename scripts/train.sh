@@ -16,7 +16,7 @@ export PYTHONUNBUFFERED=1
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 LOG_ROOT="${LOG_ROOT:-/root/rivermind-data/mine/projects/tb_logs}"
-MODE="${A_MODE:-full}"
+MODE="${A_MODE:-abc}"
 
 case "$TASK_NAME" in
   harvest_log_in_plains) TARGET_ITEM=log ;;
@@ -27,14 +27,23 @@ case "$TASK_NAME" in
   *) echo "Unknown task: $TASK_NAME" >&2; exit 2 ;;
 esac
 
-# full selects repaired A v3 (B disabled); explicit extra arguments remain last.
+# Default abc is the complete plan. A_MODE=full preserves historical A4; arguments remain last.
 case "$MODE" in
   full) set -- --configs minedojo apm_a "$@" ;;
   off) set -- --configs minedojo apm_a_off "$@" ;;
   loss_only) set -- --configs minedojo apm_a apm_a_loss_only "$@" ;;
-  ab) set -- --configs minedojo apm_ab "$@" ;;
+  ab) set -- --configs minedojo apm_a apm_ab_v4 "$@" ;;
+  abc) set -- --configs minedojo apm_a apm_full "$@" ;;
+  abc_v1) set -- --configs minedojo apm_a apm_abc "$@" ;;
+  a5) set -- --configs minedojo apm_a apm_full --search_b_enabled False --search_c_enabled False --search_branch_enabled False "$@" ;;
+  ab5) set -- --configs minedojo apm_a apm_full --search_c_enabled False --search_branch_enabled False "$@" ;;
+  ac5) set -- --configs minedojo apm_a apm_full --search_b_enabled False "$@" ;;
+  bc2) set -- --configs minedojo apm_a apm_full --search_a_enabled False --search_branch_enabled False "$@" ;;
+  b3) set -- --configs minedojo apm_a apm_full --search_a_enabled False --search_c_enabled False --search_branch_enabled False "$@" ;;
+  ac) set -- --configs minedojo apm_a apm_ac "$@" ;;
+  bc) set -- --configs minedojo apm_a apm_bc "$@" ;;
   b) set -- --configs minedojo apm_b "$@" ;;
-  *) echo "A_MODE must be full, off, loss_only, ab, or b" >&2; exit 2 ;;
+  *) echo "A_MODE must be abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
 esac
 
 RUN_LOG_ROOT="$LOG_ROOT/$PROJECT_NAME/$MODE"

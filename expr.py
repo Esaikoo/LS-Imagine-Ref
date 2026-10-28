@@ -13,7 +13,9 @@ from datetime import datetime
 import exploration as expl
 import models
 import tools
-from search_a import SearchAController, actor_action_sequence, check_checkpoint, MODEL_VERSION
+from search_a import (SearchAController, PrefixSearchController, actor_action_sequence,
+                      prefix_macro_actions, prefix_candidate_predictions, check_checkpoint, MODEL_VERSION)
+from search_c import SearchBehavior, build_transitions, check_c_checkpoint, C_VERSION
 from search_memory import describe_torch, sample_episodes_with_history, B_VERSION, check_b_checkpoint
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
@@ -41,8 +43,17 @@ class LS_Imagine(nn.Module):
         self._dataset = dataset
         self._wm = models.WorldModel(obs_space, act_space, self._step, config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
+        self._search_c = None
+        if config.search_c_enabled:
+            if config.search_a_control_version != 4:
+                raise ValueError("C requires the v4 executable prefix interface")
+            size = (config.dyn_stoch * config.dyn_discrete if config.dyn_discrete else config.dyn_stoch) + config.dyn_deter
+            size += config.search_b_dim if config.search_b_enabled else 0
+            with torch.random.fork_rng(devices=[]):
+                self._search_c = SearchBehavior(size, config)
+        controller = PrefixSearchController if config.search_a_control_version == 4 else SearchAController
         # APM-IMAGINE A STAGE: low-frequency counterfactual exploration control.
-        self._search_a = (SearchAController(
+        self._search_a = (controller(
             horizon=config.search_a_horizon,
             override_prob=config.search_a_override_prob,
             low_evidence=config.search_a_low_evidence,
@@ -72,7 +83,8 @@ class LS_Imagine(nn.Module):
             epsilon=(config.search_a_epsilon if config.search_a_train
                      and config.search_a_loss_weight > 0 and (config.search_a_event_weight > 0
                          or (config.search_a_model_version >= 3 and config.search_a_visible_weight > 0)) else 0.0),
-        ) if config.search_a_enabled and config.search_a_control else None)
+        ) if (config.search_a_enabled and config.search_a_control)
+             or (config.search_c_enabled and config.search_c_control) else None)
         if (
             config.compile and os.name != "nt"
         ):  # compilation is not supported on windows
@@ -98,10 +110,7 @@ class LS_Imagine(nn.Module):
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
             if self._should_log(step):
-                for name, values in self._metrics.items():
-                    if np.size(values):
-                        self._logger.scalar(name, float(np.mean(values)))
-                    self._metrics[name] = []
+                self.flush_metrics()
                 if self._config.video_pred_log:
                     openl = self._wm.video_pred(next(self._dataset))
                     self._logger.video("train_openl", to_np(openl))
@@ -113,6 +122,13 @@ class LS_Imagine(nn.Module):
             self._step += len(reset)
             self._logger.step = self._config.action_repeat * self._step
         return policy_output, state
+
+    def flush_metrics(self):
+        """Persist final partial logging intervals without performing an update."""
+        for name, values in self._metrics.items():
+            if np.size(values):
+                self._logger.scalar(name, float(np.mean(values)))
+            self._metrics[name] = []
 
     def _policy(self, obs, state, training):
         # APM-IMAGINE A STAGE: keep a macro progress tensor in recurrent policy state.
@@ -139,7 +155,7 @@ class LS_Imagine(nn.Module):
         if self._wm.search_b is not None:
             scene = describe_torch(obs["image"], obs["heatmap"])
             memory_context, memory_state, memory_info = self._wm.search_b.online_step(
-                scene, memory_state, obs["is_first"], previous_action=action)
+                scene, memory_state, obs["is_first"], previous_action=action, feature=feat)
         policy_memory = memory_context if self._config.search_b_control else (
             torch.zeros_like(memory_context) if memory_context is not None else None)
         policy_feat = torch.cat((feat, policy_memory), -1) if policy_memory is not None else feat
@@ -184,11 +200,15 @@ class LS_Imagine(nn.Module):
                 result[:, candidate_ids] = imagined.reshape(
                     count, num, self._config.search_a_horizon, self._config.num_actions)
                 return result
+            extra = {}
+            if self._search_a.control_version == 4:
+                extra = dict(selector=self._search_c if self._config.search_c_control else None,
+                             policy_memory=policy_memory)
             action, search_state, search_info = self._search_a.choose(
                 self._wm.search_a, feat, obs, proposed_action, search_state,
                 obs["is_first"], self._step, training, continuation,
                 memory=(memory_context if self._config.search_b_control else None),
-                candidate_sequence=candidate_continuations)
+                candidate_sequence=candidate_continuations, **extra)
         logprob = actor.log_prob(action)
         latent = {k: v.detach() for k, v in latent.items()}
         action = action.detach()
@@ -199,6 +219,8 @@ class LS_Imagine(nn.Module):
         policy_output = {"action": action, "logprob": logprob}
         policy_output.update(search_info)
         policy_output.update(memory_info)
+        policy_output["search_data_source"] = search_info.get(
+            "log_search_override", torch.zeros_like(logprob)).float()
         if self._wm.search_b is not None:
             state = (latent, action, search_state, memory_state)
         else:
@@ -239,14 +261,64 @@ class LS_Imagine(nn.Module):
                         accumulated_reward, jump_indicator, is_end,
                         search_context=context.get("search_memory"),
                         search_context_zoomed=context.get("search_memory_zoomed"))[-1])
+        if self._search_c is not None:
+            metrics.update(self._train_search_c(post, context.get("search_memory"), data))
         if self._config.expl_behavior != "greedy":
             mets = self._expl_behavior.train(post, context, data)[-1]
             metrics.update({"expl_" + key: value for key, value in mets.items()})
         for name, value in metrics.items():
+            if torch.is_tensor(value):
+                value = value.detach().cpu().numpy()
             if not name in self._metrics.keys():
                 self._metrics[name] = [value]
             else:
                 self._metrics[name].append(value)
+
+
+    def _train_search_c(self, post, memory, data):
+        records = build_transitions(data, self._config, self._config.search_a_commit_steps)
+        if not records:
+            return {"C/transitions": 0.}
+        device = next(self.parameters()).device
+        snapshots = {}
+        def inputs(endpoint):
+            b = torch.tensor([r["batch"] for r in records], device=device)
+            t = torch.tensor([r[endpoint] for r in records], device=device)
+            latent = {k: value[b, t] for k, value in post.items()}
+            feat = self._wm.dynamics.get_feat(latent).detach()
+            mem = memory[b, t].detach() if memory is not None else None
+            policy_memory = mem if self._config.search_b_control else (
+                torch.zeros_like(mem) if mem is not None else None)
+            state = torch.cat((feat, policy_memory), -1) if policy_memory is not None else feat
+            context_key = "context" if endpoint == "start" else "next_context"
+            history = torch.as_tensor(np.stack([r[context_key] for r in records]), device=device)
+            k = self._config.search_a_commit_steps
+            with torch.no_grad():
+                first_action = self._task_behavior.actor(state).mode()
+                sequence = prefix_macro_actions(k, device)[None].expand(len(records), -1, -1, -1).clone()
+                sequence[:, 5] = actor_action_sequence(
+                    self._wm.dynamics, self._task_behavior.actor, latent, first_action, k,
+                    memory=policy_memory,
+                    memory_transition=self._wm.search_b.imagine_step
+                    if self._wm.search_b is not None and self._config.search_b_control else None)
+                result = prefix_candidate_predictions(
+                    self._wm.search_a, feat, sequence, history[:, 8:].argmax(-1),
+                    mem if self._config.search_b_control else None,
+                    self._config.search_a_min_labels, self._config.search_a_min_positives)
+                # Use current A outputs, not stale collection-time predictions.
+                for i, record in enumerate(records):
+                    current = record[context_key].copy()
+                    current[1] = float(result[2][i])
+                    current[2] = float(result[3][3])
+                    record[context_key] = current
+            snapshots[endpoint] = (latent, policy_memory, sequence)
+            return state, result[4]
+        state, prediction = inputs("start")
+        next_state, next_prediction = inputs("end")
+        from search_feedback import imagined_search_transitions
+        imagined = imagined_search_transitions(self, snapshots["start"], state, prediction, records)
+        return self._search_c.train_transitions(
+            state, prediction, next_state, next_prediction, records, imagined=imagined)
 
 def count_steps(folder):
     return sum(int(str(n).split("-")[-1][:-4]) - 1 for n in folder.glob("*.npz"))
@@ -254,7 +326,9 @@ def count_steps(folder):
 def make_dataset(episodes, config):
     generator = (sample_episodes_with_history(
         episodes, config.batch_length, slots=config.search_b_slots,
-        lookback=config.search_b_lookback, save_every=config.search_b_save_every) if config.search_b_enabled
+        lookback=config.search_b_lookback, save_every=config.search_b_save_every,
+        observation_keys=(("image", "heatmap", "inventory", "inventory_max", "equipped", "health",
+                           "hunger", "breath", "obs_reward") if config.search_b_model_version >= 3 else ())) if config.search_b_enabled
         else tools.sample_episodes(episodes, config.batch_length))
     dataset = tools.from_generator(generator, config.batch_size)
     return dataset
@@ -265,11 +339,12 @@ def make_env(config, mode, id):
         import envs.minedojo as minedojo
         log_dir = os.path.join(config.results_dir, config.name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
-        collect_labels = (mode == "train" and (
+        collect_labels = ((mode == "train" or config.search_eval_evidence) and (
             (config.search_a_enabled and config.search_a_train
              and config.search_a_loss_weight > 0 and (config.search_a_event_weight > 0
                   or (config.search_a_model_version >= 3 and config.search_a_visible_weight > 0)))
-            or (config.search_b_enabled and config.search_b_loss_weight > 0)))
+            or (config.search_b_enabled and config.search_b_loss_weight > 0)
+            or config.search_c_enabled))
         kwargs = dict(
             log_dir=log_dir, target_item=config.target_item,
             search_evidence_specs=dict(
@@ -432,17 +507,26 @@ def main(config): # config is namespace
         checkpoint = torch.load(logdir / "latest.pt")
         check_checkpoint(checkpoint, config.search_a_enabled, config.search_a_model_version)
         check_b_checkpoint(checkpoint, config.search_b_enabled)
+        check_c_checkpoint(checkpoint, config.search_c_enabled)
+        if config.search_b_enabled and checkpoint["search_b_version"] != config.search_b_model_version:
+            raise ValueError("B checkpoint/model version mismatch")
+        if config.search_c_enabled and checkpoint["search_c_version"] != config.search_c_model_version:
+            raise ValueError("C checkpoint/model version mismatch")
         agent.load_state_dict(checkpoint["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
         agent._step = int(checkpoint.get("step", agent._step))
         if agent._search_a is not None:
             agent._search_a.load_rng_state(checkpoint.get("search_a_rng_state"))
+        if agent._search_c is not None:
+            agent._search_c.load_rng_state(checkpoint.get("search_c_rng_state"))
         if "model_amp_scaler" in checkpoint:
             agent._wm._model_opt._scaler.load_state_dict(checkpoint["model_amp_scaler"])
         logger.step = config.action_repeat * agent._step
 
     
+    # Branch interactions share the same total real-interaction budget.
+    next_branch_step = (agent._step // config.search_branch_every + 1) * config.search_branch_every
     # make sure eval will be executed once after config.steps
     while True:
         logger.write()
@@ -468,7 +552,12 @@ def main(config): # config is namespace
                 logger.video("eval_openl", to_np(video_pred))
 
         if agent._step >= config.steps:
+            agent.flush_metrics()
             break
+        if config.search_branch_enabled and agent._step >= next_branch_step:
+            from search_branches import collect_real_branches
+            collect_real_branches(agent, config, train_eps, logger, next_branch_step // config.search_branch_every)
+            next_branch_step += config.search_branch_every
         print("Start training.")
 
         state = tools.simulate(
@@ -497,10 +586,17 @@ def main(config): # config is namespace
             "search_a_rng_state": agent._search_a.rng_state() if agent._search_a is not None else None,
             "search_a_macro_names": list(agent._search_a.macro_names) if agent._search_a is not None else [],
             "model_amp_scaler": agent._wm._model_opt._scaler.state_dict(),
-            "search_b_version": B_VERSION if config.search_b_enabled else None,
+            "search_b_version": agent._wm.search_b.model_version if config.search_b_enabled else None,
+            "search_c_version": agent._search_c.model_version if config.search_c_enabled else None,
+            "search_c_rng_state": agent._search_c.rng_state() if agent._search_c is not None else None,
+            "eval_protocol_version": 6 if config.search_eval_evidence else 5,
+            "search_candidate_version": config.search_a_control_version,
+
         }
         
-        torch.save(items_to_save, logdir / "latest.pt")
+        pending = logdir / "latest.pt.tmp"
+        torch.save(items_to_save, pending)
+        os.replace(pending, logdir / "latest.pt")
 
     for env in train_envs + eval_envs:
         try:

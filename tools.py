@@ -115,6 +115,10 @@ class Logger:
         self._images = {}
         self._videos = {}
         self.step = step
+        self.evaluation_metadata = {
+            key: getattr(config, key, None) for key in (
+                "task", "seed", "env_seed", "search_a_model_version",
+                "search_a_control_version", "search_b_enabled", "search_c_enabled")}
 
         if self._wandb:
             if config.wandb_key is None:
@@ -220,8 +224,13 @@ class Logger:
             self._writer.add_video(name, value, step, 16)
 
     def finish(self):
+        # The final evaluation can queue an open-loop video after its scalar
+        # write. Flush it and any partial final training interval before exit.
+        self.write()
         if self._wandb:
             wandb.finish()
+        else:
+            self._writer.close()
 
 def calculate_accumulated_reward(rewards, intrinsics, gamma):
     if len(rewards) == 0:
@@ -246,6 +255,40 @@ def search_episode_diagnostics(episode):
         ids = actions[1:].argmax(-1)
         result["action_turn_rate"] = float(np.isin(ids, [2, 3, 4, 5]).mean())
         result["action_interaction_rate"] = float(np.isin(ids, [1, 11]).mean())
+        result["action_pitch_rate"] = float(np.isin(ids, [2, 3]).mean())
+        result["action_forward_rate"] = float((ids == 6).mean())
+        reverse = ((ids[1:] == 2) & (ids[:-1] == 3)) | ((ids[1:] == 3) & (ids[:-1] == 2))
+        result["action_pitch_reverse_rate"] = float(reverse.mean()) if len(reverse) else 0.
+        override = np.asarray(episode.get("log_search_override", [])) > 0
+        if len(override) == len(actions) and len(ids) > 1:
+            handoff = override[1:-1] & ~override[2:] & np.isin(ids[:-1], [2, 3])
+            result["a_pitch_handoff_count"] = float(handoff.sum())
+            result["a_pitch_handoff_reverse_rate"] = float((handoff & reverse).sum()) / max(1, handoff.sum())
+    # Truth metrics only exist when actual audit/training labels are available.
+    visible = np.asarray(episode.get("search_visible", []))
+    known = np.asarray(episode.get("search_visible_valid", [])) > 0
+    if len(known):
+        known &= np.asarray(episode.get("search_label_version", np.zeros(len(known)))) == 2
+        known &= np.isfinite(visible) & (visible >= 0) & (visible <= 1)
+    if len(known) and known.any():
+        seen = np.flatnonzero((visible > .5) & known)
+        result["true_visible_rate"] = float(visible[known].mean())
+        result["true_target_observed"] = float(bool(len(seen)))
+        if len(seen):
+            result["true_first_target_step"] = float(seen[0])
+            success = np.asarray(episode.get("success", np.zeros(len(known)))) > 0
+            result["success_after_discovery"] = float(success[seen[0]:].any())
+            if actions.ndim == 2:
+                result["interaction_after_discovery_rate"] = float(
+                    np.isin(actions[seen[0]+1:].argmax(-1), [1, 11]).mean()) if seen[0]+1 < len(actions) else 0.
+    cv = np.asarray(episode.get("search_surface_coverage_valid", [])) > 0
+    if cv.any():
+        coverage = np.asarray(episode["search_surface_coverage"])
+        result["observed_surface_cells"] = float(coverage[cv].max())
+    source = np.asarray(episode.get("search_data_source", []))
+    if source.size > 1:
+        for code, name in ((0, "actor"), (1, "search"), (2, "branch")):
+            result["data_source_" + name + "_rate"] = float((source[1:] == code).mean())
     if "log_search_completed_length" in episode:
         lengths = np.asarray(episode["log_search_completed_length"], dtype=float)
         completed = lengths[lengths > 0]
@@ -287,11 +330,23 @@ def simulate(
     else:
         step, episode, done, length, obs, agent_state, reward, information = state
         
+    # Allocate at most the requested number of independent evaluation resets,
+    # including when multiple environments finish on the same iteration.
+    active = np.ones(len(envs), bool)
+    eval_started = episode
+    if is_eval and episodes:
+        active = ~done
+        eval_started += int(active.sum())
+
     while (steps and step < steps) or (episodes and episode < episodes):
         # reset envs if necessary
         if done.any():
             indices = [index for index, d in enumerate(done) if d]
-            indices = [index for index in indices if information[index].get("real_done", True)]
+            indices = [index for index in indices if is_eval or information[index].get("real_done", True)]
+            if is_eval and episodes:
+                indices = indices[:max(0, episodes-eval_started)]
+                eval_started += len(indices)
+                active[indices] = True
             results = [envs[i].reset() for i in indices]
             results = [r() for r in results] 
 
@@ -312,8 +367,13 @@ def simulate(
                 obs[index] = result
 
         # step agents
-        obs = {k: np.stack([o[k] for o in obs]) for k in obs[0] if "log_" not in k}
-        action, agent_state = agent(obs, done, agent_state)
+        # Idle evaluation slots are padded for the batched policy only; no
+        # simulator step, trajectory, or episode is fabricated for those slots.
+        template = next(o for o in obs if o is not None)
+        policy_obs = [o if o is not None else template for o in obs]
+        policy_obs = {k: np.stack([o[k] for o in policy_obs])
+                      for k in template if "log_" not in k}
+        action, agent_state = agent(policy_obs, done, agent_state)
 
         if isinstance(action, dict):
             action = [
@@ -325,22 +385,20 @@ def simulate(
         assert len(action) == len(envs)
 
         # step envs
-        results = [e.step(a) for e, a in zip(envs, action)]
-        results = [r() for r in results]
-        obs, reward, done, info = zip(*[p[:4] for p in results])
-
-        obs = list(obs)
-        reward = list(reward)
-        done = np.stack(done)
-        information = list(info)
+        live = np.flatnonzero(active)
+        pending = [envs[i].step(action[i]) for i in live]
+        results = {i: future() for i, future in zip(live, pending)}
+        done = np.zeros(len(envs), bool)
+        for i, result in results.items():
+            obs[i], reward[i], done[i], information[i] = result[:4]
         episode += int(done.sum())
-        length += 1
-        step += len(envs)
+        length += active
+        step += len(live)
         length *= 1 - done
 
         # add to cache
-        for tmp_index in range(len(results)):
-            a, result, env = action[tmp_index], results[tmp_index], envs[tmp_index]
+        for tmp_index, result in results.items():
+            a, env = action[tmp_index], envs[tmp_index]
 
             o, r, d, info = result
             o = {k: convert(v) for k, v in o.items()}
@@ -376,6 +434,10 @@ def simulate(
                 if (not is_eval) and (not information[i].get("real_done", False)):
                     continue
 
+                # Evaluation ends at the first terminal/truncation, independently
+                # of the training-only deferred jumping-target bookkeeping.
+                if is_eval:
+                    information[i]["real_done"] = True
                 save_episodes(directory, {envs[i].id: cache[envs[i].id]})
 
                 step_calculator.remove_all(envs[i].id)
@@ -384,6 +446,17 @@ def simulate(
                 suc = 1 if any(np.array(cache[envs[i].id]["success"])[:max_steps+1]) else 0
                 first_success_step = min(cache[envs[i].id]["first_success_step"][-1], max_steps)
                 video = cache[envs[i].id]["image"]
+                if is_eval and hasattr(logger, "evaluation_metadata"):
+                    record = dict(logger.evaluation_metadata, protocol_version=(
+                        6 if np.asarray(cache[envs[i].id].get("search_visible_valid", [])).any() else 5),
+                        training_step=int(logger.step), episode_id=str(envs[i].id),
+                        length=episode_length, success=bool(suc), **{"return": score},
+                        termination=("success" if suc else
+                                     "terminal" if bool(obs[i].get("is_terminal", False))
+                                     else "time_limit_or_truncation"),
+                        world_seed=None, seed_note="configured seeds; world seed unavailable")
+                    with (pathlib.Path(directory)/"episodes.jsonl").open("a") as stream:
+                        stream.write(json.dumps(record)+"\n")
                 # B prediction-derived revisit proxy; NOT oracle true-location coverage.
                 b_values = np.asarray(cache[envs[i].id].get("log_b_revisit_prob", []), dtype=float)
                 b_used = np.asarray(cache[envs[i].id].get("log_b_memory_used", []), dtype=float)
@@ -404,7 +477,10 @@ def simulate(
                         if not key.startswith(("log_search_", "log_b_")):
                             logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
-                        cache[envs[i].id].pop(key)
+                        # Keep search traces intact until this episode is evicted.
+                        # Replay excludes log_*; C uses separate numeric search_c_*.
+                        if not key.startswith(("log_search_", "log_b_")):
+                            cache[envs[i].id].pop(key)
 
                 if not is_eval:
                     step_in_dataset = erase_over_episodes(cache, limit)
@@ -456,6 +532,7 @@ def simulate(
                     if len(eval_scores) >= episodes and not eval_done:
                         logger.scalar(f"eval_return", score)
                         logger.scalar(f"eval_length", episode_length)
+                        logger.scalar("eval_protocol_version", 6 if "true_visible_rate" in a_diagnostics else 5)
                         logger.scalar(f"eval_episodes", len(eval_scores))
                         logger.scalar(f"eval_success", success_rate)
                         logger.scalar("eval_search_rate", float(np.mean(eval_search_rates)))
@@ -468,6 +545,9 @@ def simulate(
                         logger.scalar(f"eval_first_success_step", first_success_step)
                         logger.write(step=logger.step)
                         eval_done = True
+        if is_eval and episodes:
+            active[done] = False
+            done[~active] = True
     if is_eval:
         # keep only last item for saving memory. this cache is used for video_pred later
         while len(cache) > 1:
