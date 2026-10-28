@@ -202,25 +202,20 @@ class RSSM(nn.Module):
             prev_action = torch.cat((prev_action, zero_tensor), dim=-1)
 
 
-        if prev_state == None or torch.sum(is_first) == len(is_first):
-            prev_state = self.initial(len(is_first))
-            prev_action = torch.zeros((len(is_first), self._num_actions)).to(
-                self._device
-            )
-            # prev_action.requires_grad_()
-        # overwrite the prev_state only where is_first=True
-        elif torch.sum(is_first) > 0:
-            is_first = is_first[:, None]
-            prev_action *= 1.0 - is_first
-            init_state = self.initial(len(is_first))
-            for key, val in prev_state.items():
-                is_first_r = torch.reshape(
-                    is_first,
-                    is_first.shape + (1,) * (len(val.shape) - len(is_first.shape)),
-                )
-                prev_state[key] = (
-                    val * (1.0 - is_first_r) + init_state[key] * is_first_r
-                )
+        # Reset flags may be bool (history reconstruction) or numeric (Replay).
+        # Select rows without boolean subtraction or mutating stored states/actions.
+        reset = is_first.reshape(len(embed)).bool()
+        if prev_state is None or reset.all():
+            prev_state = self.initial(len(embed))
+            prev_action = torch.zeros((len(embed), self._num_actions), device=self._device)
+        elif reset.any():
+            prev_action = torch.where(reset[:, None], torch.zeros_like(prev_action), prev_action)
+            init_state = self.initial(len(embed))
+            prev_state = {
+                key: torch.where(reset.reshape(-1, *([1] * (val.ndim - 1))),
+                                 init_state[key], val)
+                for key, val in prev_state.items()
+            }
 
         prior = self.img_step(prev_state, prev_action)
         x = torch.cat([prior["deter"], embed], -1)

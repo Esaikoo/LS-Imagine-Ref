@@ -1526,6 +1526,50 @@ class FullPlanTests(unittest.TestCase):
         self.assertEqual(output["action"].shape, (1,12))
         self.assertEqual(output["search_c_version"].item(), 2)
 
+    def test_rssm_mixed_boolean_resets_match_numeric_without_mutation(self):
+        agent=make_agent(self.cfg())
+        dynamics=agent._wm.dynamics
+        b=4
+        previous=dynamics.initial(b)
+        previous={key:value.detach().clone()+.1 for key,value in previous.items()}
+        action=F.pad(F.one_hot(torch.tensor([2,3,4,5]),12).float(),(0,1))
+        original_action=action.clone()
+        original_state={key:value.clone() for key,value in previous.items()}
+        embed=torch.randn(b,agent._wm.embed_size)
+        first=torch.tensor([True,False,True,False])
+        torch.manual_seed(42)
+        numeric=dynamics.obs_step({k:v.clone() for k,v in previous.items()},action.clone(),embed,first.float(),sample=False)
+        torch.manual_seed(42)
+        boolean=dynamics.obs_step(previous,action,embed,first,sample=False)
+        for expected,actual in zip(numeric,boolean):
+            for key in expected:
+                torch.testing.assert_close(actual[key],expected[key])
+        torch.testing.assert_close(action,original_action)
+        for key in previous:
+            torch.testing.assert_close(previous[key],original_state[key])
+
+    def test_formal_batch_and_history_with_mixed_lengths_train_all_modules(self):
+        cfg=self.cfg(batch_size=16,batch_length=32,search_b_lookback=128)
+        agent=make_agent(cfg)
+        data=self.dataset(cfg)
+        valid=torch.as_tensor(data["search_b_history_valid"]).bool()
+        prior=torch.cat((torch.zeros_like(valid[:,:1]),valid[:,:-1]),1)
+        first=~valid | ~prior
+        count=first.sum(0)
+        self.assertTrue(((count>0)&(count<16)).any())  # exact server failure condition
+        before=agent._wm.search_b.latent_adapter.weight.detach().clone()
+        agent._train(data)
+        self.assertTrue(all(np.isfinite(v).all() for values in agent._metrics.values()
+                            for v in (values if isinstance(values,list) else [values])))
+        self.assertGreater(agent._metrics["B/transition_valid"][-1],0)
+        self.assertGreater(agent._metrics["C/transitions"][-1],0)
+        self.assertGreater(float((before-agent._wm.search_b.latent_adapter.weight).abs().sum()),0)
+        empty=copy.deepcopy(data)
+        empty["search_b_history_valid"][:]=0
+        features=agent._wm.memory_history_features(empty)
+        self.assertEqual(features.shape[:2],(16,128))
+        self.assertTrue(torch.isfinite(features).all())
+
     def test_memory_off_is_preserved_in_full_imagined_search(self):
         from unittest import mock
         cfg=self.cfg(search_b_control=False)
@@ -1675,6 +1719,109 @@ class FullPlanTests(unittest.TestCase):
         self.assertIn('MODE="${A_MODE:-abc}"',text)
         self.assertIn('abc) set -- --configs minedojo apm_a apm_full',text)
 
+def audit_startup_replay(argv):
+    """Reproduce server startup locally with real Replay, batch=16 and history=128."""
+    import argparse, gc, json, re, gym
+    import ruamel.yaml as yaml
+    import tools
+    from expr import LS_Imagine, make_dataset
+    from models import WorldModel
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--replay",type=pathlib.Path,required=True)
+    parser.add_argument("--output",type=pathlib.Path,required=True)
+    parser.add_argument("--device",default="cuda:0")
+    parser.add_argument("--updates",type=int,default=3)
+    args=parser.parse_args(argv)
+    if args.output.exists():
+        raise ValueError("Use a fresh startup audit output directory")
+    if args.updates < 1:
+        raise ValueError("Startup audit needs at least one optimization step")
+    args.output.mkdir(parents=True)
+    presets=yaml.YAML(typ="safe").load((pathlib.Path(__file__).resolve().parents[1]/"configs.yaml").read_text())
+    settings={}
+    def merge(dst,src):
+        for key,value in src.items():
+            if isinstance(value,dict) and key in dst:
+                merge(dst[key],value)
+            else:
+                dst[key]=copy.deepcopy(value)
+    for name in ("defaults","minedojo","apm_a","apm_full"):
+        merge(settings,presets[name])
+    settings.update(device=args.device,num_actions=12,episode_max_steps=1000,compile=False,
+                    logdir=str(args.output),use_wandb=False,log_all_metrics=False)
+    formal=SimpleNamespace(**settings)
+    replay=tools.load_episodes(args.replay)
+    if not replay:
+        raise ValueError("Replay directory has no readable episodes")
+    dataset=make_dataset(replay,formal)
+    data=next(dataset)
+    valid=np.asarray(data["search_b_history_valid"],bool)
+    first=~valid | ~np.concatenate((np.zeros_like(valid[:,:1]),valid[:,:-1]),axis=1)
+    mixed=((first.sum(0)>0)&(first.sum(0)<formal.batch_size))
+    assert mixed.any(),"Fixture did not cover the server's mixed reset condition"
+    sample=next(iter(replay.values()))
+    spaces={"image":gym.spaces.Box(0,255,(64,64,3),np.uint8),
+            "heatmap":gym.spaces.Box(0,255,(64,64,1),np.uint8)}
+    for key,value in sample.items():
+        if re.match(formal.encoder["mlp_keys"],key) and not key.startswith("search_"):
+            spaces[key]=gym.spaces.Box(-np.inf,np.inf,np.shape(value)[1:],np.float32)
+    obs_space=gym.spaces.Dict(spaces)
+    act_space=gym.spaces.Discrete(12)
+    tools.set_seed_everywhere(formal.seed)
+    print("Checking formal RSSM/encoder history reconstruction:",formal.batch_size,formal.search_b_lookback,
+          "mixed reset timesteps",int(mixed.sum()),flush=True)
+    wm=WorldModel(obs_space,act_space,2500,formal).to(args.device)
+    wm.requires_grad_(False)
+    features=wm.memory_history_features(data)
+    assert torch.isfinite(features).all()
+    assert features.shape==(16,128,5120),features.shape
+    report=dict(source_episodes=len(replay),batch_size=16,batch_length=32,history=128,
+                mixed_reset_timesteps=int(mixed.sum()),formal_history_shape=list(features.shape),
+                device=args.device,formal_history_pass=True,real_environment_steps=0)
+    print("Formal 5120-D RSSM history PASS",flush=True)
+    del features,wm
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    # Preserve formal batch/sequence/history and B dimensions; reduce core width
+    # for bounded backpropagation on the local 6 GB GPU.
+    merge(settings,presets["apm_a_smoke"])
+    settings.update(batch_size=16,batch_length=32,search_b_lookback=128,imag_horizon=15,
+                    max_imag_sequences_num=1024,device=args.device)
+    cfg=SimpleNamespace(**settings)
+    logger=tools.Logger(cfg,args.output,2500)
+    agent=LS_Imagine(obs_space,act_space,cfg,logger,None).to(args.device)
+    agent.requires_grad_(False)
+    before=agent._wm.search_b.latent_adapter.weight.detach().clone()
+    for update in range(args.updates):
+        current=data if update==0 else next(dataset)
+        agent._train(current)
+        print("Startup GPU optimization",update+1,"PASS",flush=True)
+    assert all(float(v)==1. for v in agent._metrics["model_update_applied"])
+    assert all(float(v)==1. for v in agent._metrics["search_a_update_applied"])
+    assert all(float(v)==1. for v in agent._metrics["actor_update_applied"])
+    assert all(float(v)==1. for v in agent._metrics["value_update_applied"])
+    assert float((before-agent._wm.search_b.latent_adapter.weight).abs().sum())>0
+    obs={key:np.asarray(value)[:,0] for key,value in data.items()
+         if not key.startswith(("search_b_","log_")) and key!="action"}
+    with torch.no_grad():
+        output,_=agent._policy(obs,None,False)
+    assert output["action"].shape==(16,12)
+    assert torch.isfinite(output["action"]).all()
+    for values in agent._metrics.values():
+        assert all(np.isfinite(v).all() for v in (values if isinstance(values,list) else [values]))
+    report.update(training_updates=args.updates,small_model_joint_training_pass=True,
+                  actor_batch_shape=list(output["action"].shape))
+    agent.flush_metrics()
+    torch.save(dict(agent_state_dict=agent.state_dict(),step=2500,config=vars(cfg),
+                    search_a_version=5,search_b_version=3,search_c_version=2,
+                    audit_only=True),args.output/"startup.pt")
+    logger.finish()
+    (args.output/"startup_audit.json").write_text(json.dumps(report,indent=2))
+    print("PASS: real server Replay, formal history width, mixed batch resets, joint GPU updates and batch policy",
+          args.output,flush=True)
+
+
 def audit_real_branches(argv):
     """Bounded real branch + replay/GPU training check using an existing smoke checkpoint."""
     import argparse, json, re, gym
@@ -1734,7 +1881,9 @@ def audit_real_branches(argv):
 
 
 if __name__=="__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--branch-checkpoint":
+    if len(sys.argv) > 1 and sys.argv[1] == "--startup-replay":
+        audit_startup_replay(sys.argv[2:])
+    elif len(sys.argv) > 1 and sys.argv[1] == "--branch-checkpoint":
         audit_real_branches(sys.argv[2:])
     elif len(sys.argv) > 1 and sys.argv[1] == "--audit-replay":
         audit_replay(sys.argv[2:])

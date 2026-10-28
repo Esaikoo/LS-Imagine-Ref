@@ -522,7 +522,8 @@ class WorldModel(nn.Module):
         actions = torch.as_tensor(raw["search_b_history_action"], device=self._config.device).float()
         actions = torch.nn.functional.pad(actions, (0, 1))
         previous_valid = torch.cat((torch.zeros_like(valid[:, :1]), valid[:, :-1]), 1)
-        first = ~valid | ~previous_valid
+        # RSSM accepts 0/1 reset flags; different rows can have different history lengths.
+        first = (~valid | ~previous_valid).to(actions.dtype)
         post, _ = self.dynamics.observe(embed.reshape(b, t, -1), actions, first)
         return self.dynamics.get_feat(post).detach()
 
