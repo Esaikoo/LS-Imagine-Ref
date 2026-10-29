@@ -239,7 +239,7 @@ class LS_Imagine(nn.Module):
 
         intrinsic = lambda f, s, a: self._wm.heads["intrinsic"](
             self._wm.dynamics.get_feat(s)
-        ).mode() 
+        ).mode()
 
         jumping_steps = lambda f, s, a: self._wm.heads["jumping_steps"](
             f
@@ -372,38 +372,46 @@ def make_env(config, mode, id):
 
     else:
         raise NotImplementedError(suite)
-    
+
     # env = wrappers.TimeLimit(env, config.time_limit)
     env = wrappers.SelectAction(env, key="action")
     env = wrappers.UUID(env)
     env = wrappers.RewardObs(env)
 
-    return env
+    from envs.recovery import ResetRecovery
+    return ResetRecovery(env, retries=config.minedojo_reset_retries,
+                         log_path=pathlib.Path(config.logdir) / "env_recovery.jsonl",
+                         label=f"{mode}-{id}")
 
 
 def main(config): # config is namespace
 
+    from training_state import (prepare_resume, restore_training_state,
+                                write_resume_manifest, save_training_checkpoint)
+    resume_plan = prepare_resume(config)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
 
-    logdir = pathlib.Path(config.logdir).expanduser() 
+    logdir = pathlib.Path(config.logdir).expanduser()
     logdir = logdir / config.task
     logdir = logdir / 'seed_{}'.format(config.seed)
-    timestamp = datetime.now().strftime('%Y%m%dT%H%M%S')
+    timestamp = datetime.now().strftime('%Y%m%dT%H%M%S') + ("_resume" if resume_plan else "")
     logdir = logdir / timestamp
+    if logdir.exists():
+        raise FileExistsError(f"Refusing to overwrite an existing experiment: {logdir}")
     config.logdir = logdir
     config.traindir = config.traindir or logdir / "train_eps"
     config.evaldir = config.evaldir or logdir / "eval_eps"
     config.steps //= config.action_repeat
-    config.eval_every //= config.action_repeat 
-    config.log_every //= config.action_repeat 
+    config.eval_every //= config.action_repeat
+    config.log_every //= config.action_repeat
     config.time_limit //= config.action_repeat
     logdir.mkdir(parents=True, exist_ok=True)
     config.traindir.mkdir(parents=True, exist_ok=True)
     config.evaldir.mkdir(parents=True, exist_ok=True)
-    step = count_steps(config.traindir)
-    
+    step = resume_plan["environment_step"] if resume_plan else count_steps(config.traindir)
+
     logger = tools.Logger(config, logdir, config.action_repeat * step)
 
     if config.offline_traindir: # False
@@ -411,7 +419,8 @@ def main(config): # config is namespace
     else:
         directory = config.traindir
 
-    train_eps = tools.load_episodes(directory, limit=config.dataset_size)
+    train_eps = (resume_plan["replay"] if resume_plan else
+                 tools.load_episodes(directory, limit=config.dataset_size))
 
     if config.offline_evaldir: # False
         directory = config.offline_evaldir.format(**vars(config))
@@ -422,7 +431,7 @@ def main(config): # config is namespace
 
     make = lambda mode, id: make_env(config, mode, id)
     suite, task = config.task.split("_", 1)
-    
+
     from envs.tasks import get_specs
 
     kwargs=dict(
@@ -433,7 +442,7 @@ def main(config): # config is namespace
 
     config.episode_max_steps = (config.episode_max_steps_override
                                 or task_specs['terminal_specs']['max_steps'])
-    
+
     train_envs = [make("train", i) for i in range(config.envs)]
     eval_envs = ([make("eval", i) for i in range(config.envs)]
                  if config.eval_episode_num > 0 else [])
@@ -452,7 +461,7 @@ def main(config): # config is namespace
 
     state = None
 
-    if not config.offline_traindir: 
+    if not config.offline_traindir and resume_plan is None:
         prefill = max(0, config.prefill - count_steps(config.traindir))
         print(f"Prefill dataset ({prefill} steps).")
         if hasattr(acts, "discrete"):
@@ -502,109 +511,91 @@ def main(config): # config is namespace
     ).to(config.device)
 
     agent.requires_grad_(requires_grad=False)
-    
-    if (logdir / "latest.pt").exists():
-        checkpoint = torch.load(logdir / "latest.pt")
-        check_checkpoint(checkpoint, config.search_a_enabled, config.search_a_model_version)
-        check_b_checkpoint(checkpoint, config.search_b_enabled)
-        check_c_checkpoint(checkpoint, config.search_c_enabled)
-        if config.search_b_enabled and checkpoint["search_b_version"] != config.search_b_model_version:
-            raise ValueError("B checkpoint/model version mismatch")
-        if config.search_c_enabled and checkpoint["search_c_version"] != config.search_c_model_version:
-            raise ValueError("C checkpoint/model version mismatch")
-        agent.load_state_dict(checkpoint["agent_state_dict"])
-        tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
-        agent._should_pretrain._once = False
-        agent._step = int(checkpoint.get("step", agent._step))
-        if agent._search_a is not None:
-            agent._search_a.load_rng_state(checkpoint.get("search_a_rng_state"))
-        if agent._search_c is not None:
-            agent._search_c.load_rng_state(checkpoint.get("search_c_rng_state"))
-        if "model_amp_scaler" in checkpoint:
-            agent._wm._model_opt._scaler.load_state_dict(checkpoint["model_amp_scaler"])
-        logger.step = config.action_repeat * agent._step
 
-    
+    if resume_plan:
+        restore_training_state(agent, resume_plan, logger)
+        write_resume_manifest(resume_plan, config)
+        print(f"Resume model at {resume_plan['model_step']}; "
+              f"real interaction budget already used: {agent._step}; "
+              f"total target: {int(config.steps)}. Skipping random prefill/pretrain.", flush=True)
+    else:
+        replay_source = (pathlib.Path(config.offline_traindir.format(**vars(config)))
+                         if config.offline_traindir else config.traindir)
+        agent._replay_sources = [str(replay_source.resolve())]
+        agent._replay_budget_offset = 0
+
     # Branch interactions share the same total real-interaction budget.
-    next_branch_step = (agent._step // config.search_branch_every + 1) * config.search_branch_every
-    # make sure eval will be executed once after config.steps
-    while True:
-        logger.write()
-        
-        if config.eval_episode_num > 0:
-            print("Start evaluation.")
-            eval_policy = functools.partial(agent, training=False) 
-            tools.simulate(
-                eval_policy,
-                eval_envs,
-                eval_eps,
-                config.evaldir,
+    next_branch_step = (resume_plan["next_branch_step"] if resume_plan else
+                       (agent._step // config.search_branch_every + 1) * config.search_branch_every)
+    try:
+        # make sure eval will be executed once after config.steps
+        while True:
+            logger.write()
+
+            if config.eval_episode_num > 0:
+                print("Start evaluation.")
+                eval_policy = functools.partial(agent, training=False)
+                tools.simulate(
+                    eval_policy,
+                    eval_envs,
+                    eval_eps,
+                    config.evaldir,
+                    logger,
+                    step_calculator,
+                    config.episode_max_steps,
+                    config.discount,
+                    is_eval=True,
+                    episodes=config.eval_episode_num,
+                    is_training=False,
+                )
+                if config.video_pred_log:
+                    video_pred = agent._wm.video_pred(next(eval_dataset))
+                    logger.video("eval_openl", to_np(video_pred))
+
+            if agent._step >= config.steps:
+                agent.flush_metrics()
+                break
+            if config.search_branch_enabled and agent._step >= next_branch_step:
+                from search_branches import collect_real_branches
+                collect_real_branches(agent, config, train_eps, logger, next_branch_step // config.search_branch_every)
+                next_branch_step += config.search_branch_every
+                save_training_checkpoint(agent, config, next_branch_step)
+            print("Start training.")
+
+            state = tools.simulate(
+                agent, # LS_Imagine
+                train_envs,
+                train_eps,
+                config.traindir,
                 logger,
                 step_calculator,
                 config.episode_max_steps,
                 config.discount,
-                is_eval=True,
-                episodes=config.eval_episode_num,
-                is_training=False,
+                limit=config.dataset_size,
+                steps=min(config.eval_every, config.steps - agent._step),
+                state=state,
+                is_training=True,
             )
-            if config.video_pred_log:
-                video_pred = agent._wm.video_pred(next(eval_dataset))
-                logger.video("eval_openl", to_np(video_pred))
 
-        if agent._step >= config.steps:
-            agent.flush_metrics()
-            break
-        if config.search_branch_enabled and agent._step >= next_branch_step:
-            from search_branches import collect_real_branches
-            collect_real_branches(agent, config, train_eps, logger, next_branch_step // config.search_branch_every)
-            next_branch_step += config.search_branch_every
-        print("Start training.")
-
-        state = tools.simulate(
-            agent, # LS_Imagine
-            train_envs, 
-            train_eps,
-            config.traindir,
-            logger,
-            step_calculator,
-            config.episode_max_steps,
-            config.discount,
-            limit=config.dataset_size,
-            steps=min(config.eval_every, config.steps - agent._step),
-            state=state,
-            is_training=True,
-        )
-
-        items_to_save = {
-            "agent_state_dict": agent.state_dict(),
-            "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
-            "step": agent._step,
-            "config": vars(config),
-            "search_a_version": config.search_a_model_version if config.search_a_enabled else None,
-            "search_a_control_version": config.search_a_control_version if config.search_a_enabled else None,
-            "search_a_label_version": 2 if config.search_a_enabled else None,
-            "search_a_rng_state": agent._search_a.rng_state() if agent._search_a is not None else None,
-            "search_a_macro_names": list(agent._search_a.macro_names) if agent._search_a is not None else [],
-            "model_amp_scaler": agent._wm._model_opt._scaler.state_dict(),
-            "search_b_version": agent._wm.search_b.model_version if config.search_b_enabled else None,
-            "search_c_version": agent._search_c.model_version if config.search_c_enabled else None,
-            "search_c_rng_state": agent._search_c.rng_state() if agent._search_c is not None else None,
-            "eval_protocol_version": 6 if config.search_eval_evidence else 5,
-            "search_candidate_version": config.search_a_control_version,
-
-        }
-        
-        pending = logdir / "latest.pt.tmp"
-        torch.save(items_to_save, pending)
-        os.replace(pending, logdir / "latest.pt")
-
-    for env in train_envs + eval_envs:
+            save_training_checkpoint(agent, config, next_branch_step)
+    except BaseException as error:
         try:
-            env.close()
-        except Exception:
-            pass
-
-    logger.finish()
+            path = save_training_checkpoint(agent, config, next_branch_step, name="interrupted.pt")
+            print(f"[checkpoint] Saved interrupted training state: {path}", flush=True)
+        except Exception as save_error:
+            print(f"[checkpoint] Emergency save failed: {save_error}", flush=True)
+        raise
+    finally:
+        try:
+            agent.flush_metrics()
+            logger.finish()
+        except Exception as log_error:
+            print(f"[logger] Final flush failed: {log_error}", flush=True)
+        for env in train_envs + eval_envs:
+            try:
+                env.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
@@ -624,10 +615,10 @@ if __name__ == "__main__":
                 base[key] = value
 
     name_list = ["defaults", *args.configs] if args.configs else ["defaults"]
-    
+
     defaults = {}
     for name in name_list:
-        recursive_update(defaults, configs[name]) 
+        recursive_update(defaults, configs[name])
 
     parser = argparse.ArgumentParser()
 

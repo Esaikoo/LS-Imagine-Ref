@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ "${1:-}" == "--minedojo-recovery" ]]; then
+  shift
+  export MINEDOJO_HEADLESS=1 PYTHONUNBUFFERED=1
+  exec python tests/test_env_recovery.py --minedojo "$@"
+fi
 if [[ "${1:-}" == "--startup-replay" ]]; then
   shift
   exec python tests/test_search_a.py --startup-replay "$@"
@@ -15,7 +20,9 @@ if [[ "${1:-}" == "--audit-replay" ]]; then
   exec python tests/test_search_a.py --audit-replay "$@"
 fi
 python tests/test_search_a.py
-python -m py_compile networks.py search_a.py search_c.py search_feedback.py search_branches.py search_memory.py search_evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
+python tests/test_env_recovery.py
+python tests/test_training_state.py
+python -m py_compile training_state.py envs/recovery.py networks.py search_a.py search_c.py search_feedback.py search_branches.py search_memory.py search_evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
   envs/tasks/minedojo/__init__.py envs/tasks/base/ls_imagine_wrapper.py
 bash -n scripts/test_a.sh
 sh -n scripts/train.sh
@@ -114,6 +121,6 @@ print('[APM] Verified model, real labels, eval isolation, replay and mode:', mod
 CHECK
   echo "[APM] MineDojo $MODE: PASS"
 elif [[ -n "${1:-}" ]]; then
-  echo 'Usage: bash scripts/test_a.sh [--minedojo|--minedojo-off|--minedojo-abc|--minedojo-full|--audit-replay ...|--branch-checkpoint ...|--startup-replay ...]' >&2
+  echo 'Usage: bash scripts/test_a.sh [--minedojo|--minedojo-off|--minedojo-abc|--minedojo-full|--audit-replay ...|--branch-checkpoint ...|--startup-replay ...|--minedojo-recovery --output ...]' >&2
   exit 2
 fi

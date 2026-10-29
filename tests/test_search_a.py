@@ -1719,6 +1719,83 @@ class FullPlanTests(unittest.TestCase):
         self.assertIn('MODE="${A_MODE:-abc}"',text)
         self.assertIn('abc) set -- --configs minedojo apm_a apm_full',text)
 
+class TrainingEntryRecoveryTests(unittest.TestCase):
+    def config(self, root, **kw):
+        values=dict(logdir=str(root/"out"),task="minedojo_harvest_sand",target_item="sand",
+                    episode_max_steps_override=24,eval_episode_num=0,video_pred_log=False,
+                    search_branch_enabled=False,steps=30)
+        values.update(kw)
+        return FullPlanTests().cfg(**values)
+
+    def environment(self):
+        import gym
+        return SimpleNamespace(
+            observation_space=gym.spaces.Dict({
+                "image":gym.spaces.Box(0,255,(64,64,3),np.uint8),
+                "heatmap":gym.spaces.Box(0,255,(64,64,1),np.uint8)}),
+            action_space=gym.spaces.Discrete(12),close=mock.Mock())
+
+    def test_main_resume_skips_random_prefill_and_restores_before_sampling(self):
+        import expr,tools
+        from training_state import save_training_checkpoint
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);source=root/"source";(source/"train_eps").mkdir(parents=True)
+            cfg=self.config(root,logdir=str(source))
+            cfg.traindir=source/"train_eps";cfg.evaldir=source/"eval_eps"
+            original=make_agent(cfg)
+            original._step=24
+            episode={key:value[0] for key,value in SearchFeedbackLearningTests().dataset().items()}
+            tools.save_episodes(cfg.traindir,{"fixture":episode})
+            save_training_checkpoint(original,cfg,100000)
+            (source/"metrics.jsonl").write_text('{"step":27}\n')
+            saved=(source/"latest.pt").read_bytes()
+            cfg=self.config(root,resume_from=str(source))
+            env=self.environment()
+            def advance(agent,envs,cache,directory,logger,*args,**kwargs):
+                self.assertTrue(kwargs["is_training"])
+                self.assertFalse(agent._should_pretrain._once)
+                self.assertEqual(agent._step,27)
+                self.assertEqual(kwargs["steps"],3)
+                self.assertGreater(len(cache),0)
+                torch.testing.assert_close(agent._wm.search_b.latent_adapter.weight,
+                                           original._wm.search_b.latent_adapter.weight)
+                agent._step+=3;logger.step=agent._step
+                return None
+            with mock.patch.object(expr,"make_env",return_value=env),mock.patch.object(
+                    tools,"simulate",side_effect=advance) as calls:
+                expr.main(cfg)
+            self.assertEqual(calls.call_count,1)
+            self.assertEqual(saved,(source/"latest.pt").read_bytes())
+            resumed=torch.load(pathlib.Path(cfg.logdir)/"latest.pt",map_location="cpu")
+            self.assertEqual(resumed["step"],30)
+            self.assertTrue((pathlib.Path(cfg.logdir)/"resume.json").exists())
+            env.close.assert_called_once()
+
+    def test_fatal_reset_saves_current_state_and_preserves_original_exception(self):
+        import expr,tools
+        from envs.recovery import ResetRecoveryError
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);replay=root/"replay";replay.mkdir()
+            episode={key:value[0] for key,value in SearchFeedbackLearningTests().dataset().items()}
+            tools.save_episodes(replay,{"fixture":episode})
+            cfg=self.config(root,offline_traindir=str(replay),steps=10)
+            env=self.environment()
+            def fail(agent,*args,**kwargs):
+                agent._step=3
+                raise ResetRecoveryError("injected reset timeout")
+            with mock.patch.object(expr,"make_env",return_value=env),mock.patch.object(
+                    tools,"simulate",side_effect=fail):
+                with self.assertRaisesRegex(ResetRecoveryError,"injected reset timeout"):
+                    expr.main(cfg)
+            emergency=pathlib.Path(cfg.logdir)/"interrupted.pt"
+            self.assertTrue(emergency.exists())
+            saved=torch.load(emergency,map_location="cpu")
+            self.assertEqual(saved["step"],3)
+            self.assertIn(str(replay.resolve()),saved["replay_sources"])
+            self.assertFalse((pathlib.Path(cfg.logdir)/"latest.pt").exists())
+            env.close.assert_called_once()
+
+
 def audit_startup_replay(argv):
     """Reproduce server startup locally with real Replay, batch=16 and history=128."""
     import argparse, gc, json, re, gym

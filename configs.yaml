@@ -8,6 +8,8 @@ defaults:
   evaldir: null
   offline_traindir: ''
   offline_evaldir: ''
+  resume_from: ''
+  minedojo_reset_retries: 2
   seed: 0
   deterministic_run: False
   steps: 1e6

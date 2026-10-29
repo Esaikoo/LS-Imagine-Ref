@@ -131,6 +131,10 @@ def make_branch_env(config, seed, folder, name, steps):
     audit = SceneAudit(current.env)
     current.env = audit
     env = wrappers.RewardObs(wrappers.SelectAction(wrappers.OneHotAction(env), "action"))
+    from envs.recovery import ResetRecovery
+    env = ResetRecovery(env, retries=getattr(config, "minedojo_reset_retries", 2),
+                        restart=lambda failed: seed_clean_bridge(failed, seed, folder, name),
+                        log_path=folder / "env_recovery.jsonl", label=f"branch-{name}")
     return env, audit
 
 
