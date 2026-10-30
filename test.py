@@ -21,6 +21,22 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 def configure_evaluation(config, checkpoint):
     """Restore trained shapes, then honor explicit runtime control-off flags."""
+    from search_vnext import restore_vnext_config
+    runtime_vnext_control = getattr(config, "vnext_control", True)
+    runtime_vnext_interaction = getattr(config, "vnext_interaction", True)
+    runtime_vnext_memory = getattr(config, "vnext_memory_enabled", True)
+    restore_vnext_config(vars(config), checkpoint)
+    if config.search_vnext_enabled:
+        if not runtime_vnext_memory:
+            config.vnext_memory_enabled = False
+        if config.search_a_eval_mode != "checkpoint" or config.search_c_eval_mode != "checkpoint":
+            raise ValueError("Use vnext_control/vnext_memory_enabled/vnext_interaction for vNext ablations")
+        if not runtime_vnext_control:
+            config.vnext_control = False
+        if not runtime_vnext_interaction:
+            config.vnext_interaction = False
+        if "step" not in checkpoint:
+            raise ValueError("vNext checkpoint requires its training step")
     requested_control = config.search_a_control
     requested_b_control = config.search_b_control
     requested_c_control = config.search_c_control
@@ -131,6 +147,8 @@ def main(config):
         if getattr(config, "search_a_enabled", False) and "step" not in checkpoint:
             raise ValueError("A checkpoint has no training step; cannot restore search warmup")
         agent._step = int(checkpoint.get("step", agent._step))
+        if agent._vnext_control is not None:
+            agent._vnext_control.load_rng_state(checkpoint.get("vnext_rng_state"))
         logger.step = config.action_repeat * agent._step
 
     else:

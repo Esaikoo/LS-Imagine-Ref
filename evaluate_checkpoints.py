@@ -184,6 +184,8 @@ def configure_search_checkpoint(config, checkpoint):
     """Restore the trained search module without changing the base evaluation."""
     state = checkpoint['agent_state_dict']
     saved = checkpoint.get('config', {})
+    from search_vnext import restore_vnext_config
+    restore_vnext_config(config, checkpoint)
     has_a = any('.search_a.' in k for k in state)
     has_b = any('.search_b.' in k for k in state)
     has_c = any(k.startswith('_search_c.') for k in state)
@@ -247,6 +249,7 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
     runtime = {'logdir', 'results_dir', 'device', 'name', 'traindir', 'evaldir'}
     different = [key for key, value in saved['config'].items()
                  if key not in runtime and not key.startswith(('search_a_', 'search_b_', 'search_c_'))
+                 and key != 'search_vnext_enabled' and not key.startswith('vnext_')
                  and config.get(key) != value]
     if has_control_override(args):
         if getattr(args, 'a_control', 'checkpoint') != 'checkpoint':
@@ -776,7 +779,8 @@ def worker(args, manifest):
     apply_c_control_mode(config, args.c_control)
     apply_a_control_mode(config, args.a_control)
     config.update(compile=False, video_pred_log=False, use_wandb=False, device=args.device,
-                  seed=run_seed, task='minedojo_test_' + task, target_item=TASKS[task],
+                  seed=run_seed, task='minedojo_test_' + task,
+                  target_item={'water':'water_bucket','iron':'iron_ore'}.get(TASKS[task],TASKS[task]),
                   logdir=str(folder), results_dir=str(folder), name=task)
     config = SimpleNamespace(**config)
     task_id, task_specs, sim_specs = copy.deepcopy(get_specs('test_' + task))
@@ -787,6 +791,16 @@ def worker(args, manifest):
     condition = task_specs['success_specs'].get('all', task_specs['success_specs'].get('any'))
     task_specs['clip_specs']['target_object'] = condition['item']['type']
     task_specs = configure_heatmap_specs(task_specs, args.heatmap_mode)
+    if config.search_vnext_enabled:
+        task_specs["LS_Imagine_specs"] = dict(task_specs["LS_Imagine_specs"], vnext=True)
+        task_specs["search_evidence_specs"] = dict(
+            enabled=bool(config.search_eval_evidence), target=config.target_item, version=3,
+            distance=config.search_a_ray_distance, cell_size=config.search_a_cell_size,
+            revisit_gap=config.search_a_horizon)
+        sim_specs["use_lidar"] = bool(config.search_eval_evidence)
+        if sim_specs["use_lidar"]:
+            from search_evidence import lidar_rays
+            sim_specs["lidar_rays"] = lidar_rays(config.search_a_ray_distance)
     task_specs['log_dir'] = str(folder)
     sim_specs['seed'] = run_seed
     fixed = args.world_seed_start is not None
@@ -798,6 +812,8 @@ def worker(args, manifest):
         sim_specs.update(seed=episode_seed, world_seed=str(args.world_seed_start + args.worker_episode),
                          allow_time_passage=False, initial_weather='clear',
                          use_voxel=True, voxel_size=dict(xmin=-5,xmax=5,ymin=-2,ymax=2,zmin=-5,zmax=5))
+    if config.search_vnext_enabled:
+        task_specs["LS_Imagine_specs"]["vnext_world_seed"] = sim_specs.get("world_seed")
     reference_check = validate_reference(args, task, run, vars(config), task_specs, sim_specs)
     write_json(folder / 'settings.json', dict(config=vars(config), task_specs=task_specs, sim_specs=sim_specs,
                checkpoint=str(checkpoint_path), checkpoint_step=checkpoint_step,
@@ -881,6 +897,8 @@ def worker(args, manifest):
                     macro_names=list(agent._search_a.macro_names),
                     interrupt_codes={"1":"evidence", "2":"interaction", "3":"budget"}))
             agent._step = checkpoint_step
+            if agent._vnext_control is not None:
+                agent._vnext_control.load_rng_state(checkpoint.get("vnext_rng_state"))
             agent._should_pretrain._once = False
             agent._logger.step = checkpoint_step * config.action_repeat
             del checkpoint, state_dict
@@ -994,10 +1012,12 @@ def worker(args, manifest):
                             result, state = agent(batch, np.array([step == 1]), state, training=False)
                             action = result['action'][0].detach().cpu().numpy()
                             search_log = {k: convert(v[0]) for k, v in result.items()
-                                          if k.startswith(('log_search_', 'log_b_'))}
+                                          if k.startswith(('log_search_', 'log_b_', 'log_vnext_'))}
                             search_actions += int(search_log.get('log_search_override', 0))
                             search_decisions += int(search_log.get('log_search_decision', 0))
                             obs, reward, done, info = env.step({'action': action})
+                            search_log.update({k: convert(v) for k,v in obs.items()
+                                if k.startswith(('log_actuator_', 'log_applied_', 'log_requested_', 'log_env_', 'log_vnext_world_'))})
                             action_name = action_names[int(action.argmax())]
                             action_counts[action_name] = action_counts.get(action_name,0)+1
                             location = capture.details['location_stats']

@@ -16,7 +16,7 @@ export PYTHONUNBUFFERED=1
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 LOG_ROOT="${LOG_ROOT:-/root/rivermind-data/mine/projects/tb_logs}"
-MODE="${A_MODE:-abc}"
+MODE="${A_MODE:-vnext}"
 
 case "$TASK_NAME" in
   harvest_log_in_plains) TARGET_ITEM=log ;;
@@ -27,8 +27,12 @@ case "$TASK_NAME" in
   *) echo "Unknown task: $TASK_NAME" >&2; exit 2 ;;
 esac
 
-# Default abc is the complete plan. A_MODE=full preserves historical A4; arguments remain last.
+# Default vnext is the task-preserving revision; abc/full preserve historical runs.
 case "$MODE" in
+  vnext) set -- --configs minedojo apm_vnext "$@" ;;
+  vnext_ac) set -- --configs minedojo apm_vnext --vnext_memory_enabled False "$@" ;;
+  vnext_no_search) set -- --configs minedojo apm_vnext --vnext_control False "$@" ;;
+  vnext_no_interaction) set -- --configs minedojo apm_vnext --vnext_interaction False "$@" ;;
   full) set -- --configs minedojo apm_a "$@" ;;
   off) set -- --configs minedojo apm_a_off "$@" ;;
   loss_only) set -- --configs minedojo apm_a apm_a_loss_only "$@" ;;
@@ -43,7 +47,7 @@ case "$MODE" in
   ac) set -- --configs minedojo apm_a apm_ac "$@" ;;
   bc) set -- --configs minedojo apm_a apm_bc "$@" ;;
   b) set -- --configs minedojo apm_b "$@" ;;
-  *) echo "A_MODE must be abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
+  *) echo "A_MODE must be vnext, vnext_ac, vnext_no_search, vnext_no_interaction, abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
 esac
 
 RUN_LOG_ROOT="$LOG_ROOT/$PROJECT_NAME/$MODE"

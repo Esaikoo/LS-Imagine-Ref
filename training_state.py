@@ -24,7 +24,8 @@ _RUNTIME_KEYS = {
 }
 _CLOCKS = ("_should_train", "_should_log", "_should_reset")
 _SCALERS = ("_wm._model_opt", "_wm._a_opt", "_task_behavior._actor_opt",
-            "_task_behavior._value_opt", "_search_c._actor_opt", "_search_c._value_opt")
+            "_task_behavior._value_opt", "_search_c._actor_opt", "_search_c._value_opt",
+            "_vnext._a_opt", "_vnext._b_opt", "_vnext_control._q_opt")
 
 
 def _path(value):
@@ -135,6 +136,9 @@ def _completed_branches(source_runs):
 
 
 def _validate_search_versions(checkpoint, values):
+    from search_vnext import check_vnext_checkpoint
+    enabled = values.get("search_vnext_enabled", False) if isinstance(values, dict) else getattr(values, "search_vnext_enabled", False)
+    check_vnext_checkpoint(checkpoint, enabled)
     from search_a import check_checkpoint
     from search_memory import check_b_checkpoint
     from search_c import check_c_checkpoint
@@ -172,6 +176,8 @@ def prepare_resume(config):
         raise ValueError("Resume requires a full training checkpoint and saved configuration")
     saved = dict(checkpoint["config"])
     incoming = dict(vars(config))
+    if bool(incoming.get("search_vnext_enabled", False)) != bool(saved.get("search_vnext_enabled", False)):
+        raise ValueError("Cannot resume across legacy/vNext algorithms; start a fresh experiment")
     for key in ("task", "target_item"):
         if key in saved and incoming.get(key) is not None and incoming[key] != saved[key]:
             raise ValueError("Resume " + key + " mismatch: " + str(incoming[key]) + " != " + str(saved[key]))
@@ -314,6 +320,8 @@ def restore_training_state(agent, plan, logger):
         agent._search_a.load_rng_state(checkpoint.get("search_a_rng_state"))
     if getattr(agent, "_search_c", None) is not None:
         agent._search_c.load_rng_state(checkpoint.get("search_c_rng_state"))
+    if getattr(agent, "_vnext_control", None) is not None:
+        agent._vnext_control.load_rng_state(checkpoint.get("vnext_rng_state"))
     scalers = checkpoint.get("amp_scalers", {})
     for path, state in scalers.items():
         optimizer = _resolve(agent, path)
@@ -415,9 +423,15 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
     payload = dict(agent_state_dict=agent.state_dict(),
         optims_state_dict=tools.recursively_collect_optim_state_dict(agent),
         step=int(agent._step), config=_config_dict(config),
+        search_vnext_version=1 if getattr(config, "search_vnext_enabled", False) else None,
+        actuator_version=1 if getattr(config, "search_vnext_enabled", False) else None,
+        vnext_memory_version=1 if getattr(config, "search_vnext_enabled", False) else None,
+        vnext_rng_state=(agent._vnext_control.rng_state()
+                         if getattr(agent, "_vnext_control", None) is not None else None),
         search_a_version=config.search_a_model_version if config.search_a_enabled else None,
         search_a_control_version=config.search_a_control_version if config.search_a_enabled else None,
-        search_a_label_version=2 if config.search_a_enabled else None,
+        search_a_label_version=(3 if getattr(config, "search_vnext_enabled", False) else
+                                2 if config.search_a_enabled else None),
         search_a_rng_state=controller.rng_state() if controller is not None else None,
         search_a_macro_names=list(controller.macro_names) if controller is not None else [],
         model_amp_scaler=agent._wm._model_opt._scaler.state_dict(),
@@ -425,8 +439,10 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
         search_b_version=getattr(wm_b, "model_version", None) if config.search_b_enabled else None,
         search_c_version=getattr(c, "model_version", None) if config.search_c_enabled else None,
         search_c_rng_state=c.rng_state() if c is not None else None,
-        eval_protocol_version=6 if getattr(config, "search_eval_evidence", False) else 5,
-        search_candidate_version=config.search_a_control_version,
+        eval_protocol_version=(7 if getattr(config, "search_vnext_enabled", False) else
+                               6 if getattr(config, "search_eval_evidence", False) else 5),
+        search_candidate_version=(1 if getattr(config, "search_vnext_enabled", False)
+                                  else config.search_a_control_version),
         runtime_state=runtime, rng_state=_rng_state(), training_state_version=SCHEMA_VERSION,
         next_branch_step=int(next_branch_step),
         replay_sources=[str(path) for path in sources],

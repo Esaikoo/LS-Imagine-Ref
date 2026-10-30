@@ -9,6 +9,56 @@ defaults:
   offline_traindir: ''
   offline_evaldir: ''
   resume_from: ''
+  search_vnext_enabled: False
+  vnext_profile_every: 32
+  # Task-isolated vNext defaults.
+  vnext_memory_enabled: True
+  vnext_memory_dim: 128
+  vnext_slots: 16
+  vnext_hidden: 256
+  vnext_future_dim: 128
+  vnext_bootstrap_heads: 3
+  vnext_lr: 0.0001
+  vnext_grad_clip: 100.0
+  vnext_memory_save_every: 8
+  vnext_snapshot_every: 64
+  vnext_aux_horizon: 8
+  vnext_aux_every: 4
+  vnext_min_labels: 128
+  vnext_min_positives: 8
+  vnext_min_calibration: 32
+  vnext_max_disagreement: 0.15
+  vnext_match_threshold: 0.94
+  vnext_dynamic_target: False
+  vnext_control: True
+  vnext_interaction: True
+  vnext_c_hidden: 128
+  vnext_c_lr: 0.0001
+  vnext_c_batch: 128
+  vnext_c_tau: 0.01
+  vnext_start_step: 2500
+  vnext_warmup: 25000
+  vnext_full_step: 100000
+  vnext_search_initial: 0.05
+  vnext_search_fraction: 0.1
+  vnext_search_max: 0.15
+  vnext_total_fraction: 0.25
+  vnext_settle_limit: 12
+  vnext_budget_window: 100
+  vnext_base_episode_fraction: 0.2
+  vnext_probe_probability: 0.15
+  vnext_visible_high: 0.7
+  vnext_visible_low: 0.25
+  vnext_interactable_high: 0.85
+  vnext_phase_hysteresis: 2
+  vnext_stall_steps: 20
+  vnext_interaction_protect: 32
+  vnext_interact_steps: 2
+  vnext_interact_retries: 2
+  vnext_retry_cooldown: 20
+  vnext_commit_steps: 3
+  vnext_c_margin: 0.01
+  vnext_c_tie_margin: 0.02
   minedojo_reset_retries: 2
   seed: 0
   deterministic_run: False
@@ -384,4 +434,14 @@ apm_full:
   search_c_imagined_weight: 0.25
   search_c_actor_bonus: 0.25
   search_branch_enabled: True
+  search_eval_evidence: True
+
+# Task-preserving ABC revision. Never migrate legacy ABC weights implicitly.
+apm_vnext:
+  compile: False
+  search_vnext_enabled: True
+  search_a_enabled: False
+  search_b_enabled: False
+  search_c_enabled: False
+  search_branch_enabled: False
   search_eval_evidence: True

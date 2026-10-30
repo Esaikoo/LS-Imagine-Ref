@@ -118,7 +118,8 @@ class Logger:
         self.evaluation_metadata = {
             key: getattr(config, key, None) for key in (
                 "task", "seed", "env_seed", "search_a_model_version",
-                "search_a_control_version", "search_b_enabled", "search_c_enabled")}
+                "search_a_control_version", "search_b_enabled", "search_c_enabled",
+                "search_vnext_enabled", "vnext_control", "vnext_memory_enabled", "vnext_interaction")}
 
         if self._wandb:
             if config.wandb_key is None:
@@ -268,7 +269,7 @@ def search_episode_diagnostics(episode):
     visible = np.asarray(episode.get("search_visible", []))
     known = np.asarray(episode.get("search_visible_valid", [])) > 0
     if len(known):
-        known &= np.asarray(episode.get("search_label_version", np.zeros(len(known)))) == 2
+        known &= np.isin(np.asarray(episode.get("search_label_version", np.zeros(len(known)))), [2, 3])
         known &= np.isfinite(visible) & (visible >= 0) & (visible <= 1)
     if len(known) and known.any():
         seen = np.flatnonzero((visible > .5) & known)
@@ -300,6 +301,33 @@ def search_episode_diagnostics(episode):
         result["a_interrupt_rate"] = float((interruptions > 0).sum()) / max(1, starts)
         for code, name in ((1, "evidence"), (2, "interaction"), (3, "budget")):
             result["a_interrupt_" + name] = float((interruptions == code).sum())
+    if "log_vnext_override" in episode:
+        count=max(1,len(actions)-1)
+        override=np.asarray(episode["log_vnext_override"])[1:]>0
+        phase=np.asarray(episode["log_vnext_phase"])[1:]
+        choice=np.asarray(episode["log_vnext_choice"])[1:]
+        result["vnext_control_rate"]=float(override.mean()) if override.size else 0.
+        result["vnext_search_rate"]=float((override & (phase==0)).sum())/count
+        result["vnext_interaction_rate"]=float((override & (choice==8)).sum())/count
+        result["vnext_settle_rate"]=float((override & (choice==9)).sum())/count
+        proposal=np.asarray(episode["log_vnext_actor_action"])[1:]
+        result["vnext_actor_attack_override_count"]=float(((proposal==1)&override).sum())
+        if "log_applied_control" in episode:
+            applied=np.asarray(episode["log_applied_control"])[1:]
+            result["vnext_applied_jump_rate"]=float((applied[:,5]>0).mean())
+            ids=actions[1:].argmax(-1)
+            result["vnext_pitch_noop_rate"]=float((np.isin(ids,[2,3])&(applied[:,7]==0)).mean())
+        if "search_center_interactable_valid" in episode:
+            legal=np.asarray(episode["search_center_interactable_valid"])[:-1]>0
+            cue=np.asarray(episode["search_center_interactable"])[:-1]>.5
+            known=legal & cue
+            if legal.any():result["true_interactable_rate"]=float(cue[legal].mean())
+            if known.any():
+                ids=actions[1:].argmax(-1)
+                result["interaction_when_interactable_rate"]=float(np.isin(ids[known],[1,11]).mean())
+                first=int(np.flatnonzero(known)[0])
+                success=np.asarray(episode.get("success",np.zeros(len(actions))))>0
+                result["success_after_interactable"]=float(success[first+1:].any())
     return result
 
 def simulate(
@@ -373,6 +401,12 @@ def simulate(
         policy_obs = [o if o is not None else template for o in obs]
         policy_obs = {k: np.stack([o[k] for o in policy_obs])
                       for k in template if "log_" not in k}
+        if "log_actuator_after" in template:
+            own_obs = [ob if ob is not None else template for ob in obs]
+            policy_obs["vnext_bootstrap_actuator"] = np.stack([o["log_actuator_after"] for o in own_obs])
+            policy_obs["vnext_bootstrap_control"] = np.stack([o["log_applied_control"] for o in own_obs])
+            policy_obs["vnext_episode_step"] = np.asarray([
+                max(0,len(cache.get(env.id,{}).get("reward",[]))-1) for env in envs],np.int64)
         action, agent_state = agent(policy_obs, done, agent_state)
 
         if isinstance(action, dict):
@@ -448,6 +482,7 @@ def simulate(
                 video = cache[envs[i].id]["image"]
                 if is_eval and hasattr(logger, "evaluation_metadata"):
                     record = dict(logger.evaluation_metadata, protocol_version=(
+                        7 if "log_vnext_version" in cache[envs[i].id] else
                         6 if np.asarray(cache[envs[i].id].get("search_visible_valid", [])).any() else 5),
                         training_step=int(logger.step), episode_id=str(envs[i].id),
                         length=episode_length, success=bool(suc), **{"return": score},
@@ -474,12 +509,12 @@ def simulate(
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
-                        if not key.startswith(("log_search_", "log_b_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
                         # Keep search traces intact until this episode is evicted.
                         # Replay excludes log_*; C uses separate numeric search_c_*.
-                        if not key.startswith(("log_search_", "log_b_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             cache[envs[i].id].pop(key)
 
                 if not is_eval:
@@ -532,7 +567,8 @@ def simulate(
                     if len(eval_scores) >= episodes and not eval_done:
                         logger.scalar(f"eval_return", score)
                         logger.scalar(f"eval_length", episode_length)
-                        logger.scalar("eval_protocol_version", 6 if "true_visible_rate" in a_diagnostics else 5)
+                        logger.scalar("eval_protocol_version", 7 if "log_vnext_version" in cache[envs[i].id] else
+                                      6 if "true_visible_rate" in a_diagnostics else 5)
                         logger.scalar(f"eval_episodes", len(eval_scores))
                         logger.scalar(f"eval_success", success_rate)
                         logger.scalar("eval_search_rate", float(np.mean(eval_search_rates)))
@@ -566,6 +602,17 @@ def add_to_cache(cache, id, transition):
         refs = np.asarray(transition["log_b_keyframe_indices"])
         transition["log_b_keyframe_indices"] = np.where(refs >= 0, refs + offset, -1)
         transition["log_b_observation_index"] = np.int64(observed_row)
+    if "log_vnext_memory_tick" in transition and id in cache:
+        transition = transition.copy()
+        observed_row = len(cache[id]["reward"]) - 1
+        offset = observed_row - int(transition["log_vnext_memory_tick"])
+        refs = np.asarray(transition["log_vnext_memory_refs"])
+        valid = refs >= 0
+        transition["log_vnext_memory_refs"] = np.where(valid, refs + offset, -1)
+        meta = np.asarray(transition["log_vnext_memory_meta"]).copy()
+        meta[..., :2] = np.where(valid[..., None], meta[..., :2] + offset, meta[..., :2])
+        transition["log_vnext_memory_meta"] = meta
+        transition["log_vnext_memory_tick"] = np.int64(observed_row)
     if id not in cache:
         cache[id] = dict()
         for key, val in transition.items():
@@ -574,11 +621,11 @@ def add_to_cache(cache, id, transition):
         previous_length = len(cache[id]["reward"])
         for key in cache[id].keys() - transition.keys():
             cache[id][key].append(np.full_like(cache[id][key][-1], -1) if key in (
-                "log_b_keyframe_indices", "log_b_observation_index") else np.zeros_like(cache[id][key][-1]))
+                "log_b_keyframe_indices", "log_b_observation_index", "log_vnext_memory_refs", "log_vnext_memory_tick") else np.zeros_like(cache[id][key][-1]))
         for key, val in transition.items():
             if key not in cache[id]:
                 cache[id][key] = [convert(np.full_like(val, -1) if key in (
-                    "log_b_keyframe_indices", "log_b_observation_index") else 0 * val)
+                    "log_b_keyframe_indices", "log_b_observation_index", "log_vnext_memory_refs", "log_vnext_memory_tick") else 0 * val)
                     for _ in range(previous_length)]
                 cache[id][key].append(convert(val))
             else:
@@ -641,8 +688,16 @@ def save_episodes(directory, episodes):
             episode_copy = replace_none_with_zeros(episode_copy)
             np.savez_compressed(f1, **episode_copy)
             f1.seek(0)
-            with filename.open("wb") as f2:
-                f2.write(f1.read())
+            pending = filename.with_suffix(filename.suffix + ".tmp")
+            try:
+                with pending.open("wb") as f2:
+                    f2.write(f1.read())
+                    f2.flush()
+                    os.fsync(f2.fileno())
+                os.replace(pending, filename)
+            except BaseException:
+                pending.unlink(missing_ok=True)
+                raise
             del episode_copy
     return True
 

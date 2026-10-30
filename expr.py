@@ -3,6 +3,7 @@ import functools
 import os
 import pathlib
 import sys
+import time
 import torch
 import numpy as np
 import ruamel.yaml as yaml
@@ -17,6 +18,8 @@ from search_a import (SearchAController, PrefixSearchController, actor_action_se
                       prefix_macro_actions, prefix_candidate_predictions, check_checkpoint, MODEL_VERSION)
 from search_c import SearchBehavior, build_transitions, check_c_checkpoint, C_VERSION
 from search_memory import describe_torch, sample_episodes_with_history, B_VERSION, check_b_checkpoint
+from search_vnext import SearchVNext, sample_episodes_vnext
+from search_vnext_control import VNextController
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
 
@@ -41,6 +44,11 @@ class LS_Imagine(nn.Module):
         self._step = logger.step // config.action_repeat
         self._update_count = 0
         self._dataset = dataset
+        if getattr(config, "search_vnext_enabled", False):
+            if any((config.search_a_enabled, config.search_b_enabled, config.search_c_enabled, config.search_branch_enabled)):
+                raise ValueError("vNext cannot mix with legacy ABC modules or branch collection")
+            if config.compile:
+                raise ValueError("vNext requires compile=False for explicit isolated optimizers")
         self._wm = models.WorldModel(obs_space, act_space, self._step, config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
         self._search_c = None
@@ -96,6 +104,14 @@ class LS_Imagine(nn.Module):
             random=lambda: expl.Random(config, act_space),
             plan2explore=lambda: expl.Plan2Explore(config, self._wm, reward),
         )[config.expl_behavior]().to(self._config.device)
+        self._vnext = self._vnext_control = None
+        if getattr(config, "search_vnext_enabled", False):
+            size = (config.dyn_stoch * config.dyn_discrete if config.dyn_discrete
+                    else config.dyn_stoch) + config.dyn_deter
+            # Additional modules cannot perturb original Actor/RSSM initialization.
+            with torch.random.fork_rng(devices=[]):
+                self._vnext = SearchVNext(size, config)
+                self._vnext_control = VNextController(size, config, memory_dim=self._vnext.memory_dim)
 
     def __call__(self, obs, reset, state=None, training=True):
         step = self._step
@@ -106,7 +122,10 @@ class LS_Imagine(nn.Module):
                 else self._should_train(step)
             )
             for _ in range(steps):
-                self._train(next(self._dataset))
+                batch_start = time.perf_counter()
+                data = next(self._dataset)
+                self._last_batch_prepare_ms = (time.perf_counter() - batch_start) * 1000.
+                self._train(data)
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
             if self._should_log(step):
@@ -131,6 +150,8 @@ class LS_Imagine(nn.Module):
             self._metrics[name] = []
 
     def _policy(self, obs, state, training):
+        if self._vnext is not None:
+            return self._vnext_policy(obs, state, training)
         # APM-IMAGINE A STAGE: keep a macro progress tensor in recurrent policy state.
         # APM-IMAGINE B STAGE: persistent bank is part of the recurrent policy state.
         if state is None:
@@ -227,10 +248,73 @@ class LS_Imagine(nn.Module):
             state = (latent, action, search_state) if self._search_a is not None else (latent, action)
         return policy_output, state
 
+    @torch.no_grad()
+    def _vnext_policy(self, obs, state, training):
+        latent, previous_action, memory_state, control_state = (
+            (None, None, None, None) if state is None else state)
+        # Only original, legal policy inputs reach the shared encoder or search.
+        allowed = {"image", "heatmap", "is_first", "is_last", "is_terminal",
+                   "is_zoomed", "jump", "is_calculated", "obs_reward",
+                   "inventory", "inventory_max", "equipped", "health", "hunger", "breath"}
+        clean = {key: value for key, value in obs.items() if key in allowed}
+        clean = self._wm.preprocess(clean)
+        embed = self._wm.encoder(clean)
+        latent, _ = self._wm.dynamics.obs_step(latent, previous_action, embed, clean["is_first"])
+        if self._config.eval_state_mean:
+            latent["stoch"] = latent["mean"]
+        feature = self._wm.dynamics.get_feat(latent).detach()
+        actor = (self._expl_behavior.actor(feature)
+                 if training and self._should_expl(self._step) else self._task_behavior.actor(feature))
+        proposed = actor.sample() if training else actor.mode()
+        if control_state is None and "vnext_bootstrap_actuator" in obs:
+            control_state = self._vnext_control.initial(len(feature), feature.device)
+            control_state["actuator"] = torch.as_tensor(obs["vnext_bootstrap_actuator"],device=feature.device).float()
+            control_state["previous_control"] = torch.as_tensor(obs["vnext_bootstrap_control"],device=feature.device).float()
+            control_state["age"] = torch.as_tensor(obs["vnext_episode_step"],device=feature.device).long()
+        previous_control = self._vnext_control.previous_control(
+            control_state, clean["is_first"], feature.device)
+        current, memory, memory_state, memory_info = self._vnext.online(
+            feature, clean["image"], clean["heatmap"], memory_state,
+            clean["is_first"], previous_control=previous_control,
+            reward=clean.get("obs_reward"))
+
+        def continuation(indices, k=3):
+            return actor_action_sequence(
+                self._wm.dynamics, self._task_behavior.actor,
+                {key: value[indices] for key, value in latent.items()},
+                proposed[indices], k)
+
+        action, control_state, control_info = self._vnext_control.choose(
+            self._vnext, feature, memory, current, clean, proposed, control_state,
+            clean["is_first"], self._step, training, actor_sequence=continuation)
+        action = action.detach()
+        output = {"action": action, "logprob": actor.log_prob(action)}
+        output.update(memory_info)
+        output.update(control_info)
+        # Preserve the intervention/decision metric interface; protocol 7 also
+        # records separate option and task-stage rates in vNext diagnostics.
+        output["log_search_override"] = control_info["log_vnext_override"]
+        output["log_search_decision"] = control_info["log_vnext_decision"]
+        output["search_data_source"] = control_info.get(
+            "log_vnext_override", feature.new_zeros(len(feature))).float()
+        latent = {key: value.detach() for key, value in latent.items()}
+        return output, (latent, action, memory_state, control_state)
+
     def _train(self, data):
         metrics = {}
+        profile = (self._vnext is not None and self._update_count %
+                   max(1, int(getattr(self._config, "vnext_profile_every", 32))) == 0)
+        def clock():
+            if profile and torch.device(self._config.device).type == "cuda":
+                torch.cuda.synchronize(self._config.device)
+            return time.perf_counter()
+        stage = clock() if profile else None
         post, post_zoomed, context, mets = self._wm._train(data, step=self._step)
         metrics.update(mets)
+        if profile:
+            now = clock()
+            metrics["diagnostics/time_world_model_ms"] = (now-stage)*1000.
+            stage = now
         # start = (post, post_zoomed)
 
         reward = lambda f, s, a: self._wm.heads["reward"](
@@ -261,8 +345,32 @@ class LS_Imagine(nn.Module):
                         accumulated_reward, jump_indicator, is_end,
                         search_context=context.get("search_memory"),
                         search_context_zoomed=context.get("search_memory_zoomed"))[-1])
+        if profile:
+            now = clock()
+            metrics["diagnostics/time_task_behavior_ms"] = (now-stage)*1000.
+            stage = now
         if self._search_c is not None:
             metrics.update(self._train_search_c(post, context.get("search_memory"), data))
+        if self._vnext is not None:
+            features = self._wm.dynamics.get_feat(post).detach()
+            metrics.update(self._vnext.train_step(features, data, self._step))
+            with torch.no_grad():
+                memory = self._vnext.memory_batch(features, data)
+            if profile:
+                now = clock()
+                metrics["diagnostics/time_search_ab_ms"] = (now-stage)*1000.
+                stage = now
+            def actor_continuation(batch_indices, time_indices, k=3):
+                latent = {key: value[batch_indices, time_indices] for key, value in post.items()}
+                first = self._task_behavior.actor(self._wm.dynamics.get_feat(latent)).mode()
+                return actor_action_sequence(self._wm.dynamics, self._task_behavior.actor,
+                                             latent, first, k)
+            metrics.update(self._vnext_control.train_batch(
+                features, memory, self._vnext, data, actor_sequence=actor_continuation))
+            if profile:
+                now = clock()
+                metrics["diagnostics/time_search_c_ms"] = (now-stage)*1000.
+                metrics["diagnostics/time_batch_prepare_ms"] = getattr(self, "_last_batch_prepare_ms", 0.)
         if self._config.expl_behavior != "greedy":
             mets = self._expl_behavior.train(post, context, data)[-1]
             metrics.update({"expl_" + key: value for key, value in mets.items()})
@@ -324,6 +432,10 @@ def count_steps(folder):
     return sum(int(str(n).split("-")[-1][:-4]) - 1 for n in folder.glob("*.npz"))
 
 def make_dataset(episodes, config):
+    if getattr(config, "search_vnext_enabled", False):
+        generator = sample_episodes_vnext(
+            episodes, config.batch_length, slots=config.vnext_slots, seed=config.seed)
+        return tools.from_generator(generator, config.batch_size)
     generator = (sample_episodes_with_history(
         episodes, config.batch_length, slots=config.search_b_slots,
         lookback=config.search_b_lookback, save_every=config.search_b_save_every,
@@ -344,18 +456,22 @@ def make_env(config, mode, id):
              and config.search_a_loss_weight > 0 and (config.search_a_event_weight > 0
                   or (config.search_a_model_version >= 3 and config.search_a_visible_weight > 0)))
             or (config.search_b_enabled and config.search_b_loss_weight > 0)
-            or config.search_c_enabled))
+            or config.search_c_enabled or getattr(config, "search_vnext_enabled", False)))
         kwargs = dict(
             log_dir=log_dir, target_item=config.target_item,
             search_evidence_specs=dict(
                 enabled=collect_labels, target=config.target_item,
                 distance=config.search_a_ray_distance, cell_size=config.search_a_cell_size,
-                revisit_gap=config.search_a_horizon),
+                revisit_gap=config.search_a_horizon,
+                version=3 if getattr(config, "search_vnext_enabled", False) else 2),
             simulator_seed=(config.env_seed + id + (100000 if mode == "eval" else 0)
                             if config.env_seed >= 0 else None))
 
         from envs.tasks import get_specs
         _, specs, _ = get_specs(task, target_item=config.target_item)
+        if getattr(config, "search_vnext_enabled", False):
+            kwargs["LS_Imagine_specs"] = dict(specs["LS_Imagine_specs"], vnext=True,
+                                               vnext_world_seed=kwargs["simulator_seed"])
         max_steps = config.episode_max_steps_override or specs["terminal_specs"]["max_steps"]
         kwargs["terminal_specs"] = dict(specs["terminal_specs"], max_steps=max_steps)
         if config.episode_max_steps_override:
@@ -382,6 +498,14 @@ def make_env(config, mode, id):
     return ResetRecovery(env, retries=config.minedojo_reset_retries,
                          log_path=pathlib.Path(config.logdir) / "env_recovery.jsonl",
                          label=f"{mode}-{id}")
+
+
+def save_active_replay(envs, cache, directory):
+    """Persist unfinished real prefixes without inventing terminal outcomes."""
+    active = {getattr(env, "id", None): cache[getattr(env, "id", None)]
+              for env in envs if getattr(env, "id", None) in cache}
+    if active:
+        tools.save_episodes(directory, active)
 
 
 def main(config): # config is namespace
@@ -577,8 +701,13 @@ def main(config): # config is namespace
                 is_training=True,
             )
 
+            save_active_replay(train_envs, train_eps, config.traindir)
             save_training_checkpoint(agent, config, next_branch_step)
     except BaseException as error:
+        try:
+            save_active_replay(train_envs, train_eps, config.traindir)
+        except Exception as replay_error:
+            print(f"[replay] Emergency prefix save failed: {replay_error}", flush=True)
         try:
             path = save_training_checkpoint(agent, config, next_branch_step, name="interrupted.pt")
             print(f"[checkpoint] Saved interrupted training state: {path}", flush=True)

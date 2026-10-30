@@ -1716,7 +1716,8 @@ class FullPlanTests(unittest.TestCase):
         self.assertEqual([config["search_"+x+"_model_version"] for x in ("a","b","c")],[5,3,2])
         self.assertTrue(config["search_branch_enabled"])
         text=(root/"scripts/train.sh").read_text()
-        self.assertIn('MODE="${A_MODE:-abc}"',text)
+        self.assertIn('MODE="${A_MODE:-vnext}"',text)
+        self.assertIn('vnext) set -- --configs minedojo apm_vnext',text)
         self.assertIn('abc) set -- --configs minedojo apm_a apm_full',text)
 
 class TrainingEntryRecoveryTests(unittest.TestCase):

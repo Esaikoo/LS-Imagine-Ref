@@ -54,7 +54,10 @@ class WorldModel(nn.Module):
         self._use_amp = True if config.precision == 16 else False
         self._config = config
         self._training_step = int(step)
-        shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items() if not k.startswith("search_")} # 'image': (64, 64, 3)
+        shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()
+                  if not k.startswith("search_") and not (
+                      getattr(config, "search_vnext_enabled", False)
+                      and k.startswith(("log_", "vnext_")))}
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
         self.embed_size = self.encoder.outdim
         self.dynamics = networks.RSSM(
@@ -529,6 +532,11 @@ class WorldModel(nn.Module):
 
     # this function is called during both rollout and training
     def preprocess(self, obs, zoomed=False):
+        if getattr(self._config, "search_vnext_enabled", False):
+            # Replay-only memory banks, oracle labels and actuator logs are not
+            # original world-model observations; avoid duplicate auxiliary H2D.
+            obs = {key: value for key, value in obs.items()
+                   if not key.startswith(("vnext_", "log_", "search_"))}
         obs = {k:v for k,v in obs.items() if not (zoomed and k.startswith("search_b_"))}
 
         if not zoomed:
