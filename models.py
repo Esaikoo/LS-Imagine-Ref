@@ -11,9 +11,9 @@ from torch import nn
 
 import networks
 import tools
-from search_a import SearchOutcomeHead
-from search_feedback import FullSearchOutcomeHead, actor_search_bonus
-from search_memory import SearchMemory, describe_torch
+from apm.legacy.observation import SearchOutcomeHead
+from apm.legacy.feedback import FullSearchOutcomeHead, actor_search_bonus
+from apm.legacy.memory import SearchMemory, describe_torch
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -897,6 +897,8 @@ class ImagBehavior(nn.Module):
         return imag_feat, imag_state, imag_action, weights, metrics
 
     def save_state_sequence(self, imag_feat, jump_record, freq=0.1):
+        if not getattr(self._config, "check_obs_enabled", True):
+            return
         if random.random() > freq:
             return
 

@@ -1,7 +1,7 @@
 import torch as th
 import numpy as np
 import uuid
-from search_actuator import world_group_id
+from apm.actuator import world_group_id
 from minedojo.sim.wrappers.fast_reset import FastResetWrapper
 from minedojo.sim.mc_meta.mc import ALL_ITEMS, ALL_PERSONAL_CRAFTING_ITEMS, ALL_CRAFTING_TABLE_ITEMS, ALL_SMELTING_ITEMS,\
     CRAFTING_RECIPES_BY_OUTPUT, SMELTING_RECIPES_BY_OUTPUT

@@ -14,12 +14,12 @@ from datetime import datetime
 import exploration as expl
 import models
 import tools
-from search_a import (SearchAController, PrefixSearchController, actor_action_sequence,
+from apm.legacy.observation import (SearchAController, PrefixSearchController, actor_action_sequence,
                       prefix_macro_actions, prefix_candidate_predictions, check_checkpoint, MODEL_VERSION)
-from search_c import SearchBehavior, build_transitions, check_c_checkpoint, C_VERSION
-from search_memory import describe_torch, sample_episodes_with_history, B_VERSION, check_b_checkpoint
-from search_vnext import SearchVNext, sample_episodes_vnext
-from search_vnext_control import VNextController
+from apm.legacy.control import SearchBehavior, build_transitions, check_c_checkpoint, C_VERSION
+from apm.legacy.memory import describe_torch, sample_episodes_with_history, B_VERSION, check_b_checkpoint
+from apm.outcome import SearchVNext, sample_episodes_vnext
+from apm.control import VNextController
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
 
@@ -149,6 +149,24 @@ class LS_Imagine(nn.Module):
                 self._logger.scalar(name, float(np.mean(values)))
             self._metrics[name] = []
 
+    @torch.no_grad()
+    def visualization_map(self, state, index=0, terminal_obs=None):
+        """Copy a predicted map for export; never update policy/recurrent state."""
+        if self._vnext is None or not self._vnext.spatial or state is None:
+            return None
+        memory = state[2]
+        if memory is None:
+            return None
+        memory = {key: value[index:index+1].detach().clone() for key,value in memory.items()}
+        if terminal_obs is not None:
+            feat = self._wm.dynamics.get_feat({key:value[index:index+1] for key,value in state[0].items()})
+            control = state[3]["previous_control"][index:index+1]
+            image = torch.as_tensor(terminal_obs["image"],device=feat.device)[None]
+            heatmap = torch.as_tensor(terminal_obs["heatmap"],device=feat.device)[None]
+            _,memory,_ = self._vnext.b.online(feat,image,heatmap,memory,
+                previous_control=control,reward=terminal_obs.get("obs_reward",0.))
+        return self._vnext.b.visualization_state(memory)
+
     def _policy(self, obs, state, training):
         if self._vnext is not None:
             return self._vnext_policy(obs, state, training)
@@ -277,6 +295,12 @@ class LS_Imagine(nn.Module):
             feature, clean["image"], clean["heatmap"], memory_state,
             clean["is_first"], previous_control=previous_control,
             reward=clean.get("obs_reward"))
+        if self._vnext.spatial:
+            enabled = bool(self._config.vnext_memory_enabled)
+            clean["vnext_spatial_summary"] = (memory_info["log_spatial_summary"] if enabled
+                                              else torch.zeros_like(memory_info["log_spatial_summary"]))
+            clean["vnext_spatial_directions"] = (memory_info["log_spatial_directions"] if enabled
+                                                 else torch.zeros_like(memory_info["log_spatial_directions"]))
 
         def continuation(indices, k=3):
             return actor_action_sequence(
@@ -423,7 +447,7 @@ class LS_Imagine(nn.Module):
             return state, result[4]
         state, prediction = inputs("start")
         next_state, next_prediction = inputs("end")
-        from search_feedback import imagined_search_transitions
+        from apm.legacy.feedback import imagined_search_transitions
         imagined = imagined_search_transitions(self, snapshots["start"], state, prediction, records)
         return self._search_c.train_transitions(
             state, prediction, next_state, next_prediction, records, imagined=imagined)
@@ -433,6 +457,10 @@ def count_steps(folder):
 
 def make_dataset(episodes, config):
     if getattr(config, "search_vnext_enabled", False):
+        if getattr(config, "vnext_spatial_enabled", False):
+            from apm.replay import sample_spatial_episodes
+            return tools.from_generator(sample_spatial_episodes(episodes,config.batch_length,
+                seed=config.seed,patch_size=config.vnext_map_patch),config.batch_size)
         generator = sample_episodes_vnext(
             episodes, config.batch_length, slots=config.vnext_slots, seed=config.seed)
         return tools.from_generator(generator, config.batch_size)
@@ -459,6 +487,7 @@ def make_env(config, mode, id):
             or config.search_c_enabled or getattr(config, "search_vnext_enabled", False)))
         kwargs = dict(
             log_dir=log_dir, target_item=config.target_item,
+            minedojo_gradle_offline=bool(getattr(config,"minedojo_gradle_offline",False)),
             search_evidence_specs=dict(
                 enabled=collect_labels, target=config.target_item,
                 distance=config.search_a_ray_distance, cell_size=config.search_a_cell_size,
@@ -472,6 +501,11 @@ def make_env(config, mode, id):
         if getattr(config, "search_vnext_enabled", False):
             kwargs["LS_Imagine_specs"] = dict(specs["LS_Imagine_specs"], vnext=True,
                                                vnext_world_seed=kwargs["simulator_seed"])
+            if getattr(config, "vnext_spatial_enabled", False):
+                kwargs["LS_Imagine_specs"]["spatial"] = True
+                kwargs["spatial_specs"] = dict(
+                    supervision=(mode == "train" and config.vnext_pose_supervision),
+                    audit=bool(config.vnext_visual_audit), cell_size=config.vnext_map_resolution)
         max_steps = config.episode_max_steps_override or specs["terminal_specs"]["max_steps"]
         kwargs["terminal_specs"] = dict(specs["terminal_specs"], max_steps=max_steps)
         if config.episode_max_steps_override:
@@ -636,6 +670,13 @@ def main(config): # config is namespace
 
     agent.requires_grad_(requires_grad=False)
 
+    if config.search_vnext_enabled and getattr(config,"vnext_spatial_enabled",False) and config.vnext_visual_enabled:
+        from apm.visualization import SearchVisualizer
+        visual_root = (pathlib.Path(config.vnext_visual_root).expanduser() if config.vnext_visual_root
+                       else pathlib.Path(config.logdir))
+        logger.search_visualizer = SearchVisualizer(visual_root,config)
+        logger.search_visualizer.set_step(agent._step)
+
     if resume_plan:
         restore_training_state(agent, resume_plan, logger)
         write_resume_manifest(resume_plan, config)
@@ -680,7 +721,7 @@ def main(config): # config is namespace
                 agent.flush_metrics()
                 break
             if config.search_branch_enabled and agent._step >= next_branch_step:
-                from search_branches import collect_real_branches
+                from apm.legacy.branches import collect_real_branches
                 collect_real_branches(agent, config, train_eps, logger, next_branch_step // config.search_branch_every)
                 next_branch_step += config.search_branch_every
                 save_training_checkpoint(agent, config, next_branch_step)
@@ -701,6 +742,9 @@ def main(config): # config is namespace
                 is_training=True,
             )
 
+            if hasattr(logger,"search_visualizer"):
+                logger.search_visualizer.maybe_export_train(logger.step)
+
             save_active_replay(train_envs, train_eps, config.traindir)
             save_training_checkpoint(agent, config, next_branch_step)
     except BaseException as error:
@@ -715,6 +759,11 @@ def main(config): # config is namespace
             print(f"[checkpoint] Emergency save failed: {save_error}", flush=True)
         raise
     finally:
+        if hasattr(logger,"search_visualizer"):
+            try:
+                logger.search_visualizer.close()
+            except Exception as visual_error:
+                print(f"[visualization] Final flush failed: {visual_error}",flush=True)
         try:
             agent.flush_metrics()
             logger.finish()

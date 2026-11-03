@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
-from search_vnext import (SearchVNext,SlotMemory,sample_episodes_vnext,CURRENT_EVENTS,
+from apm.outcome import (SearchVNext,SlotMemory,sample_episodes_vnext,CURRENT_EVENTS,
                          FUTURE_EVENTS,check_vnext_checkpoint,restore_vnext_config)
 
 
@@ -215,7 +215,7 @@ class VNextModelsTest(unittest.TestCase):
         self.assertTrue(bool((model.a.cal_counts>=0).all()))
 
     def test_option_support_requires_entire_executed_plan(self):
-        from search_actuator import apply_command_torch
+        from apm.actuator import apply_command_torch
         d={"reward":np.zeros((1,7)), "log_vnext_decision":np.zeros((1,7)),
            "log_vnext_plan_commands":np.zeros((1,7,3)),
            "log_vnext_version":np.ones((1,7)),

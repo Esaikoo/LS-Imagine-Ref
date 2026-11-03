@@ -712,7 +712,7 @@ class PrefixSearchController(SearchAController):
     def choose(self, head, feat, obs, actor_actions, state, is_first, step, training,
                actor_sequence, memory=None, candidate_sequence=None, selector=None,
                policy_memory=None):
-        from search_c import CONTEXT_DIM
+        from apm.legacy.control import CONTEXT_DIM
         batch, device = feat.shape[0], feat.device
         fresh = self.initial(batch, device)
         values = fresh if state is None else tuple(v.clone() for v in state)

@@ -20,6 +20,104 @@ VNEXT_EVENTS = ("center_target", "reachable", "center_interactable", "return", "
 VNEXT_LABEL_KEYS = SEARCH_LABEL_KEYS + tuple(
     key for event in VNEXT_EVENTS for key in ("search_" + event, "search_" + event + "_valid")
 )
+SPATIAL_LABEL_SHAPES = {"search_pose_delta": (3,), "search_pose_valid": ()}
+for _event in ("new_area", "area_revisit", "new_view", "view_revisit"):
+    SPATIAL_LABEL_SHAPES["search_" + _event] = ()
+    SPATIAL_LABEL_SHAPES["search_" + _event + "_valid"] = ()
+SPATIAL_LABEL_SHAPES.update(search_area_coverage=(), log_spatial_gt_pose=(3,),
+                            log_spatial_gt_valid=())
+
+
+def empty_spatial_labels():
+    return {key: np.zeros(shape, np.float32) for key, shape in SPATIAL_LABEL_SHAPES.items()}
+
+
+class SpatialEvidenceWrapper(gym.Wrapper):
+    """Coordinate-derived loss targets and separate offline audit metadata.
+
+    No public position is ever supplied to spatial memory. Evaluation's loss
+    targets remain unknown; optional audit coordinates are log_* and are removed
+    before the policy call, not used to initialize, correct or update its map.
+    """
+    def __init__(self, env, supervision=False, audit=False, cell_size=1.5, sectors=12):
+        super().__init__(env)
+        self.supervision, self.audit = bool(supervision), bool(audit)
+        self.cell_size, self.sectors = float(cell_size), int(sectors)
+        if self.cell_size <= 0 or self.sectors < 4:
+            raise ValueError("Invalid spatial supervision grid")
+        self.previous = None
+        self.areas, self.views = set(), set()
+        self.origin_pose = None
+
+    @staticmethod
+    def pose(obs):
+        location = obs.get("location_stats", {})
+        try:
+            pos = np.asarray(location["pos"], float).reshape(3)
+            yaw = float(np.asarray(location["yaw"]).reshape(-1)[0])
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
+        result = np.array([pos[0], pos[2], np.deg2rad(yaw)], np.float64)
+        return result if np.isfinite(result).all() else None
+
+    def annotate(self, obs, initial=False, error=False):
+        result = obs.copy()
+        labels = empty_spatial_labels()
+        current = None if error else self.pose(obs)
+        if current is not None and self.audit:
+            labels["log_spatial_gt_pose"] = current.astype(np.float32)
+            labels["log_spatial_gt_valid"] = np.float32(1)
+        if current is not None and self.supervision:
+            if self.origin_pose is None:
+                self.origin_pose = current.copy()
+            def map_position(pose):
+                offset = pose[:2]-self.origin_pose[:2]
+                angle = self.origin_pose[2]
+                return np.array([np.cos(angle)*offset[0]+np.sin(angle)*offset[1],
+                                 -np.sin(angle)*offset[0]+np.cos(angle)*offset[1]])
+            area = tuple(np.floor(map_position(current) / self.cell_size+.5).astype(np.int64))
+            direction = int(np.floor(((current[2]-self.origin_pose[2]) % (2*np.pi)) / (2*np.pi) * self.sectors+.5)) % self.sectors
+            view = (*area, direction)
+            known = not initial and self.previous is not None
+            if known:
+                delta = current[:2] - self.previous[:2]
+                angle = self.previous[2]
+                local = np.array([np.cos(angle)*delta[0]+np.sin(angle)*delta[1],
+                                  -np.sin(angle)*delta[0]+np.cos(angle)*delta[1]])
+                turn = (current[2]-angle+np.pi) % (2*np.pi)-np.pi
+                # Exclude teleports/reset glitches rather than teaching walking
+                # to explain discontinuous world-coordinate jumps.
+                valid = np.linalg.norm(local) < 3.0 and abs(turn) < np.pi/2
+                labels["search_pose_delta"] = np.r_[local, turn].astype(np.float32)
+                labels["search_pose_valid"] = np.float32(valid)
+                known = valid
+            previous_area = (None if self.previous is None else
+                             tuple(np.floor(map_position(self.previous)/self.cell_size+.5).astype(np.int64)))
+            previous_direction = (None if self.previous is None else int(np.floor(
+                ((self.previous[2]-self.origin_pose[2]) % (2*np.pi))/(2*np.pi)*self.sectors+.5)) % self.sectors)
+            previous_view = None if previous_area is None else (*previous_area,previous_direction)
+            values = {"new_area": area not in self.areas,
+                      "area_revisit": area in self.areas and area != previous_area,
+                      "new_view": view not in self.views,
+                      "view_revisit": view in self.views and view != previous_view}
+            for name, value in values.items():
+                labels["search_"+name] = np.float32(value and known)
+                labels["search_"+name+"_valid"] = np.float32(known)
+            self.areas.add(area); self.views.add(view)
+            labels["search_area_coverage"] = np.float32(len(self.areas))
+        self.previous = current
+        result.update(labels)
+        return result
+
+    def reset(self, **kwargs):
+        self.previous = None
+        self.origin_pose = None
+        self.areas.clear(); self.views.clear()
+        return self.annotate(self.env.reset(**kwargs), initial=True)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        return self.annotate(obs, error=bool(info.get("error"))), reward, done, info
 RAY_PITCHES = np.deg2rad(np.linspace(-25, 25, 5))
 RAY_YAWS = np.deg2rad(np.linspace(-40, 40, 9))
 
@@ -41,7 +139,7 @@ def complete_episode_labels(episode, version=LABEL_VERSION):
     for key in (VNEXT_LABEL_KEYS if version >= 3 else SEARCH_LABEL_KEYS):
         if key not in result:
             result[key] = np.zeros(length, np.float32)
-    from search_c import complete_c_fields
+    from apm.legacy.control import complete_c_fields
     return complete_c_fields(result)
 
 

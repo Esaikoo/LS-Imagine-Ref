@@ -1408,3 +1408,39 @@ nohup env A_MODE=abc NTFY_TOPIC=rl-training-esaiko \
 消融：A_MODE=off为原主干；vnext_ac置零B；vnext_no_search保留学习但禁用新控制；vnext_no_interaction关闭交互验证。运行时置零不是从头消融，正式比较需同预算重新训练。
 
 验证摘要和短测日志位于logs/test_apm_a_v4/vnext_implementation_20261030/。没有git提交或服务器代码修改。
+
+
+## 22. 完整1M结果与vNext2方案（2026-11-02）
+
+vNext已完整1M正常退出：训练868/1551；训练期eval127/303（跨检查点）。后20轮41/60对原历史39/60，后10轮16/30对原18/30，不能挑窗口声称稳定提升。最终固定20图7/20对原11/20，世界/出生匹配，但开局客户端时钟/渲染未稳定，是明确比较限制。
+
+24个训练期评测成功回合Actor零攻击、新模块补攻击后成功，证明局部补救；B独立收益和Q收益仍需隔离。A方向缺失、B局部覆盖、恢复交接和困难材质是下一版重点。
+
+[新技术方案：完整历史、CPP口径与修复实验路线](APM_Imagine_vNext2_技术方案_2026-11-02.md)。**该方案尚未实施，不表示vNext2已训练。** 本轮不修改模型或服务器。
+
+
+## 23. 视觉里程计与二维空间搜索版本（2026-11-03）
+
+本节对应用户提供的《基于apm-vnext的升级方案》。默认A_MODE=vnext现启用空间版本2，环境生态、12个原始动作、原LS任务奖励和主干目标保持；新增损失不回传原RSSM/Actor/Critic。真实动作改变Replay分布，因此仍间接影响主干学习。建议新实验从头训练，不把旧vNext1静默迁移为空间版本。
+
+实现代码统一在apm/：outcome.py负责动作条件后果预测；odometry.py为视觉PoseNet；spatial_memory.py为地图与MapEncoder；control.py为高层双Q；actuator.py为实际执行语义；evidence.py为训练监督与隔离审计；replay.py为因果回放；diagnostics.py为离线诊断；visualization.py为有界可视化。早期实现移至apm/legacy/，保留旧模式与旧权重兼容路径；根目录不留重复模块。
+
+B仅从连续RGB和上一步真实控制预测平面位姿，以起点和初始朝向为零。真坐标/yaw只用于训练损失及独立留出校准；eval位姿监督valid全为0，审计坐标是进入policy前移除的log字段。资格需要移动/静止支持、独立校准且优于零位移基线，重复采样不虚增支持；只在真实回合起点启用定位，未知前缀不补成假轨迹。
+
+六通道地图表示访问、近距方向观察代理、目标线索观察位置、重复、不确定性和未知边界，配12方向覆盖。局部滚动图供MapEncoder使用，全回合稀疏ledger保留已访问地点、方向和线索，返回窗口外旧区域可恢复。这是二维估计搜索行为图，非精确地形/SLAM；高度投影且视觉里程计会漂移。未定位回合标UNLOCALIZED，不能把零积分解释为实际静止。
+
+A使用地图上下文预测真实短控制序列的观察、目标、重访、交互、进展和受阻后果。在线最多3步，8步为辅助监督，不生成未来RGB；仅实际执行且计划一致的窗口建立候选资格。C用独立任务成功Q和有符号搜索Q学习有效真实标签的新区域、首次发现、重访与成本；不把A预测当真实奖励。受支持的A分数参与排序，空间协议选项6为短扫描、7为有界清障。合法性、交互保护、预算和紧急相机恢复仍有规则约束，不把所有接管称为学习收益。
+
+训练每10000步导出当时最近完整训练回合；eval每轮只导出最后一局（默认3局即第3局），不额外rollout，prefill尾段不当完整回合。默认目录为本次logdir/visualizations/<task>/train/step_*/episode_last/和eval/step_*/episode_03/。输出B_map、最多3张A1、2张A2、C1时间线、最多2张C2、summary及压缩trace；没有合格候选时不造A图并说明。少量关键截图有界缓存，原指标和新增实际标量完整持久化。旧check_obs默认关闭，可显式check_obs_enabled恢复。test.py及evaluate_checkpoints.py独立评测也接入。
+
+checkpoint保存空间/位姿/候选版号、优化器及校准缓冲；旧vNext1评测和恢复保留旧结构，不能借续训静默升级。vnext_ac关闭地图向量及空间摘要控制输入；vnext_no_search关闭实际接管；vnext_no_interaction关闭目标交互补救，沿用统一train.sh。
+
+检查入口仍为bash scripts/test_a.sh，真实短测为bash scripts/test_a.sh --minedojo-vnext。本机Gradle网络不可达时可显式--minedojo_gradle_offline True（独立测评为--minedojo-gradle-offline），仅对受管理临时客户端副本加--offline，不改安装源、用户Gradle设置或服务器；要求依赖已缓存，默认False。
+
+额外修复了原地转向冒充空间进展、正常前进被持续算重访、清障末步受阻标签缺失、粘滞跳恢复等待被打断及候选资格永久阻断高层Q等路径。首次完整扫描可获得新视角收益，只有重新进入旧视角才受重复惩罚；空间定位及真实选项经验合格后，高层Q可以独立参与决策，缺少A支持时其预测分数仍为零。
+
+最终验证：原全量277项通过后，受影响的5个测试模块104项重新通过，当前覆盖合计290项；Python/Shell语法与diff空白检查通过。本地RTX2060-6GB使用小容量主模型完成真实MineDojo 160步短训，再恢复至192步，6个优化器恢复，未重复prefill/pretrain，源检查点和Replay不变；原主干及A/B/C均有实际优化。共保存15个真实评测回合，每轮只导出第3局；训练/评测NPZ字段等长，实际控制一致，eval位姿训练标签全部无效。正式5120维特征、batch16/length32的辅助A/B/C GPU联合优化通过，仅辅助链峰值约508.5MiB，不能据此推算整个正式模型显存。
+
+短测数据不足以通过独立世界位姿资格，因此地图明确显示UNLOCALIZED，未用真实坐标补图，也未把零积分说成实际静止。真实短测验证运行与保存/恢复链路，不证明1M效果或长期定位精度。本次仅本地实现，不提交Git，不代跑完整1M；正式模型容量、1M预算和seed0保持，用户同步后从头开始新实验。
+
+验证产物位于D:/RL_TrainData/ls/analysis/spatial_upgrade_20261103，最终核验见final_verification.json；真实短训与续训分别在validated/和resume_validated/。

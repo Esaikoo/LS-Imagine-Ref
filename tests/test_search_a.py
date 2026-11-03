@@ -13,9 +13,9 @@ import torch
 from torch.nn import functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from search_a import (SearchOutcomeHead, SearchAController, macro_actions, actor_action_sequence,
+from apm.legacy.observation import (SearchOutcomeHead, SearchAController, macro_actions, actor_action_sequence,
                       check_checkpoint, normalize_feature, MODEL_VERSION, LABEL_VERSION)
-from search_evidence import (SearchEvidence, SearchEvidenceWrapper, SEARCH_LABEL_KEYS,
+from apm.evidence import (SearchEvidence, SearchEvidenceWrapper, SEARCH_LABEL_KEYS,
                              complete_episode_labels, lidar_rays)
 
 torch.set_num_threads(2)
@@ -623,6 +623,315 @@ class EvaluationAControlTests(unittest.TestCase):
 
 
 
+
+class EvaluationCsvPublicationTests(unittest.TestCase):
+    def test_locked_csv_preserves_reports_and_completed_rollout(self):
+        import csv, json
+        import evaluate_checkpoints as evaluator
+        with tempfile.TemporaryDirectory() as temporary:
+            output=pathlib.Path(temporary)
+            folder=output/'harvest_sand'/'run_00'/'episodes'
+            folder.mkdir(parents=True)
+            record=dict(task='harvest_sand',run=0,episode=11,seed=123,
+                        status='completed',success=False,steps=1000)
+            record_path=folder/'episode_011.json'
+            record_path.write_text(json.dumps(record))
+            before=record_path.read_bytes()
+            for name in ('episodes.csv','summary.csv'):
+                (output/name).write_text('previous report must survive\n')
+            original=pathlib.Path.replace
+            def locked_replace(source,destination):
+                destination=pathlib.Path(destination)
+                if destination.name in ('episodes.csv','summary.csv'):
+                    raise PermissionError(13,'Windows sharing violation',str(destination))
+                return original(source,destination)
+            with mock.patch.object(pathlib.Path,'replace',new=locked_replace):
+                result=evaluator.summarize(output,dict(tasks=['harvest_sand'],runs=1,episodes=20))
+            self.assertEqual(result['harvest_sand']['completed'],1)
+            self.assertEqual(result['harvest_sand']['successes'],0)
+            self.assertEqual(record_path.read_bytes(),before)
+            self.assertEqual(json.loads((output/'summary.json').read_text()),result)
+            exports=json.loads((output/'csv_exports.json').read_text())
+            for name in ('episodes','summary'):
+                self.assertTrue(exports[name]['locked'])
+                self.assertEqual((output/(name+'.csv')).read_text(),'previous report must survive\n')
+                current=output/exports[name]['current']
+                self.assertTrue(current.is_file())
+                with current.open(newline='') as stream:
+                    rows=list(csv.DictReader(stream))
+                self.assertEqual(len(rows),1)
+            self.assertFalse(list(output.glob('*.tmp')))
+
+    def test_csv_io_failure_preserves_old_report_and_cleans_temporary(self):
+        import evaluate_checkpoints as evaluator
+        with tempfile.TemporaryDirectory() as temporary:
+            output=pathlib.Path(temporary);path=output/'episodes.csv'
+            path.write_text('old untouched\n')
+            with mock.patch.object(pathlib.Path,'replace',side_effect=OSError(28,'No space left')):
+                with self.assertRaises(OSError):
+                    evaluator.write_csv_report(path,['success'],[dict(success=True)])
+            self.assertEqual(path.read_text(),'old untouched\n')
+            self.assertEqual(sorted(p.name for p in output.iterdir()),['episodes.csv'])
+
+
+class ReferenceCheckpointComparisonTests(unittest.TestCase):
+    @staticmethod
+    def scene():
+        return dict(world_seed=100, mission_seed=11, java_launch_seed=11,
+            terrain_sha256="same-terrain", inventory={}, life_stats={"life": 20},
+            policy_observation_keys=["image", "heatmap", "is_first", "search_visible"],
+            location_stats=dict(pos=[1., 64., 2.], pitch=[0.], yaw=[0.],
+                                biome_id=1, is_raining=False, sea_level=[63.]))
+
+    def test_vnext_checkpoint_restores_audit_setting_and_disables_legacy_modules(self):
+        from evaluate_checkpoints import configure_search_checkpoint
+        config = vars(config_for_test(search_eval_evidence=False))
+        saved = dict(config,search_vnext_enabled=True,search_a_enabled=False,
+                     search_b_enabled=False,search_c_enabled=False,search_eval_evidence=True)
+        checkpoint = dict(config=saved,step=1000000,search_vnext_version=1,
+            vnext_memory_version=1,search_a_label_version=3,actuator_version=1,
+            agent_state_dict={"_vnext.example":torch.zeros(1)})
+        self.assertEqual(configure_search_checkpoint(config,checkpoint),1000000)
+        self.assertTrue(config["search_vnext_enabled"])
+        self.assertTrue(config["search_eval_evidence"])
+        for key in ("search_a_enabled","search_b_enabled","search_c_enabled","compile"):
+            self.assertFalse(config[key])
+
+    def test_auxiliary_keys_normalized_but_geometry_inventory_and_real_keys_strict(self):
+        from evaluate_checkpoints import compare_initial_scenes
+        before = self.scene()
+        after = copy.deepcopy(before)
+        after["policy_observation_keys"] += ["search_center_interactable", "log_actuator_before",
+                                            "vnext_bootstrap_actuator"]
+        check = compare_initial_scenes(before, after)
+        self.assertTrue(check["match"])
+        self.assertIn("search_center_interactable", check["observation_key_audit"]["candidate"])
+        for field, value in (("inventory", {"sand": 1}), ("terrain_sha256", "other")):
+            changed = copy.deepcopy(after); changed[field] = value
+            self.assertFalse(compare_initial_scenes(before, changed)["match"])
+        changed = copy.deepcopy(after); changed["location_stats"]["pos"][0] += 1
+        self.assertFalse(compare_initial_scenes(before, changed)["match"])
+        changed = copy.deepcopy(after); changed["policy_observation_keys"].append("target_coordinate")
+        self.assertFalse(compare_initial_scenes(before, changed)["match"])
+
+    def test_initial_rgb_image_and_heatmap_are_exact_not_just_terrain(self):
+        from evaluate_checkpoints import compare_initial_observations
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            values = dict(rgb=np.zeros((4, 6, 3), np.uint8),
+                          image=np.zeros((2, 2, 3), np.uint8),
+                          heatmap=np.zeros((2, 2), np.uint8))
+            left, right = root/"left.npz", root/"right.npz"
+            np.savez(left, **values); np.savez(right, **values)
+            self.assertTrue(compare_initial_observations(left, right)["match"])
+            for name in values:
+                changed = {key: value.copy() for key, value in values.items()}
+                changed[name].flat[0] = 1
+                np.savez(right, **changed)
+                check = compare_initial_observations(left, right)
+                self.assertFalse(check["match"])
+                self.assertEqual(check["arrays"][name]["different_values"], 1)
+
+    def test_reference_allows_only_audit_sensor_differences(self):
+        import json
+        from evaluate_checkpoints import validate_reference
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary); reference = root/"reference"
+            folder = reference/"harvest_sand/run_00"; folder.mkdir(parents=True)
+            (reference/"manifest.json").write_text(json.dumps(dict(seed=11,runs=1,episodes=2,fps=20)))
+            config = dict(search_a_enabled=False, seed=11, compile=False)
+            before = dict(fast_reset=None,LS_Imagine_specs=dict(repeat=1),
+                          reward_specs=dict(sand=1))
+            simulator = dict(seed=11,world_seed="100",break_speed_multiplier=100)
+            (folder/"settings_episode_000.json").write_text(json.dumps(dict(
+                config=config, task_specs=before, sim_specs=simulator, checkpoint="old.pt")))
+            args = SimpleNamespace(reference_output=reference,worker_episode=0,
+                checkpoint_root=root/"new",a_control="checkpoint",c_control="checkpoint",
+                seed=11,runs=1,episodes=2,fps=20,heatmap_mode="unet")
+            candidate = copy.deepcopy(before)
+            candidate["LS_Imagine_specs"].update(vnext=True,vnext_world_seed="100")
+            candidate["search_evidence_specs"]=dict(enabled=True,target="sand",version=3)
+            simulated = dict(simulator,use_lidar=True,lidar_rays=[[0.,0.,32.]])
+            current = dict(config,search_vnext_enabled=True,vnext_control=True)
+            check = validate_reference(args,"harvest_sand",0,current,candidate,simulated)
+            self.assertTrue(check["common_config_matches"])
+            self.assertTrue(check["audit_only_differences"]["candidate"]["simulator"]["use_lidar"])
+            self.assertNotIn("vnext", before["LS_Imagine_specs"])
+            for changed_task,changed_sim in [
+                (dict(candidate,reward_specs=dict(sand=2)),simulated),
+                (dict(candidate,LS_Imagine_specs=dict(repeat=2,vnext=True,vnext_world_seed="100")),simulated),
+                (candidate,dict(simulated,break_speed_multiplier=99)),
+                (candidate,dict(simulated,world_seed="101"))]:
+                with self.assertRaises(ValueError):
+                    validate_reference(args,"harvest_sand",0,current,changed_task,changed_sim)
+
+    def test_pixel_audit_is_explicit_and_never_waives_geometry_or_spawn(self):
+        import json,shutil
+        from evaluate_checkpoints import compare_saved_initials
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary);args,reference=self.fixture(root)
+            candidate=root/"new_initials";candidate.mkdir()
+            for suffix in (".json",".npz"):
+                shutil.copy2(reference/"initials"/("episode_000"+suffix),candidate/("episode_000"+suffix))
+            with np.load(candidate/"episode_000.npz") as saved:
+                changed={key:saved[key].copy() for key in saved.files}
+            changed["rgb"][0,0,0]=1;changed["heatmap"][0,0]=2
+            np.savez(candidate/"episode_000.npz",**changed)
+            exact=compare_saved_initials(reference/"initials",candidate,"episode_000",True)
+            self.assertFalse(exact["match"])
+            audit=compare_saved_initials(reference/"initials",candidate,"episode_000",True,"audit")
+            self.assertTrue(audit["match"]);self.assertTrue(audit["matching_initial_world"])
+            self.assertFalse(audit["matching_initial_pixels"])
+            self.assertFalse(audit["initial_observation_checks"]["initial_rgb"])
+            self.assertGreater(audit["initial_frame_audit"]["rgb"]["mean_absolute_error"],0)
+            self.assertNotEqual(audit["initial_frame_audit"]["rgb"]["reference_sha256"],
+                                audit["initial_frame_audit"]["rgb"]["candidate_sha256"])
+            initial=json.loads((candidate/"episode_000.json").read_text())
+            for field in ("terrain_sha256","inventory","location_stats"):
+                altered=copy.deepcopy(initial)
+                if field=="terrain_sha256":altered[field]="different terrain"
+                elif field=="inventory":altered[field]={"sand":1}
+                else:altered[field]["pitch"]=[1.]
+                (candidate/"episode_000.json").write_text(json.dumps(altered))
+                check=compare_saved_initials(reference/"initials",candidate,"episode_000",True,"audit")
+                self.assertFalse(check["match"]);self.assertFalse(check["matching_initial_world"])
+
+    def test_audit_mode_propagates_to_workers_identity_and_summary(self):
+        import json,shutil
+        import evaluate_checkpoints as evaluator
+        with tempfile.TemporaryDirectory() as temporary:
+            args,reference=self.fixture(pathlib.Path(temporary));args.initial_observation_check="audit"
+            def fake_worker(command,**kwargs):
+                self.assertEqual(command[command.index("--initial-observation-check")+1],"audit")
+                episode=int(command[command.index("--worker-episode")+1])
+                folder=args.output/"harvest_sand/run_00"
+                (folder/"episodes").mkdir(exist_ok=True);(folder/"initials").mkdir(exist_ok=True)
+                stem="episode_%03d"%episode
+                shutil.copy2(reference/"initials"/(stem+".json"),folder/"initials"/(stem+".json"))
+                with np.load(reference/"initials"/(stem+".npz")) as raw:
+                    values={key:raw[key].copy() for key in raw.files}
+                values["rgb"][0,0,0]=3
+                np.savez(folder/"initials"/(stem+".npz"),**values)
+                (folder/"episodes"/(stem+".json")).write_text(json.dumps(dict(
+                    status="completed",world_seed=100+episode,success=True,steps=20,
+                    a_control_mode="checkpoint",c_control_mode="checkpoint",
+                    initial_observation_check="audit",matching_initial_world=True,matching_initial_pixels=False)))
+                return SimpleNamespace(returncode=0)
+            with mock.patch.object(evaluator.subprocess,"run",side_effect=fake_worker):
+                evaluator.fixed_reference_main(args,{})
+            result=json.loads((args.output/"reference_comparison.json").read_text())
+            self.assertEqual(result["initial_observation_check"],"audit")
+            self.assertTrue(result["matching_initial_world"])
+            self.assertFalse(result["matching_initial_pixels"])
+            self.assertGreater(result["pairs"][0]["initial_frame_audit"]["rgb"]["mean_absolute_error"],0)
+            identity=json.loads((args.output/"fixed_run_manifest.json").read_text())
+            self.assertEqual(identity["initial_observation_check"],"audit")
+            args.initial_observation_check="exact"
+            with mock.patch.object(evaluator.subprocess,"run") as workers:
+                with self.assertRaisesRegex(ValueError,"changed"):
+                    evaluator.fixed_reference_main(args,{})
+                workers.assert_not_called()
+
+    def test_cli_default_exact_explicit_audit_and_legacy_control_guard(self):
+        import json,io
+        import evaluate_checkpoints as evaluator
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary);args,_=self.fixture(root)
+            base=["evaluate_checkpoints.py","--checkpoint-root",str(args.checkpoint_root),
+                  "--tasks","harvest_sand","--runs","1","--episodes","2","--seed","11",
+                  "--world-seed-start","100","--reference-output",str(args.reference_output)]
+            for mode in ("exact","audit"):
+                output=root/("cli_"+mode)
+                command=base+["--output",str(output)]
+                if mode=="audit":command+=["--initial-observation-check","audit"]
+                with mock.patch.object(sys,"argv",command),mock.patch.object(evaluator,"fixed_reference_main") as run:
+                    evaluator.main()
+                self.assertEqual(run.call_args.args[0].initial_observation_check,mode)
+                self.assertEqual(json.loads((output/"manifest.json").read_text())["initial_observation_check"],mode)
+            with mock.patch.object(sys,"argv",base+["--a-control","off","--initial-observation-check","audit"]),\
+                 mock.patch.object(sys,"stderr",io.StringIO()),self.assertRaises(SystemExit) as error:
+                evaluator.main()
+            self.assertEqual(error.exception.code,2)
+
+    def fixture(self, root):
+        import json
+        reference=root/"reference"; output=root/"output"; ckpt=root/"candidate/harvest_sand"
+        old=root/"old.pt"; old.write_bytes(b"reference weights")
+        ckpt.mkdir(parents=True); (ckpt/"latest.pt").write_bytes(b"new weights")
+        output.mkdir()
+        folder=reference/"harvest_sand/run_00"
+        for name in ("episodes","initials"): (folder/name).mkdir(parents=True)
+        (folder/"settings_episode_000.json").write_text(json.dumps(dict(checkpoint=str(old))))
+        for episode in range(2):
+            stem="episode_%03d"%episode
+            scene=self.scene(); scene.update(world_seed=100+episode,mission_seed=11+episode,java_launch_seed=11+episode)
+            (folder/"initials"/(stem+".json")).write_text(json.dumps(scene))
+            np.savez(folder/"initials"/(stem+".npz"),rgb=np.zeros((4,6,3),np.uint8),
+                     image=np.zeros((2,2,3),np.uint8),heatmap=np.zeros((2,2),np.uint8))
+            (folder/"episodes"/(stem+".json")).write_text(json.dumps(dict(
+                status="completed",world_seed=100+episode,success=episode==0,steps=100)))
+        args=SimpleNamespace(tasks=["harvest_sand"],reference_output=reference,output=output,
+            checkpoint_root=ckpt.parent,episode_order=None,episodes=2,a_control="checkpoint",
+            c_control="checkpoint",seed=11,world_seed_start=100,fps=20,device="cpu",threads=2,
+            heatmap_mode="unet")
+        return args,folder
+
+    def test_coordinator_reuses_baseline_only_new_workers_and_is_not_an_ablation(self):
+        import json,shutil
+        import evaluate_checkpoints as evaluator
+        with tempfile.TemporaryDirectory() as temporary:
+            args,reference=self.fixture(pathlib.Path(temporary))
+            def fake_worker(command,**kwargs):
+                episode=int(command[command.index("--worker-episode")+1])
+                self.assertEqual(command[command.index("--checkpoint-root")+1],str(args.checkpoint_root))
+                self.assertIn("--reference-output",command)
+                folder=args.output/"harvest_sand/run_00"
+                (folder/"episodes").mkdir(exist_ok=True);(folder/"initials").mkdir(exist_ok=True)
+                stem="episode_%03d"%episode
+                for suffix in (".json",".npz"):
+                    shutil.copy2(reference/"initials"/(stem+suffix),folder/"initials"/(stem+suffix))
+                (folder/"episodes"/(stem+".json")).write_text(json.dumps(dict(status="completed",
+                    world_seed=100+episode,success=True,steps=20,a_control_mode="checkpoint",
+                    c_control_mode="checkpoint")))
+                return SimpleNamespace(returncode=0)
+            with mock.patch.object(evaluator.subprocess,"run",side_effect=fake_worker) as workers:
+                evaluator.fixed_reference_main(args,{})
+            self.assertEqual(workers.call_count,2)
+            result=json.loads((args.output/"reference_comparison.json").read_text())
+            self.assertFalse(result["same_checkpoint"]);self.assertFalse(result["runtime_ablation"])
+            self.assertEqual(result["reference_total_successes"],1)
+            self.assertEqual(result["candidate_successes"],2)
+            self.assertEqual(result["candidate_only"],1)
+            self.assertNotEqual(result["checkpoints"]["reference"]["sha256"],
+                                result["checkpoints"]["candidate"]["sha256"])
+            with mock.patch.object(evaluator.subprocess,"run",side_effect=AssertionError("reran finished episode")):
+                evaluator.fixed_reference_main(args,{})
+            bad=reference/"initials/episode_001.json"
+            scene=json.loads(bad.read_text());scene["location_stats"]["yaw"]=[10.]
+            bad.write_text(json.dumps(scene))
+            with self.assertRaises(RuntimeError):
+                evaluator.reference_checkpoint_summary(args)
+
+    def test_comparison_rejects_incomplete_or_same_checkpoint_before_start(self):
+        import json
+        import evaluate_checkpoints as evaluator
+        with tempfile.TemporaryDirectory() as temporary:
+            args,reference=self.fixture(pathlib.Path(temporary))
+            (args.checkpoint_root/"harvest_sand/latest.pt").write_bytes(b"reference weights")
+            with mock.patch.object(evaluator.subprocess,"run") as workers:
+                with self.assertRaisesRegex(ValueError,"different weights"):
+                    evaluator.fixed_reference_main(args,{})
+                workers.assert_not_called()
+            (args.checkpoint_root/"harvest_sand/latest.pt").write_bytes(b"new weights")
+            path=reference/"episodes/episode_001.json"
+            record=json.loads(path.read_text());record["status"]="error"
+            path.write_text(json.dumps(record))
+            with mock.patch.object(evaluator.subprocess,"run") as workers:
+                with self.assertRaisesRegex(ValueError,"Incomplete"):
+                    evaluator.fixed_reference_main(args,{})
+                workers.assert_not_called()
+
+
 class RepairedControlTests(unittest.TestCase):
     setUp = ControlTests.setUp
     choose = ControlTests.choose
@@ -833,7 +1142,7 @@ class RepairTrainingTests(unittest.TestCase):
         self.assertEqual(result["extra_update_applied"],0)
 
     def test_old_checkpoint_remains_strictly_loadable(self):
-        from search_a import restore_a_config,apply_repaired_control
+        from apm.legacy.observation import restore_a_config,apply_repaired_control
         old_cfg=config_for_test(search_a_model_version=2,search_a_control_version=2,
                                 search_a_separate_optimizer=False)
         old=make_agent(old_cfg)
@@ -994,7 +1303,7 @@ class PrefixAndFeedbackTests(unittest.TestCase):
         torch.testing.assert_close(predicted["event_logits"], head(feat, actions[:, :3])["event_logits"])
 
     def test_explicit_migration_does_not_claim_new_prefixes_are_trained(self):
-        from search_a import migrate_v3_head
+        from apm.legacy.observation import migrate_v3_head
         old, new = SearchOutcomeHead(16, hidden=16, version=3), SearchOutcomeHead(16, hidden=16, version=4)
         old.label_counts[:] = 10000
         report = migrate_v3_head(old, new)
@@ -1004,7 +1313,7 @@ class PrefixAndFeedbackTests(unittest.TestCase):
         self.assertEqual(float(new.label_counts.sum()), 0)
 
     def test_untrained_duration_is_rejected(self):
-        from search_a import PrefixSearchController
+        from apm.legacy.observation import PrefixSearchController
         with self.assertRaises(ValueError):
             PrefixSearchController(horizon=6, commit_steps=5)
 
@@ -1022,7 +1331,7 @@ class PrefixAndFeedbackTests(unittest.TestCase):
         self.assertEqual(unknown["search_first_discovery_valid"], 0)
 
     def test_default_prefix_really_moves_and_has_bounded_budget(self):
-        from search_a import PrefixSearchController, prefix_macro_actions
+        from apm.legacy.observation import PrefixSearchController, prefix_macro_actions
         seq = prefix_macro_actions(3, "cpu").argmax(-1)
         self.assertEqual(seq[6].tolist(), [3, 6, 6])
         self.assertEqual(seq[7].tolist(), [2, 6, 6])
@@ -1098,7 +1407,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
                                search_a_commit_steps=3, search_c_enabled=True, **changes)
 
     def dataset(self):
-        from search_c import complete_c_fields
+        from apm.legacy.control import complete_c_fields
         data = replay_batch(time=12)
         episode = complete_c_fields({k: v[0] for k, v in data.items()})
         data = {k: v[None] for k, v in episode.items()}
@@ -1114,7 +1423,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
         return data
 
     def test_semimarkov_discount_true_feedback_and_censoring(self):
-        from search_c import build_transitions
+        from apm.legacy.control import build_transitions
         cfg, data = self.config(), self.dataset()
         data["is_last"][0, 8] = 1
         data["is_first"][0, 9] = 1
@@ -1131,7 +1440,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
 
     def test_real_rollout_records_replay_train_and_strict_reload(self):
         import tools
-        from search_c import check_c_checkpoint
+        from apm.legacy.control import check_c_checkpoint
         from evaluate_checkpoints import configure_search_checkpoint
         for enabled_b in (False, True):
             cfg = self.config(search_b_enabled=enabled_b, search_b_lookback=4, search_b_slots=2)
@@ -1186,7 +1495,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
         return {k: v[0] for k, v in self.dataset().items()}
 
     def test_C_ablation_masks_A_visibility_and_has_private_rng(self):
-        from search_c import SearchBehavior
+        from apm.legacy.control import SearchBehavior
         cfg = self.config(search_c_use_predictions=False)
         c = SearchBehavior(16, cfg)
         state = torch.randn(2, 16)
@@ -1203,7 +1512,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
         torch.testing.assert_close(probability, torch.ones(2))
 
     def test_C_runtime_ablation_keeps_strict_weights_and_is_explicit(self):
-        from search_c import apply_c_control_mode
+        from apm.legacy.control import apply_c_control_mode
         from evaluate_checkpoints import apply_a_control_mode
         agent = make_agent(self.config())
         saved = agent.state_dict()
@@ -1254,7 +1563,7 @@ def audit_replay(argv):
     import time
     import gym
     import networks
-    from search_a import migrate_v3_head
+    from apm.legacy.observation import migrate_v3_head
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=pathlib.Path, required=True)
     parser.add_argument("--replay", type=pathlib.Path, required=True)
@@ -1582,7 +1891,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertGreater(metrics["C/imagined_transitions"],0)
 
     def test_return_targets_unknown_masks_terminal_and_reliability_gradient(self):
-        from search_feedback import window_targets, FullSearchOutcomeHead
+        from apm.legacy.feedback import window_targets, FullSearchOutcomeHead
         cfg = self.cfg(search_b_enabled=False)
         raw = SearchFeedbackLearningTests().dataset()
         data = {k:torch.tensor(v) for k,v in raw.items()}
@@ -1611,7 +1920,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertTrue((projected[:,1] <= cfg.search_c_discovery_weight).all())
 
     def test_terminal_differs_from_truncation(self):
-        from search_c import build_transitions
+        from apm.legacy.control import build_transitions
         data = SearchFeedbackLearningTests().dataset()
         data["is_last"][0,8] = 1
         cfg = self.cfg()
@@ -1622,7 +1931,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertEqual(rec[-1]["discount"],0)
 
     def test_actor_bonus_alignment_masks_long_jumps_and_excludes_task_reward(self):
-        from search_feedback import actor_search_bonus, FullSearchOutcomeHead
+        from apm.legacy.feedback import actor_search_bonus, FullSearchOutcomeHead
         cfg = self.cfg(search_b_enabled=False, search_c_step_cost=0., search_c_reverse_cost=0.)
         head = FullSearchOutcomeHead(16,8,32,version=5,feedback_config=cfg)
         head.prefix_counts.fill_(100)
@@ -1645,7 +1954,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertGreater(float(bonus[1].sum()),0)
 
     def test_branch_comparison_rejects_same_seed_different_scene(self):
-        from search_branches import compare_branch_scenes
+        from apm.legacy.branches import compare_branch_scenes
         base=dict(world_seed=1,mission_seed=1,java_launch_seed=1,terrain_sha256="x",rays_sha256="r",
             inventory={},life_stats={},policy_observation_keys=["image"],
             image_sha256="i",heatmap_sha256="h",
@@ -1666,7 +1975,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertFalse(compare_branch_scenes(base,different,prefix,prefix)["match"])
 
     def test_real_branch_budget_replay_and_training_with_native_heatmap_shape(self):
-        from search_branches import collect_real_branches
+        from apm.legacy.branches import collect_real_branches
         from expr import make_dataset
         from unittest import mock
         import tempfile
@@ -1693,8 +2002,8 @@ class FullPlanTests(unittest.TestCase):
             cfg.steps=initial_step+10;cfg.search_branch_count=2;cfg.search_branch_prefix=2
             replay=OrderedDict()
             logger=SimpleNamespace(step=initial_step,scalar=lambda *a:None,write=lambda:None)
-            with mock.patch("search_branches.make_branch_env",side_effect=lambda *a:(Env(),None)), mock.patch(
-                    "search_branches.scene_record",return_value=scene):
+            with mock.patch("apm.legacy.branches.make_branch_env",side_effect=lambda *a:(Env(),None)), mock.patch(
+                    "apm.legacy.branches.scene_record",return_value=scene):
                 used=collect_real_branches(agent,cfg,replay,logger,1)
             self.assertEqual(used,10)
             self.assertEqual(agent._step,cfg.steps)
@@ -1907,7 +2216,7 @@ def audit_real_branches(argv):
     from collections import OrderedDict
     from datetime import datetime
     from expr import LS_Imagine, make_dataset
-    from search_branches import collect_real_branches
+    from apm.legacy.branches import collect_real_branches
     parser=argparse.ArgumentParser()
     parser.add_argument("--checkpoint",type=pathlib.Path,required=True)
     parser.add_argument("--output",type=pathlib.Path,required=True)

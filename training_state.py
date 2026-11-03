@@ -136,12 +136,12 @@ def _completed_branches(source_runs):
 
 
 def _validate_search_versions(checkpoint, values):
-    from search_vnext import check_vnext_checkpoint
+    from apm.outcome import check_vnext_checkpoint
     enabled = values.get("search_vnext_enabled", False) if isinstance(values, dict) else getattr(values, "search_vnext_enabled", False)
     check_vnext_checkpoint(checkpoint, enabled)
-    from search_a import check_checkpoint
-    from search_memory import check_b_checkpoint
-    from search_c import check_c_checkpoint
+    from apm.legacy.observation import check_checkpoint
+    from apm.legacy.memory import check_b_checkpoint
+    from apm.legacy.control import check_c_checkpoint
     get = values.get if isinstance(values, dict) else lambda key, default=None: getattr(values, key, default)
     enabled_a, enabled_b, enabled_c = (bool(get("search_" + item + "_enabled", False)) for item in ("a", "b", "c"))
     check_checkpoint(checkpoint, enabled_a, get("search_a_model_version", 2))
@@ -194,6 +194,8 @@ def prepare_resume(config):
             restored[key] = value
         elif key not in restored:
             restored[key] = value
+    if saved.get("search_vnext_enabled") and "vnext_spatial_enabled" not in saved:
+        restored["vnext_spatial_enabled"] = False
     for key, metadata in (("search_a_model_version", "search_a_version"),
                           ("search_b_model_version", "search_b_version"),
                           ("search_c_model_version", "search_c_version"),
@@ -423,9 +425,13 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
     payload = dict(agent_state_dict=agent.state_dict(),
         optims_state_dict=tools.recursively_collect_optim_state_dict(agent),
         step=int(agent._step), config=_config_dict(config),
-        search_vnext_version=1 if getattr(config, "search_vnext_enabled", False) else None,
+        search_vnext_version=((2 if getattr(config,"vnext_spatial_enabled",False) else 1)
+                              if getattr(config,"search_vnext_enabled",False) else None),
         actuator_version=1 if getattr(config, "search_vnext_enabled", False) else None,
-        vnext_memory_version=1 if getattr(config, "search_vnext_enabled", False) else None,
+        vnext_memory_version=((2 if getattr(config,"vnext_spatial_enabled",False) else 1)
+                              if getattr(config,"search_vnext_enabled",False) else None),
+        pose_version=1 if getattr(config,"vnext_spatial_enabled",False) else None,
+        spatial_map_version=2 if getattr(config,"vnext_spatial_enabled",False) else None,
         vnext_rng_state=(agent._vnext_control.rng_state()
                          if getattr(agent, "_vnext_control", None) is not None else None),
         search_a_version=config.search_a_model_version if config.search_a_enabled else None,
@@ -441,7 +447,8 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
         search_c_rng_state=c.rng_state() if c is not None else None,
         eval_protocol_version=(7 if getattr(config, "search_vnext_enabled", False) else
                                6 if getattr(config, "search_eval_evidence", False) else 5),
-        search_candidate_version=(1 if getattr(config, "search_vnext_enabled", False)
+        search_candidate_version=((2 if getattr(config,"vnext_spatial_enabled",False) else 1)
+                                  if getattr(config, "search_vnext_enabled", False)
                                   else config.search_a_control_version),
         runtime_state=runtime, rng_state=_rng_state(), training_state_version=SCHEMA_VERSION,
         next_branch_step=int(next_branch_step),

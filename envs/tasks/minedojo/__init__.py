@@ -1,6 +1,6 @@
 from typing import Dict
 import copy
-from search_evidence import SearchEvidenceWrapper, lidar_rays
+from apm.evidence import SearchEvidenceWrapper, SpatialEvidenceWrapper, lidar_rays
 from omegaconf import OmegaConf
 from minedojo.tasks import MetaTaskBase, _meta_task_make, _parse_inventory_dict, ALL_TASKS_SPECS
 from minedojo.sim import MineDojoSim
@@ -58,6 +58,7 @@ def _add_wrappers(
     fast_reset: int = None,
     log_dir: str = None,
     search_evidence_specs: Dict = None,
+    spatial_specs: Dict = None,
     freeze_equipped: bool = True,
     **kwargs
 ):
@@ -87,6 +88,8 @@ def _add_wrappers(
         env = ConcentrationWrapper(env, concentration_reward, **concentration_specs)
 
     env = SearchEvidenceWrapper(env, **(search_evidence_specs or {}))
+    if spatial_specs is not None:
+        env = SpatialEvidenceWrapper(env, **spatial_specs)
     env = MinedojoLSImagineWrapper(env, **LS_Imagine_specs)
 
     # If we don't care about start position, use fast reset to speed training and prevent memory leaks
@@ -106,6 +109,8 @@ def _add_wrappers(
 
 
 def make_minedojo(task_id: str, task_specs, sim_specs):
+    from envs.runtime import configure_minedojo_runtime
+    configure_minedojo_runtime(bool(task_specs.get("minedojo_gradle_offline",False)))
     # Get minedojo specs
     meta_task_cls, minedojo_specs = _get_minedojo_specs(task_id, task_specs, sim_specs)
     

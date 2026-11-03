@@ -1,0 +1,349 @@
+"""Real plotting plus bounded scheduling/causal-frame visualization regressions."""
+import copy
+import contextlib
+import io
+import json
+from pathlib import Path
+import random
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+import numpy as np
+from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from apm.visualization import SearchVisualizer
+from evaluate_checkpoints import (create_search_visualizer, record_search_visual_decision,
+                                  finish_search_visual_episode, worker_runtime_args,
+                                  reference_specification, validate_reference)
+
+
+def fixture(index=0, predicted=True):
+    image = np.full((64, 64, 3), index, np.uint8)
+    obs = dict(image=image, heatmap=np.full((64, 64), 80, np.uint8), is_first=index == 0)
+    prediction = np.zeros((12, 12), np.float32)
+    if predicted:
+        prediction[:, :7] = np.linspace(.05, .65, 7)
+        prediction[:, 9] = 3/8
+    context = np.zeros(24, np.float32); context[11] = .75 if index > 0 else .2
+    output = dict(log_spatial_version=np.float32(2),
+                  log_spatial_summary=np.r_[1., np.zeros(11)].astype(np.float32),
+                  log_spatial_patch=np.zeros((21, 21, 6), np.uint8),
+                  log_spatial_pose=np.array([index*.2, index*.1, index*.05, .1]),
+                  log_vnext_context=context, log_vnext_decision=1.,
+                  log_vnext_choice=index % 4, log_vnext_actor_action=6.,
+                  log_vnext_source=1., log_vnext_override=float(index % 4 != 0),
+                  log_vnext_phase=index % 4,
+                  log_vnext_mask=np.ones(12), log_vnext_prediction=prediction,
+                  log_vnext_q=np.linspace(.1, .8, 12) if predicted else np.zeros(12),
+                  log_vnext_a_score=np.linspace(-.2, .4, 12))
+    return obs, output
+
+
+def completed(viz, mode, env_id, end, length=5, predicted=True, **kwargs):
+    for i in range(length):
+        obs, output = fixture(i, predicted)
+        viz.observe(mode, env_id, obs, output, end-length+i)
+        viz.feedback(mode, env_id, float(i == length-1), dict(success=i == length-1))
+    episode = dict(reward=np.array([0.]*(length)+[1.]), success=np.array([False]*length+[True]),
+                   search_visible=np.array([0.]*(length-1)+[1., 1.]),
+                   search_visible_valid=np.ones(length+1))
+    grid = np.zeros((9, 9, 6), np.float32)
+    grid[4, 4, :2] = [1, 1]; grid[4, 5, 2] = .8
+    state = dict(grid=grid, pose=[length*.2, length*.1, length*.05, .1], origin=[-4., -4.],
+                 resolution=1., predicted=True, tracking_ready=True)
+    return viz.episode_end(mode, env_id, episode, end, map_state=state, **kwargs)
+
+
+class VisualizationTests(unittest.TestCase):
+    def test_reference_runtime_offline_flag_does_not_relax_seed_or_world_checks(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = dict(seed=1, runs=1, episodes=3, fps=20)
+            (root/"manifest.json").write_text(json.dumps(protocol))
+            folder = root/"harvest_sand"/"run_00"; folder.mkdir(parents=True)
+            config = dict(seed=1, minedojo_gradle_offline=False)
+            task = dict(LS_Imagine_specs={})
+            sim = dict(world_seed="42", start_time=6000, allow_time_passage=False)
+            (folder/"settings.json").write_text(json.dumps(dict(config=config, task_specs=task, sim_specs=sim)))
+            args = SimpleNamespace(**protocol, reference_output=root, worker_episode=None,
+                                   heatmap_mode="unet", a_control="checkpoint", c_control="checkpoint")
+            changed = dict(config, minedojo_gradle_offline=True)
+            result = validate_reference(args, "harvest_sand", 0, changed,
+                                        dict(task, minedojo_gradle_offline=True), sim)
+            self.assertTrue(result["common_config_matches"])
+            self.assertTrue(result["audit_only_differences"]["candidate"]["task"]["minedojo_gradle_offline"])
+            with self.assertRaisesRegex(ValueError, "seed"):
+                validate_reference(args, "harvest_sand", 0, dict(changed, seed=2), task, sim)
+            with self.assertRaisesRegex(ValueError, "sim_specs"):
+                validate_reference(args, "harvest_sand", 0, changed, task, dict(sim, world_seed="43"))
+
+    def test_standalone_eval_offline_launch_is_runtime_only(self):
+        from types import SimpleNamespace
+        self.assertEqual(worker_runtime_args(SimpleNamespace()), [])
+        self.assertEqual(worker_runtime_args(SimpleNamespace(minedojo_gradle_offline=True)),
+                         ["--minedojo-gradle-offline"])
+        task = dict(LS_Imagine_specs={}, minedojo_gradle_offline=True)
+        before = copy.deepcopy(task)
+        base = reference_specification(dict(LS_Imagine_specs={}), {})
+        offline = reference_specification(task, {})
+        self.assertEqual(base[:2], offline[:2])
+        self.assertTrue(offline[2]["task"]["minedojo_gradle_offline"])
+        self.assertEqual(task, before)
+
+    def test_standalone_eval_factory_respects_saved_flags_and_root(self):
+        flags = dict(search_vnext_enabled=True, vnext_spatial_enabled=True,
+                     vnext_visual_enabled=True, vnext_visual_root="")
+        with mock.patch("apm.visualization.SearchVisualizer") as constructor:
+            self.assertIsNone(create_search_visualizer({}, "unused"))
+            self.assertIsNone(create_search_visualizer(dict(flags, vnext_spatial_enabled=False), "unused"))
+            self.assertIsNone(create_search_visualizer(dict(flags, vnext_visual_enabled=False), "unused"))
+            constructor.assert_not_called()
+            self.assertIs(create_search_visualizer(flags, Path("run")), constructor.return_value)
+            self.assertEqual(constructor.call_args.args[0], Path("run"))
+            custom = dict(flags, vnext_visual_root="custom-visual-root")
+            create_search_visualizer(custom, "ignored")
+            self.assertEqual(constructor.call_args.args[0], Path("custom-visual-root"))
+
+    def test_standalone_eval_taps_pre_action_native_frame_without_input_mutation(self):
+        visualizer = mock.Mock()
+        obs = dict(image=np.zeros((64, 64, 3), np.uint8), heatmap=np.zeros((64, 64), np.uint8), is_first=True)
+        old = copy.deepcopy(obs)
+        rgb = np.full((160, 256, 3), 55, np.uint8)
+        heatmap = np.ones((160, 256, 1), np.float32)
+        result = dict(action=np.eye(12)[[0]], log_spatial_pose=np.array([[0., 0., .1, .2]]))
+        record_search_visual_decision(visualizer, "ep", obs, result, 100, rgb, heatmap)
+        args = visualizer.observe.call_args.args
+        self.assertEqual(args[:2], ("eval", "ep"))
+        self.assertIs(args[2]["image"], rgb)
+        self.assertIs(args[2]["heatmap"], heatmap)
+        np.testing.assert_array_equal(args[3]["log_spatial_pose"], result["log_spatial_pose"][0])
+        for key in obs: np.testing.assert_array_equal(obs[key], old[key])
+        record_search_visual_decision(None, "no-op", None, None, 100)
+
+    def test_standalone_eval_terminal_map_only_for_last_rollout(self):
+        visualizer, agent = mock.Mock(), mock.Mock()
+        state, terminal, episode = object(), dict(image="terminal"), dict(reward=[0, 1])
+        for index in (1, 2):
+            finish_search_visual_episode(visualizer, agent, state, terminal,
+                                           "ep", episode, 100, index, 3)
+            self.assertIsNone(visualizer.episode_end.call_args.kwargs["map_state"])
+        agent.visualization_map.assert_not_called()
+        finish_search_visual_episode(visualizer, agent, state, terminal, "ep", episode, 100, 3, 3)
+        agent.visualization_map.assert_called_once_with(state, 0, terminal)
+        self.assertIs(visualizer.episode_end.call_args.kwargs["map_state"], agent.visualization_map.return_value)
+        visualizer.episode_end.side_effect = OSError("plot error")
+        with self.assertRaisesRegex(OSError, "plot error"):
+            finish_search_visual_episode(visualizer, agent, state, terminal, "ep", episode, 100, 3, 3)
+
+    def test_eval_only_last_and_real_complete_png_suite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="minedojo_harvest_sand", vnext_visual_every=10,
+                                                     vnext_visual_strict=True))
+            for index in (1, 2):
+                self.assertIsNone(completed(viz, "eval", "eval_%d" % index, 100,
+                                            eval_index=index, eval_total=3))
+            self.assertFalse(viz.root.exists())
+            path = completed(viz, "eval", "eval_3", 100, eval_index=3, eval_total=3)
+            files = {p.name for p in path.iterdir()}
+            self.assertTrue({"B_map.png", "C1_timeline.png", "summary.json", "episode_trace.npz"} <= files)
+            self.assertLessEqual(len(list(path.glob("A1_*.png"))), 3)
+            self.assertLessEqual(len(list(path.glob("A2_*.png"))), 2)
+            self.assertLessEqual(len(list(path.glob("C2_*.png"))), 2)
+            for png in path.glob("*.png"):
+                with Image.open(png) as im:
+                    im.verify()
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertEqual(summary["episode_id"], "eval_3")
+            self.assertTrue(summary["success"])
+            np.testing.assert_allclose(summary["estimated_terminal_pose"], [1., .5, .25, .1])
+            self.assertEqual(summary["first_target_step"], 4)
+            self.assertEqual(summary["localized_fraction"], 1.)
+            self.assertEqual(summary["unlocalized_steps"], 0)
+            self.assertTrue(summary["trajectory_length_valid"])
+            self.assertIn("viewpoints", summary["target_map_semantics"])
+            self.assertTrue(all("predictions only" in s["unexecuted_candidates"]
+                                for s in summary["selected_keyframes_for_A"]))
+            viz.close()
+
+    def test_train_threshold_uses_latest_completed_before_threshold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            with mock.patch.object(viz, "_render"):
+                completed(viz, "train", "earlier", 5, length=2)
+                completed(viz, "train", "last_before_ten", 9, length=2)
+                # Its observe at step 10 crosses the threshold while still open.
+                completed(viz, "train", "future_completion", 15, length=6)
+            paths = list(viz.root.glob("train/step_000000010/episode_last/summary.json"))
+            self.assertEqual(len(paths), 1)
+            saved = json.loads(paths[0].read_text())
+            self.assertEqual(saved["episode_id"], "last_before_ten")
+            self.assertEqual(saved["episode_completed_at_training_step"], 9)
+            self.assertEqual(saved["export_training_step"], 10)
+
+    def test_exact_threshold_completion_and_resume_no_backfill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            viz.set_step(30)
+            with mock.patch.object(viz, "_render"):
+                completed(viz, "train", "at_forty", 40, length=2)
+            self.assertEqual(viz.stats["exports"], 1)
+            self.assertEqual(len(list(viz.root.glob("train/*/episode_last/summary.json"))), 1)
+            self.assertEqual(viz.stats["skipped_no_episode"], 0)
+
+    def test_reused_complete_episode_at_later_threshold_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            with mock.patch.object(viz, "_render"):
+                completed(viz, "train", "last_complete", 9, length=2)
+                first = viz.maybe_export_train(10)
+                second = viz.maybe_export_train(20)
+            a = json.loads((first/"summary.json").read_text())
+            b = json.loads((second/"summary.json").read_text())
+            self.assertFalse(a["repeated_complete_episode"])
+            self.assertTrue(b["repeated_complete_episode"])
+            self.assertEqual(b["episode_age_at_export_steps"], 11)
+            self.assertEqual(a["episode_id"], b["episode_id"])
+
+    def test_prefill_and_uncomputed_candidates_never_fabricated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            obs, output = fixture()
+            output.pop("log_spatial_version")
+            viz.observe("train", "random", obs, output, 0)
+            self.assertFalse(viz._active)
+            with mock.patch.object(viz, "_render_outcomes") as outcomes:
+                path = completed(viz, "eval", "no_prediction", 10, length=2,
+                                 predicted=False, eval_index=1, eval_total=1)
+                outcomes.assert_not_called()
+            self.assertFalse(list(path.glob("A*.png")))
+            saved = json.loads((path/"summary.json").read_text())
+            self.assertEqual(saved["selected_keyframes_for_A"], [])
+            self.assertIn("No eligible", saved["candidate_prediction_note"])
+            self.assertIsNone(saved["selected_keyframes_for_C"][0]["c_value"])
+
+    def test_mid_episode_prefill_prefix_waits_for_real_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            for i in range(5):
+                obs, output = fixture(i+1)  # Learner first sees an ongoing episode.
+                viz.observe("train", "prefill_tail", obs, output, i+5)
+                viz.feedback("train", "prefill_tail", 0., {})
+            self.assertFalse(viz._active)
+            self.assertEqual(viz.stats["skipped_partial_prefix"], 1)
+            self.assertEqual(len(viz._partial_prefixes), 1)
+            result = viz.episode_end("train", "prefill_tail", dict(reward=np.zeros(6)), 10)
+            self.assertIsNone(result)
+            self.assertFalse(viz._partial_prefixes)
+            self.assertIsNone(viz._latest_train)
+            self.assertFalse(list(viz.root.glob("**/summary.json")))
+            # A subsequent real reset may start a complete episode, even if an
+            # environment happens to reuse its identifier.
+            with mock.patch.object(viz, "_render"):
+                result = completed(viz, "train", "prefill_tail", 20, length=3)
+            self.assertIsNotNone(result)
+            summary = json.loads((result/"summary.json").read_text())
+            self.assertEqual(summary["total_steps"], 3)
+            self.assertEqual(summary["episode_completed_at_training_step"], 20)
+            self.assertEqual(viz.stats["skipped_partial_prefix"], 1)
+
+    def test_buffers_are_bounded_and_inputs_not_mutated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_max_steps=8))
+            for i in range(100):
+                obs, output = fixture(i)
+                before = copy.deepcopy((obs, output))
+                viz.observe("eval", "long", obs, output, 100)
+                for d, expected in zip((obs, output), before):
+                    for key in d:
+                        np.testing.assert_array_equal(d[key], expected[key])
+                viz.feedback("eval", "long", 0., {})
+            ep = viz._active[("eval", "long")]
+            self.assertEqual(len(ep.rows), 8)
+            self.assertEqual(ep.omitted_rows, 92)
+            self.assertLessEqual(len(ep.a), 3); self.assertLessEqual(len(ep.c), 2)
+            self.assertNotIn("image", ep.rows[0])
+            viz.close()
+            self.assertFalse(viz._active)
+            with self.assertRaises(RuntimeError): viz.observe("eval", "x", *fixture(), 100)
+
+    def test_unlocalized_map_never_claims_actual_static_trajectory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_max_steps=3))
+            for i in range(5):
+                obs, output = fixture(i)
+                output["log_spatial_summary"][0] = 0.
+                output["log_spatial_pose"][:2] = 0.
+                viz.observe("eval", "unlocalized", obs, output, 100)
+                viz.feedback("eval", "unlocalized", 0., {})
+            state = dict(grid=np.zeros((9, 9, 6)), pose=[0., 0., .5, 10.],
+                         origin=[-4., -4.], resolution=1., tracking_ready=False)
+            with mock.patch.object(viz, "_render"):
+                path = viz.episode_end("eval", "unlocalized", dict(reward=np.zeros(6)), 100,
+                                       eval_index=1, eval_total=1, map_state=state)
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertEqual(summary["localized_fraction"], 0.)
+            self.assertEqual(summary["unlocalized_steps"], 5)
+            self.assertFalse(summary["terminal_tracking_ready"])
+            self.assertFalse(summary["trajectory_length_valid"])
+            self.assertIsNone(summary["estimated_trajectory_length"])
+            self.assertEqual(summary["integrated_path_length"], 0.)
+            self.assertIn("does not imply actual stillness", summary["localization_note"])
+            with np.load(path/"episode_trace.npz") as data:
+                self.assertFalse(data["pose_ready"].any())
+
+    def test_full_episode_ledger_outside_rolling_window_is_retained_and_rendered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="synthetic_sparse_map_test"))
+            for i in range(2):
+                obs, output = fixture(i)
+                viz.observe("eval", "sparse", obs, output, 100)
+            values = np.zeros((2, 6)); values[:, 0] = [2, 3]; values[:, 1] = [1, 12]; values[:, 3] = [1, 2]
+            state = dict(grid=np.zeros((9, 9, 6)), pose=[.4, .2, .1, .1], origin=[-4, -4], resolution=1.,
+                         tracking_ready=True, ledger=dict(cells=np.array([[0, 0], [100000, 0]]),
+                         values=values, directions=np.ones((2, 12))), ledger_capacity=1024)
+            with mock.patch.object(viz, "_render_timeline"), mock.patch.object(viz, "_render_decision"), mock.patch.object(viz, "_render_outcomes"):
+                path = viz.episode_end("eval", "sparse", dict(reward=[0, 0, 0]), 100,
+                                       eval_index=1, eval_total=1, map_state=state)
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertTrue(summary["full_episode_ledger_available"])
+            self.assertEqual(summary["estimated_visited_cells"], 2)
+            self.assertEqual(summary["number_of_revisits"], 3.)
+            with Image.open(path/"B_map.png") as im:
+                self.assertLess(im.width, 3000)
+            with np.load(path/"episode_trace.npz") as data:
+                self.assertEqual(data["ledger_cells"].shape, (2, 2))
+                self.assertEqual(data["map_grid"].shape, (9, 9, 6))
+
+    def test_export_error_explicit_and_no_partial_success_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_strict=False))
+            error_output = io.StringIO()
+            with contextlib.redirect_stderr(error_output), mock.patch.object(viz, "_render", side_effect=OSError("disk test")):
+                path = completed(viz, "eval", "failure", 100, eval_index=1, eval_total=1)
+            self.assertIsNone(path); self.assertEqual(viz.stats["errors"], 1)
+            self.assertIn("disk test", viz.last_error)
+            self.assertIn("export failed", error_output.getvalue())
+            self.assertFalse(list(viz.root.glob("**/summary.json")))
+            self.assertFalse(list(viz.root.glob("**/.render-*")))
+            viz.close(); viz.close()
+
+    def test_rendering_preserves_python_numpy_and_torch_rng(self):
+        import torch
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_strict=True))
+            random.seed(119); np.random.seed(119); torch.manual_seed(119)
+            before = random.getstate(), np.random.get_state(), torch.get_rng_state().clone()
+            completed(viz, "eval", "rng", 100, length=2, eval_index=1, eval_total=1)
+            self.assertEqual(random.getstate(), before[0])
+            after = np.random.get_state()
+            self.assertEqual(after[0], before[1][0]); np.testing.assert_array_equal(after[1], before[1][1])
+            self.assertEqual(after[2:], before[1][2:])
+            self.assertTrue(torch.equal(torch.get_rng_state(), before[2]))
+
+
+if __name__ == "__main__":
+    unittest.main()

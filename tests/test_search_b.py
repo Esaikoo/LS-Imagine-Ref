@@ -10,10 +10,10 @@ import torch
 from torch.nn import functional as F
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from test_search_a import config_for_test, make_agent, replay_batch, fake_rays
-from search_memory import (SearchMemory, B_VERSION, DESC_DIM, describe_numpy, describe_torch,
+from apm.legacy.memory import (SearchMemory, B_VERSION, DESC_DIM, describe_numpy, describe_torch,
                            _prefix_state, sample_episodes_with_history, check_b_checkpoint)
-from search_a import SearchOutcomeHead, actor_action_sequence
-from search_evidence import SearchEvidence, complete_episode_labels
+from apm.legacy.observation import SearchOutcomeHead, actor_action_sequence
+from apm.evidence import SearchEvidence, complete_episode_labels
 import tools
 torch.set_num_threads(2)
 
@@ -185,7 +185,7 @@ class MemoryTests(unittest.TestCase):
         model.train_sequence(scene,data)
 
     def test_prefix_is_future_blind_and_matches_entire_past(self):
-        from search_memory import make_prefix
+        from apm.legacy.memory import make_prefix
         raw=replay_batch(180)
         ep={k:v[0] for k,v in raw.items()}
         # A stable old landmark followed by a clearly different scene.

@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 bash scripts/test_a.sh
 python tests/test_search_b.py
-python -m py_compile search_a.py search_memory.py expr.py models.py tools.py test.py
+python -m py_compile apm/legacy/observation.py apm/legacy/memory.py expr.py models.py tools.py test.py
 bash -n scripts/test_b.sh
 sh -n scripts/train.sh
 echo '[B] Unit tests and syntax: PASS'

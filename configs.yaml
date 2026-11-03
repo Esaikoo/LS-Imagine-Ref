@@ -10,6 +10,48 @@ defaults:
   offline_evaldir: ''
   resume_from: ''
   search_vnext_enabled: False
+  vnext_spatial_enabled: False
+  vnext_pose_supervision: True
+  vnext_map_size: 65
+  vnext_map_resolution: 1.5
+  vnext_map_patch: 21
+  vnext_map_view_radius: 2
+  vnext_map_target_decay: 0.999
+  vnext_pose_hidden: 128
+  vnext_pose_min_samples: 256
+  vnext_pose_min_calibration: 32
+  vnext_pose_min_moving: 8
+  vnext_pose_calibration_ratio: 0.8
+  vnext_pose_cache_size: 4096
+  vnext_pose_ready_error: 0.25
+  vnext_pose_max_sigma: 1.0
+  vnext_pose_loss_weight: 1.0
+  vnext_score_cost: 0.01
+  vnext_score_uncertainty: 0.2
+  vnext_visual_enabled: False
+  vnext_visual_every: 10000
+  vnext_visual_audit: True
+  vnext_visual_root: ''
+  check_obs_enabled: True
+  vnext_c_discount: 0.97
+  vnext_c_min_option_trials: 16
+  vnext_c_min_updates: 128
+  vnext_search_value_clip: 3.0
+  vnext_search_value_weight: 0.25
+  vnext_a_score_weight: 0.1
+  vnext_reward_new: 0.05
+  vnext_reward_view: 0.01
+  vnext_reward_target: 0.5
+  vnext_reward_revisit: 0.025
+  vnext_reward_cost: 0.002
+  vnext_reward_progress: 0.25
+  vnext_motion_confidence: 0.4
+  vnext_motion_threshold: 0.03
+  vnext_clearance_enabled: True
+  vnext_clearance_attempts: 2
+  vnext_visual_strict: True
+  vnext_visual_max_steps: 4096
+  vnext_visual_max_active: 8
   vnext_profile_every: 32
   # Task-isolated vNext defaults.
   vnext_memory_enabled: True
@@ -60,6 +102,8 @@ defaults:
   vnext_c_margin: 0.01
   vnext_c_tie_margin: 0.02
   minedojo_reset_retries: 2
+  minedojo_gradle_offline: False
+  vnext_map_ledger_capacity: 2048
   seed: 0
   deterministic_run: False
   steps: 1e6
@@ -440,6 +484,9 @@ apm_full:
 apm_vnext:
   compile: False
   search_vnext_enabled: True
+  vnext_spatial_enabled: True
+  vnext_visual_enabled: True
+  check_obs_enabled: False
   search_a_enabled: False
   search_b_enabled: False
   search_c_enabled: False

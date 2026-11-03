@@ -12,9 +12,9 @@ import gym
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from search_actuator import (initial_state, apply_command, apply_command_torch,
+from apm.actuator import (initial_state, apply_command, apply_command_torch,
     rollout_commands, candidate_mask, CONTROL_KEYS, world_group_id)
-from search_evidence import SearchEvidence, SearchEvidenceWrapper, empty_labels, VNEXT_LABEL_KEYS
+from apm.evidence import SearchEvidence, SearchEvidenceWrapper, empty_labels, VNEXT_LABEL_KEYS
 
 
 def load_wrapper():

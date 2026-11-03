@@ -220,7 +220,7 @@ def native_recovery_audit(argv):
     from expr import make_env
     import tools
     from envs.recovery import _environment_chain, _owned_simulator
-    from search_evidence import SEARCH_LABEL_KEYS
+    from apm.evidence import SEARCH_LABEL_KEYS
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=pathlib.Path, required=True)

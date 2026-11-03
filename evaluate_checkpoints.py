@@ -25,6 +25,49 @@ TASKS = {
 }
 
 
+def create_search_visualizer(config, root):
+    """Old checkpoints incur no collector/import cost; honor saved spatial flags."""
+    get = config.get if isinstance(config, dict) else lambda k, d=None: getattr(config, k, d)
+    if not all(bool(get(key, False)) for key in
+               ('search_vnext_enabled', 'vnext_spatial_enabled', 'vnext_visual_enabled')):
+        return None
+    from apm.visualization import SearchVisualizer
+    custom_root = get('vnext_visual_root', '')
+    return SearchVisualizer(Path(custom_root).expanduser() if custom_root else root, config)
+
+
+def worker_runtime_args(args):
+    """Launch-only settings, deliberately independent of the trained weights."""
+    return ['--minedojo-gradle-offline'] if getattr(args, 'minedojo_gradle_offline', False) else []
+
+
+def record_search_visual_decision(visualizer, episode_id, obs, result, training_step,
+                                  rgb=None, heatmap=None):
+    """Tap the actual pre-action observation; never modify the policy inputs."""
+    if visualizer is None:
+        return
+    visual_obs = dict(obs)
+    if rgb is not None:
+        visual_obs['image'] = rgb
+    if heatmap is not None:
+        visual_obs['heatmap'] = heatmap
+    visualizer.observe('eval', episode_id, visual_obs,
+                       {k: value[0] for k, value in result.items()}, training_step)
+
+
+def finish_search_visual_episode(visualizer, agent, state, terminal_obs, episode_id,
+                                  episode, training_step, episode_index, episode_total):
+    if visualizer is None:
+        return
+    # Full-map copying / final pose inference is needed only for the saved last
+    # episode, not every rollout in a multi-process fixed-map evaluation.
+    map_state = (agent.visualization_map(state, 0, terminal_obs)
+                 if episode_index == episode_total else None)
+    return visualizer.episode_end('eval', episode_id, episode, training_step,
+                                  eval_index=episode_index, eval_total=episode_total,
+                                  map_state=map_state)
+
+
 class Mp4Writer:
     """Stream native RGB directly to the bundled FFmpeg (imageio versions vary)."""
     def __init__(self, path, fps, executable):
@@ -141,6 +184,37 @@ def merge(base, update):
             base[key] = copy.deepcopy(value)
 
 
+
+def write_csv_report(path, fields, records):
+    """Atomically publish a derived CSV, preserving locked reports as snapshots."""
+    import tempfile
+    path = Path(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='',
+                prefix='.' + path.name + '.', suffix='.tmp', dir=path.parent,
+                delete=False) as stream:
+            temporary = Path(stream.name)
+            writer = csv.DictWriter(stream, fields, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(records)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            temporary.replace(path)
+            return dict(requested=path.name, current=path.name, locked=False)
+        except PermissionError:
+            # Never truncate or delete the file another Windows application is reading.
+            snapshot = path.with_name(path.stem + '.snapshot_' + str(time.time_ns()) + path.suffix)
+            temporary.replace(snapshot)
+            print('[report] CSV is locked; saved current report to ' + str(snapshot),
+                  file=sys.stderr, flush=True)
+            return dict(requested=path.name, current=snapshot.name, locked=True)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
 def summarize(output, manifest):
     records = []
     for path in sorted(output.glob('*/run_*/episodes/episode_*.json')):
@@ -148,10 +222,6 @@ def summarize(output, manifest):
     fields = ['task', 'run', 'episode', 'seed', 'status', 'success', 'steps',
               'return', 'first_success_step', 'termination', 'wall_seconds', 'video', 'trace', 'heatmaps', 'heatmap_mode',
               'search_actions', 'search_decisions', 'search_rate', 'reference_start_match']
-    with (output / 'episodes.csv').open('w', newline='') as stream:
-        writer = csv.DictWriter(stream, fields, extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(records)
     tasks = {}
     for task in manifest['tasks']:
         runs = []
@@ -171,12 +241,16 @@ def summarize(output, manifest):
                            full_run_mean=statistics.mean(rates) if rates else None,
                            full_run_std=statistics.stdev(rates) if len(rates) > 1 else None, runs=runs)
     write_json(output / 'summary.json', tasks)
-    with (output / 'summary.csv').open('w', newline='') as stream:
-        writer = csv.DictWriter(stream, ['task', 'expected', 'completed', 'successes', 'success_rate',
-                                         'complete', 'full_run_mean', 'full_run_std'])
-        writer.writeheader()
-        for task, result in tasks.items():
-            writer.writerow(dict(task=task, **{k:v for k,v in result.items() if k != 'runs'}))
+    # CSVs are derived reports: a Windows spreadsheet may hold their old version open.
+    # Publish JSON first so report sharing locks cannot hide saved rollout progress.
+    exports = {}
+    exports['episodes'] = write_csv_report(output / 'episodes.csv', fields, records)
+    summary_fields = ['task', 'expected', 'completed', 'successes', 'success_rate',
+                      'complete', 'full_run_mean', 'full_run_std']
+    summary_rows = [dict(task=task, **{k: v for k, v in result.items() if k != 'runs'})
+                    for task, result in tasks.items()]
+    exports['summary'] = write_csv_report(output / 'summary.csv', summary_fields, summary_rows)
+    write_json(output / 'csv_exports.json', exports)
     return tasks
 
 
@@ -184,8 +258,11 @@ def configure_search_checkpoint(config, checkpoint):
     """Restore the trained search module without changing the base evaluation."""
     state = checkpoint['agent_state_dict']
     saved = checkpoint.get('config', {})
-    from search_vnext import restore_vnext_config
+    from apm.outcome import restore_vnext_config
     restore_vnext_config(config, checkpoint)
+    if config.get("search_vnext_enabled"):
+        # Audit rays are labels/logs only, and were enabled by the saved preset.
+        config["search_eval_evidence"] = bool(saved.get("search_eval_evidence", False))
     has_a = any('.search_a.' in k for k in state)
     has_b = any('.search_b.' in k for k in state)
     has_c = any(k.startswith('_search_c.') for k in state)
@@ -199,12 +276,12 @@ def configure_search_checkpoint(config, checkpoint):
     config['search_b_model_version'] = checkpoint.get('search_b_version') or 2
     if (has_a or has_c) and 'step' not in checkpoint:
         raise ValueError('A/C checkpoint requires training step to restore warmup')
-    from search_a import check_checkpoint, restore_a_config
-    from search_memory import check_b_checkpoint
+    from apm.legacy.observation import check_checkpoint, restore_a_config
+    from apm.legacy.memory import check_b_checkpoint
     restore_a_config(config, checkpoint)
     check_checkpoint(checkpoint, has_a)
     check_b_checkpoint(checkpoint, has_b)
-    from search_c import restore_c_config
+    from apm.legacy.control import restore_c_config
     restore_c_config(config, checkpoint)
     return int(checkpoint.get('step', 0))
 
@@ -221,7 +298,7 @@ def apply_a_control_mode(config, mode):
     if config.get('search_c_enabled') and config.get('search_c_control'):
         raise ValueError('Use explicit C ablation settings for a C checkpoint; legacy A-only control override is ambiguous')
     if mode == 'repaired':
-        from search_a import apply_repaired_control
+        from apm.legacy.observation import apply_repaired_control
         apply_repaired_control(config)
         return
     if mode != 'off':
@@ -229,6 +306,48 @@ def apply_a_control_mode(config, mode):
     if not config.get('search_a_enabled'):
         raise ValueError('Disabling A control requires an A checkpoint')
     config['search_a_control'] = False
+
+
+def reference_specification(specification, simulator):
+    """Ignore only explicit audit sensors, keeping every task/physics setting."""
+    spec, sim = copy.deepcopy(specification), copy.deepcopy(simulator)
+    ignored = dict(task={}, simulator={})
+    spec.pop("log_dir", None)
+    if "minedojo_gradle_offline" in spec:
+        ignored["task"]["minedojo_gradle_offline"] = spec.pop("minedojo_gradle_offline")
+    if "search_evidence_specs" in spec:
+        ignored["task"]["search_evidence_specs"] = spec.pop("search_evidence_specs")
+    implementation = spec.get("LS_Imagine_specs", {})
+    for key in ("vnext", "vnext_world_seed"):
+        if key in implementation:
+            value = implementation.pop(key)
+            if key == "vnext_world_seed" and value is not None:
+                if str(value) != str(sim.get("world_seed")):
+                    raise ValueError("vNext world group does not match the evaluated world seed")
+            ignored["task"]["LS_Imagine_specs." + key] = value
+    for key in ("use_lidar", "lidar_rays"):
+        if key in sim:
+            ignored["simulator"][key] = sim.pop(key)
+    return spec, sim, ignored
+
+
+def physical_policy_keys(keys):
+    """Auxiliary supervision/log fields are stripped before learned policy inputs."""
+    return sorted(key for key in keys if not key.startswith(("search_", "log_", "vnext_")))
+
+
+def checkpoint_fingerprint(path):
+    path = Path(path).resolve(strict=True)
+    before = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError("Checkpoint changed during fingerprint: " + str(path))
+    return dict(path=str(path), bytes=after.st_size, mtime_ns=after.st_mtime_ns,
+                sha256=digest.hexdigest())
 
 
 def validate_reference(args, task, run, config, task_specs, sim_specs):
@@ -246,7 +365,8 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
     settings_file = (settings_dir / ('settings_episode_%03d.json' % args.worker_episode)
                      if args.worker_episode is not None else settings_dir / 'settings.json')
     saved = json.loads(settings_file.read_text())
-    runtime = {'logdir', 'results_dir', 'device', 'name', 'traindir', 'evaldir'}
+    runtime = {'logdir', 'results_dir', 'device', 'name', 'traindir', 'evaldir',
+               'minedojo_gradle_offline'}
     different = [key for key, value in saved['config'].items()
                  if key not in runtime and not key.startswith(('search_a_', 'search_b_', 'search_c_'))
                  and key != 'search_vnext_enabled' and not key.startswith('vnext_')
@@ -261,7 +381,7 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
         expected_path = (args.checkpoint_root / task / 'latest.pt').resolve()
         if Path(saved['checkpoint']).resolve() != expected_path:
             raise ValueError('A-off ablation must load exactly the reference checkpoint')
-        from search_a import REPAIRED_CONTROL_DEFAULTS
+        from apm.legacy.observation import REPAIRED_CONTROL_DEFAULTS
         allowed = set()
         if getattr(args, 'a_control', 'checkpoint') != 'checkpoint':
             allowed.add('search_a_control')
@@ -275,10 +395,11 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
             if key.startswith(('search_a_', 'search_b_', 'search_c_')) and key not in allowed:
                 if config.get(key) != value:
                     different.append(key)
-    clean = lambda spec: {k: v for k, v in spec.items() if k != 'log_dir'}
-    if clean(saved['task_specs']) != clean(task_specs):
+    before_task, before_sim, before_audit = reference_specification(saved['task_specs'], saved['sim_specs'])
+    after_task, after_sim, after_audit = reference_specification(task_specs, sim_specs)
+    if before_task != after_task:
         different.append('task_specs')
-    if saved['sim_specs'] != sim_specs:
+    if before_sim != after_sim:
         different.append('sim_specs')
     if different:
         raise ValueError('Reference settings differ: ' + ', '.join(different))
@@ -289,7 +410,8 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
                     for k, v in config.items() if k.startswith(("search_a_", "search_c_"))
                     and saved['config'].get(k) != v},
                 task_specs_match=True, sim_specs_match=True,
-                note='Same configured seeds and protocol; world identity checked separately from traces.')
+                audit_only_differences=dict(reference=before_audit, candidate=after_audit),
+                note='Only audit sensors/auxiliary metadata are normalized; physical world, task and actions remain checked.')
 
 
 
@@ -375,13 +497,121 @@ def compare_initial_scenes(original, candidate):
     import numpy as np
     exact = ('world_seed', 'mission_seed', 'java_launch_seed', 'terrain_sha256',
              'inventory', 'life_stats', 'policy_observation_keys')
-    checks = {key: original[key] == candidate[key] for key in exact}
+    checks = {key: original[key] == candidate[key] for key in exact if key != 'policy_observation_keys'}
+    checks['policy_observation_keys'] = (physical_policy_keys(original['policy_observation_keys'])
+                                       == physical_policy_keys(candidate['policy_observation_keys']))
     for key in ('pos', 'pitch', 'yaw'):
         checks[key] = bool(np.allclose(original['location_stats'][key],
                                       candidate['location_stats'][key], rtol=0, atol=1e-5))
     for key in ('biome_id', 'is_raining', 'sea_level'):
         checks[key] = original['location_stats'][key] == candidate['location_stats'][key]
-    return dict(match=all(checks.values()), checks=checks)
+    return dict(match=all(checks.values()), checks=checks,
+        observation_key_audit=dict(reference=original['policy_observation_keys'],
+                                   candidate=candidate['policy_observation_keys'],
+                                   normalized=physical_policy_keys(original['policy_observation_keys'])))
+
+
+def compare_initial_observations(reference_path, candidate_path):
+    """Verify reset RGB and exact image/heatmap inputs; no fuzzy visual matching."""
+    import numpy as np
+    checks, details = {}, {}
+    with np.load(reference_path, allow_pickle=False) as reference, np.load(candidate_path, allow_pickle=False) as candidate:
+        for key in ('rgb', 'image', 'heatmap'):
+            left, right = reference[key], candidate[key]
+            checks['initial_' + key] = (left.dtype == right.dtype and left.shape == right.shape
+                                        and np.array_equal(left, right))
+            same_shape = left.shape == right.shape
+            absolute = np.abs(left.astype(np.float64) - right.astype(np.float64)) if same_shape else None
+            changed = left != right if same_shape else None
+            pixels = np.any(changed, axis=-1) if same_shape and left.ndim == 3 else changed
+            details[key] = dict(reference_shape=list(left.shape), candidate_shape=list(right.shape),
+                reference_dtype=str(left.dtype), candidate_dtype=str(right.dtype),
+                reference_sha256=hashlib.sha256(left.tobytes()).hexdigest(),
+                candidate_sha256=hashlib.sha256(right.tobytes()).hexdigest(),
+                different_values=int(np.count_nonzero(changed)) if same_shape else None,
+                changed_pixel_fraction=float(pixels.mean()) if same_shape else None,
+                mean_absolute_error=float(absolute.mean()) if same_shape else None,
+                max_absolute_error=float(absolute.max()) if same_shape else None)
+    return dict(match=all(checks.values()), checks=checks, arrays=details)
+
+
+def compare_saved_initials(reference_folder, candidate_folder, stem, require_frames=False,
+                           observation_check="exact"):
+    if observation_check not in ("exact", "audit"):
+        raise ValueError("Unknown initial observation check mode")
+    original = json.loads((reference_folder / (stem + '.json')).read_text())
+    candidate = json.loads((candidate_folder / (stem + '.json')).read_text())
+    result = compare_initial_scenes(original, candidate)
+    result["matching_initial_world"] = result["match"]
+    result["matching_initial_pixels"] = None
+    result["initial_observation_check"] = observation_check if require_frames else "legacy_geometry"
+    if require_frames:
+        frames = compare_initial_observations(reference_folder / (stem + '.npz'),
+                                              candidate_folder / (stem + '.npz'))
+        result["matching_initial_pixels"] = frames["match"]
+        result["initial_observation_checks"] = frames["checks"]
+        result["initial_frame_audit"] = frames["arrays"]
+        if observation_check == "exact":
+            result["checks"].update(frames["checks"])
+        # Audit mode cannot waive a single geometry/spawn/inventory discrepancy.
+        result["match"] = result["matching_initial_world"] and (
+            frames["match"] if observation_check == "exact" else True)
+    return result
+
+
+def reference_checkpoint_summary(args):
+    """Compare a new checkpoint with completed historical maps, never an ablation."""
+    task = args.tasks[0]
+    reference = args.reference_output / task / 'run_00'
+    current = args.output / task / 'run_00'
+    pairs = []
+    reference_records = []
+    for episode in range(args.episodes):
+        stem = 'episode_%03d' % episode
+        left = json.loads((reference / 'episodes' / (stem + '.json')).read_text())
+        if left['status'] != 'completed':
+            raise RuntimeError('Reference contains an unfinished rollout: ' + stem)
+        reference_records.append(left)
+        path = current / 'episodes' / (stem + '.json')
+        if not path.exists():
+            continue
+        right = json.loads(path.read_text())
+        if right['status'] != 'completed':
+            continue
+        check = compare_saved_initials(reference / 'initials', current / 'initials', stem, require_frames=True,
+                                       observation_check=getattr(args, "initial_observation_check", "exact"))
+        if not check['match']:
+            raise RuntimeError('Completed reference comparison has mismatching initial conditions: ' + stem)
+        expected = args.world_seed_start + episode
+        if left.get('world_seed') != expected or right.get('world_seed') != expected:
+            raise RuntimeError('Completed result has a different world seed')
+        pairs.append(dict(episode=episode, world_seed=expected,
+            matching_initial_world=check["matching_initial_world"],
+            matching_initial_pixels=check["matching_initial_pixels"],
+            initial_frame_audit=check["initial_frame_audit"],
+            reference_success=bool(left['success']), candidate_success=bool(right['success']),
+            reference_steps=left['steps'], candidate_steps=right['steps'],
+            candidate_control_rate=right.get('search_rate', 0)))
+    identity = json.loads((args.output / 'fixed_run_manifest.json').read_text())
+    result = dict(experiment='different_checkpoint_fixed_reference_comparison',
+        expected=args.episodes, completed=len(pairs), fresh_process_per_rollout=True,
+        same_checkpoint=False, runtime_ablation=False, checkpoints=identity['checkpoints'],
+        initial_observation_check=getattr(args, "initial_observation_check", "exact"),
+        matching_initial_world=all(p["matching_initial_world"] for p in pairs) if pairs else None,
+        matching_initial_pixels=all(p["matching_initial_pixels"] for p in pairs) if pairs else None,
+        reference_total_episodes=len(reference_records),
+        reference_total_successes=sum(bool(x['success']) for x in reference_records),
+        reference_successes=sum(x['reference_success'] for x in pairs),
+        candidate_successes=sum(x['candidate_success'] for x in pairs),
+        reference_only=sum(x['reference_success'] and not x['candidate_success'] for x in pairs),
+        candidate_only=sum(x['candidate_success'] and not x['reference_success'] for x in pairs),
+        both_success=sum(x['reference_success'] and x['candidate_success'] for x in pairs),
+        both_fail=sum(not x['reference_success'] and not x['candidate_success'] for x in pairs),
+        pairs=pairs)
+    for label in ('reference', 'candidate'):
+        result[label + '_success_rate'] = result[label + '_successes'] / len(pairs) if pairs else None
+    write_json(args.output / 'reference_comparison.json', result)
+    return result
 
 
 def paired_summary(output, task, episodes):
@@ -478,7 +708,7 @@ def paired_main(args):
             print(json.dumps(progress), flush=True)
             os.environ['MALMO_MINECRAFT_OUTPUT_LOGDIR'] = str(folder)
             with (folder/'console.log').open('a') as stream:
-                result = subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT)
+                result = subprocess.run(command+worker_runtime_args(args),stdout=stream,stderr=subprocess.STDOUT)
             if result.returncode:
                 write_json(args.output/'status.json',dict(progress,status='failed',
                     returncode=result.returncode, console=str(folder/'console.log')))
@@ -635,7 +865,7 @@ def retryable_initial_scene(folder, episode):
 
 
 def fixed_reference_main(args, manifest):
-    """Reuse completed A-on references; run one clean A-off process per map."""
+    """Reuse scored references, with a fresh worker and exact reset checks per map."""
     import fcntl
     task = args.tasks[0]
     order = args.episode_order or list(range(args.episodes))
@@ -644,10 +874,32 @@ def fixed_reference_main(args, manifest):
     identity = dict(checkpoint=str(checkpoint),size=stat.st_size,mtime_ns=stat.st_mtime_ns,
         evaluator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         episode_order=order, a_control=args.a_control,
-        c_control=getattr(args, "c_control", "checkpoint"), reference=str(args.reference_output))
+        c_control=getattr(args, "c_control", "checkpoint"), reference=str(args.reference_output),
+        initial_observation_check=getattr(args, "initial_observation_check", "exact"))
+    comparison = not has_control_override(args)
+    if comparison:
+        settings_folder = args.reference_output / task / 'run_00'
+        settings = json.loads((settings_folder / 'settings_episode_000.json').read_text())
+        identity['checkpoints'] = dict(reference=checkpoint_fingerprint(settings['checkpoint']),
+                                       candidate=checkpoint_fingerprint(checkpoint))
+        if identity['checkpoints']['reference']['sha256'] == identity['checkpoints']['candidate']['sha256']:
+            raise ValueError('Checkpoint comparison requires different weights; use explicit controls for an ablation')
+        identity['experiment'] = 'different_checkpoint_fixed_reference_comparison'
+        for episode in range(args.episodes):
+            stem = 'episode_%03d' % episode
+            record = json.loads((settings_folder / 'episodes' / (stem + '.json')).read_text())
+            scene = json.loads((settings_folder / 'initials' / (stem + '.json')).read_text())
+            if (record['status'] != 'completed' or record.get('world_seed') != args.world_seed_start + episode
+                    or scene.get('world_seed') != args.world_seed_start + episode
+                    or scene.get('mission_seed') != args.seed + episode
+                    or scene.get('java_launch_seed') != args.seed + episode
+                    or not (settings_folder / 'initials' / (stem + '.npz')).is_file()):
+                raise ValueError('Incomplete or incompatible fixed reference: ' + stem)
+    summary = reference_checkpoint_summary if comparison else a_control_ablation_summary
+    phase = 'checkpoint_comparison' if comparison else 'a_control_' + args.a_control
     identity_path = args.output/'fixed_run_manifest.json'
     if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
-        raise ValueError('A-off evaluator/order/checkpoint changed; use a new output directory')
+        raise ValueError('Fixed reference evaluator/protocol/checkpoint changed; use a new output directory')
     if not identity_path.exists():
         write_json(identity_path,identity)
     with (args.output/'.lock').open('w') as lock:
@@ -668,9 +920,10 @@ def fixed_reference_main(args, manifest):
                     '--seed',str(args.seed),'--world-seed-start',str(args.world_seed_start),
                     '--fps',str(args.fps),'--device',args.device,'--threads',str(args.threads),
                     '--heatmap-mode',args.heatmap_mode,'--reference-output',str(args.reference_output),
-                    '--a-control',args.a_control,'--c-control',args.c_control,'--worker-task',task,'--worker-run','0',
-                    '--worker-episode',str(episode)]
-                progress=dict(status='running',phase='a_control_' + args.a_control,episode=episode,
+                    '--a-control',args.a_control,'--c-control',args.c_control,
+                    '--initial-observation-check',getattr(args, "initial_observation_check", "exact"),
+                    '--worker-task',task,'--worker-run','0','--worker-episode',str(episode)]
+                progress=dict(status='running',phase=phase,episode=episode,
                     world_seed=args.world_seed_start+episode,pid=os.getpid())
                 write_json(args.output/'status.json',progress)
                 print(json.dumps(progress),flush=True)
@@ -678,11 +931,11 @@ def fixed_reference_main(args, manifest):
                 env['MALMO_MINECRAFT_OUTPUT_LOGDIR']=str(folder)
                 for scene_attempt in range(3):
                     with (folder/'console.log').open('a') as stream:
-                        result=subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT,env=env)
+                        result=subprocess.run(command+worker_runtime_args(args),stdout=stream,stderr=subprocess.STDOUT,env=env)
                     if result.returncode == 0:
                         break
                     if scene_attempt == 2 or not retryable_initial_scene(folder,episode):
-                        raise RuntimeError('A-off worker failed (%d): %s' % (result.returncode,folder/'console.log'))
+                        raise RuntimeError('Evaluation worker failed (%d): %s' % (result.returncode,folder/'console.log'))
                     import shutil
                     stamp=time.time_ns()
                     archive=folder/'errors'/('initial_scene_%03d_%d'%(episode,stamp))
@@ -695,15 +948,15 @@ def fixed_reference_main(args, manifest):
                             world_seed=args.world_seed_start+episode,executed_actions=0,
                             archive=str(archive),reason='terrain mismatch before any policy action'))+'\n')
                     print('Fresh same-seed retry after zero-action terrain mismatch:',episode,flush=True)
-                result=a_control_ablation_summary(args)
+                result=summary(args)
                 print(json.dumps({k:v for k,v in result.items() if k!='pairs'}),flush=True)
-            result=a_control_ablation_summary(args)
+            result=summary(args)
             assert result['completed']==args.episodes
-            write_json(args.output/'status.json',dict(status='completed',phase='a_control_' + args.a_control,
+            write_json(args.output/'status.json',dict(status='completed',phase=phase,
                 completed_rollouts=result['completed'],
                 comparison={k:v for k,v in result.items() if k != 'pairs'}))
         except BaseException:
-            write_json(args.output/'status.json',dict(status='failed',phase='a_control_' + args.a_control,
+            write_json(args.output/'status.json',dict(status='failed',phase=phase,
                 episode=episode,error=traceback.format_exc(),console=str(folder/'console.log')))
             raise
 
@@ -775,10 +1028,11 @@ def worker(args, manifest):
     checkpoint_path = args.checkpoint_root / task / 'latest.pt'
     checkpoint = torch.load(str(checkpoint_path), map_location='cpu', mmap=True)
     checkpoint_step = configure_search_checkpoint(config, checkpoint)
-    from search_c import apply_c_control_mode
+    from apm.legacy.control import apply_c_control_mode
     apply_c_control_mode(config, args.c_control)
     apply_a_control_mode(config, args.a_control)
     config.update(compile=False, video_pred_log=False, use_wandb=False, device=args.device,
+                  minedojo_gradle_offline=bool(getattr(args, 'minedojo_gradle_offline', False)),
                   seed=run_seed, task='minedojo_test_' + task,
                   target_item={'water':'water_bucket','iron':'iron_ore'}.get(TASKS[task],TASKS[task]),
                   logdir=str(folder), results_dir=str(folder), name=task)
@@ -791,6 +1045,8 @@ def worker(args, manifest):
     condition = task_specs['success_specs'].get('all', task_specs['success_specs'].get('any'))
     task_specs['clip_specs']['target_object'] = condition['item']['type']
     task_specs = configure_heatmap_specs(task_specs, args.heatmap_mode)
+    if config.minedojo_gradle_offline:
+        task_specs['minedojo_gradle_offline'] = True
     if config.search_vnext_enabled:
         task_specs["LS_Imagine_specs"] = dict(task_specs["LS_Imagine_specs"], vnext=True)
         task_specs["search_evidence_specs"] = dict(
@@ -799,7 +1055,7 @@ def worker(args, manifest):
             revisit_gap=config.search_a_horizon)
         sim_specs["use_lidar"] = bool(config.search_eval_evidence)
         if sim_specs["use_lidar"]:
-            from search_evidence import lidar_rays
+            from apm.evidence import lidar_rays
             sim_specs["lidar_rays"] = lidar_rays(config.search_a_ray_distance)
     task_specs['log_dir'] = str(folder)
     sim_specs['seed'] = run_seed
@@ -823,6 +1079,7 @@ def worker(args, manifest):
                search_b_version=checkpoint.get('search_b_version'),
                search_c_version=checkpoint.get('search_c_version'),
                reference_check=reference_check, max_steps=max_steps, heatmap_mode=args.heatmap_mode,
+               initial_observation_check=getattr(args, "initial_observation_check", "exact"),
                seed_note=('Fresh world/client, explicit world/Java/mission seed; XML forces new world at time 6000.'
                           if fixed else 'Group seed and per-episode simulator/policy RNG seeds; world generation follows task YAML.')))
     if args.worker_episode is not None:
@@ -852,6 +1109,7 @@ def worker(args, manifest):
                 time=time.strftime('%Y-%m-%dT%H:%M:%S'))) + '\n')
 
     env = None
+    visualizer = None
     try:
         with torch.no_grad():
             env = make_minedojo(task_id, task_specs, sim_specs)
@@ -903,6 +1161,9 @@ def worker(args, manifest):
             agent._logger.step = checkpoint_step * config.action_repeat
             del checkpoint, state_dict
             agent.eval().requires_grad_(False)
+            visualizer = create_search_visualizer(config, folder)
+            if visualizer is not None:
+                visualizer.set_step(agent._logger.step)
             print('Loaded checkpoint strictly:', checkpoint_path, flush=True)
             episode_indices = [args.worker_episode] if args.worker_episode is not None else range(args.episodes)
             for episode in episode_indices:
@@ -979,9 +1240,13 @@ def worker(args, manifest):
                         record.update(world_seed=initial['world_seed'],mission_seed=seed,
                                       initial_terrain_sha256=terrain_hash)
                         if args.reference_output:
-                            reference_initial = json.loads((args.reference_output/task/('run_%02d'%run)/
-                                'initials'/(stem+'.json')).read_text())
-                            verification = compare_initial_scenes(reference_initial,initial)
+                            verification = compare_saved_initials(
+                                args.reference_output/task/('run_%02d'%run)/'initials',
+                                folder/'initials', stem, require_frames=not has_control_override(args),
+                                observation_check=getattr(args, "initial_observation_check", "exact"))
+                            record.update(matching_initial_world=verification["matching_initial_world"],
+                                          matching_initial_pixels=verification["matching_initial_pixels"],
+                                          initial_observation_check=verification["initial_observation_check"])
                             write_json(folder/'initials'/(stem+'_comparison.json'),verification)
                             if not verification['match']:
                                 raise RuntimeError('Initial scene mismatch: '+json.dumps(verification))
@@ -1000,6 +1265,9 @@ def worker(args, manifest):
                         record['initial_location'] = actual_start
                         record['reference_initial_location'] = reference_start
                     state = None  # Never carry recurrent state across episodes.
+                    visual_episode = dict(reward=[0.], success=[False],
+                        search_visible=[float(np.asarray(obs.get('search_visible', 0.)))],
+                        search_visible_valid=[float(np.asarray(obs.get('search_visible_valid', 0.)))]) if visualizer is not None else None
                     writer = Mp4Writer(video_path, args.fps, imageio_ffmpeg.get_ffmpeg_exe())
                     policy_heatmaps = [obs['heatmap'].copy()]
                     native_heatmaps = [np.clip(capture.heatmap.squeeze()*255, 0, 255).astype(np.uint8)]
@@ -1011,11 +1279,21 @@ def worker(args, manifest):
                             batch = {k: np.stack([v]) for k, v in obs.items()}
                             result, state = agent(batch, np.array([step == 1]), state, training=False)
                             action = result['action'][0].detach().cpu().numpy()
+                            if visualizer is not None:
+                                record_search_visual_decision(visualizer, stem, obs, result,
+                                    agent._logger.step, rgb=capture.frame, heatmap=capture.heatmap)
                             search_log = {k: convert(v[0]) for k, v in result.items()
-                                          if k.startswith(('log_search_', 'log_b_', 'log_vnext_'))}
+                                          if k.startswith(('log_search_', 'log_b_', 'log_vnext_', 'log_spatial_'))
+                                          and k != 'log_spatial_patch'}
                             search_actions += int(search_log.get('log_search_override', 0))
                             search_decisions += int(search_log.get('log_search_decision', 0))
                             obs, reward, done, info = env.step({'action': action})
+                            if visualizer is not None:
+                                visualizer.feedback('eval', stem, reward, info)
+                                visual_episode['reward'].append(float(reward))
+                                visual_episode['success'].append(bool(info.get('success', False)))
+                                visual_episode['search_visible'].append(float(np.asarray(obs.get('search_visible', 0.))))
+                                visual_episode['search_visible_valid'].append(float(np.asarray(obs.get('search_visible_valid', 0.))))
                             search_log.update({k: convert(v) for k,v in obs.items()
                                 if k.startswith(('log_actuator_', 'log_applied_', 'log_requested_', 'log_env_', 'log_vnext_world_'))})
                             action_name = action_names[int(action.argmax())]
@@ -1052,6 +1330,8 @@ def worker(args, manifest):
                     writer = None
                     np.savez_compressed(heatmap_path, policy_heatmap=np.stack(policy_heatmaps),
                                         unet_heatmap_uint8=np.stack(native_heatmaps))
+                    finish_search_visual_episode(visualizer, agent, state, obs, stem,
+                        visual_episode, agent._logger.step, episode+1, args.episodes)
                     record['status'] = 'completed'
                     record['termination'] = ('success' if record['success'] else
                         'death' if info.get('real_done', False) else
@@ -1078,8 +1358,12 @@ def worker(args, manifest):
                     record_recovery(episode, 'restart Minecraft after death; completed failure retained')
                     restart_bridge(env)
     finally:
-        if env is not None:
-            env.close()
+        try:
+            if visualizer is not None:
+                visualizer.close()
+        finally:
+            if env is not None:
+                env.close()
 
 
 def main():
@@ -1091,6 +1375,8 @@ def main():
                         help='zero skips U-Net generation and supplies zero heatmaps to the existing checkpoint')
     parser.add_argument('--reference-output', type=Path,
                         help='Existing evaluation root whose common config, seeds and task specs must match')
+    parser.add_argument('--initial-observation-check', choices=['exact', 'audit'], default='exact',
+                        help='Different-checkpoint fixed references: exact gates reset pixels; audit records pixels but still requires identical world, terrain and spawn')
     parser.add_argument('--a-control',choices=['checkpoint','off','repaired'],default='checkpoint',
                         help='off disables A control; repaired applies v3 control to the same strictly loaded weights')
     parser.add_argument('--c-control', choices=['checkpoint', 'off', 'no_predictions'],
@@ -1112,6 +1398,8 @@ def main():
     parser.add_argument('--fps', type=int, default=20, help='Minecraft runs at 20 ticks/s, repeat=1')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--threads', type=int, default=4)
+    parser.add_argument('--minedojo-gradle-offline', action='store_true',
+                        help='Launch this local Minecraft client with cached Gradle dependencies only')
     parser.add_argument('--organize-only', action='store_true')
     parser.add_argument('--summarize-only', action='store_true')
     parser.add_argument('--worker-task', choices=list(TASKS), help=argparse.SUPPRESS)
@@ -1132,8 +1420,13 @@ def main():
         if not 0 < args.seed < 2**31 - args.episodes - 1001:
             parser.error('Fixed evaluation requires a positive policy seed below signed 32-bit maximum')
         if not args.paired_checkpoint_root and args.worker_episode is None:
-            if not (has_control_override(args) and args.reference_output):
-                parser.error('Fixed-world evaluation requires paired mode or an A-off reference run')
+            if not args.reference_output:
+                parser.error('Fixed-world evaluation requires paired mode or an existing fixed-world reference')
+    if args.reference_output and args.world_seed_start is not None and (len(args.tasks) != 1 or args.runs != 1):
+        parser.error('Fixed-world reference comparison requires one task and runs=1')
+    if args.initial_observation_check == 'audit' and (
+            args.reference_output is None or args.world_seed_start is None or has_control_override(args)):
+        parser.error('Initial pixel audit mode requires a different-checkpoint fixed-world reference comparison')
     if args.worker_episode is not None and not 0 <= args.worker_episode < args.episodes:
         parser.error('worker-episode out of range')
     if has_control_override(args) and args.paired_checkpoint_root:
@@ -1168,6 +1461,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     manifest = dict(tasks=args.tasks, runs=args.runs, episodes=args.episodes, seed=args.seed,
                     fps=args.fps, device=args.device, checkpoint_root=str(args.checkpoint_root),
+                    initial_observation_check=args.initial_observation_check,
                     task_specs=(ROOT / 'envs/tasks/task_specs.yaml').read_text(),
                     model_config=(ROOT / 'configs.yaml').read_text(), protocol_version=2, video_layout='rgb_native-unet_policy-overlay',
                     heatmap_storage='uint8 npz: policy_heatmap and unet_heatmap_uint8; frame 0 is reset')
@@ -1222,7 +1516,7 @@ def main():
                 print('Evaluating %s group %d/%d' % (task, run + 1, args.runs), flush=True)
                 write_json(args.output / 'status.json', dict(status='running', pid=os.getpid(), task=task, run=run))
                 with (folder / 'console.log').open('a') as log:
-                    result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+                    result = subprocess.run(command+worker_runtime_args(args), stdout=log, stderr=subprocess.STDOUT)
                 summarize(args.output, manifest)
                 if result.returncode:
                     failures.append(dict(task=task, run=run, returncode=result.returncode))

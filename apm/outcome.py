@@ -349,7 +349,12 @@ class SearchVNext(nn.Module):
         super().__init__()
         self.config = config
         self.memory_dim = int(cfg(config,"vnext_memory_dim"))
-        self.b = SlotMemory(feature_dim,config)
+        self.spatial = bool(getattr(config, "vnext_spatial_enabled", False))
+        if self.spatial:
+            from .spatial_memory import SpatialMapMemory
+            self.b = SpatialMapMemory(feature_dim, config)
+        else:
+            self.b = SlotMemory(feature_dim,config)
         self.a = OutcomeHeads(feature_dim,config)
         self._a_opt = torch.optim.Adam(self.a.parameters(),lr=cfg(config,"vnext_lr"))
         self._b_opt = torch.optim.Adam(self.b.parameters(),lr=cfg(config,"vnext_lr"))
@@ -418,10 +423,20 @@ class SearchVNext(nn.Module):
         supported &= (cn>=cfg(self.config,"vnext_min_calibration"))&(self.a.cal_errors[h,ids,ph]/cn.clamp_min(1)<=(rate*(1-rate)).clamp_min(.001))
         supported &= uncertainty<=cfg(self.config,"vnext_max_disagreement")
         support=supported[...,[0,4,5]].any(-1)
+        if self.spatial:
+            # Recovery is qualified by observed obstruction outcomes as well;
+            # requiring target-discovery positives would disable useful retreat
+            # or clearance options in exactly the target-absent states they fix.
+            support |= (ph==3)&supported[...,6]
         cv=output["current_logits"].sigmoid().mean(-2)[...,0]
         descriptor=torch.cat((probs,uncertainty.mean(-1,keepdim=True),supported.float().mean(-1,keepdim=True),
             lengths.float()[...,None]/8,cv[...,None],uncertainty.max(-1,keepdim=True).values),-1)
+        weights = probs.new_tensor([1., 2., .5, -.5, 1., 2., -.5])
+        score = (probs * weights * supported.float()).sum(-1)
+        score -= lengths.float() * float(getattr(self.config,"vnext_score_cost",.01))
+        score -= uncertainty.mean(-1) * float(getattr(self.config,"vnext_score_uncertainty",.2))
         return dict(probs=probs,events=probs,uncertainty=uncertainty,disagreement=uncertainty,
+            score=score, score_supported=support,
             supported=supported,support=support,descriptor=descriptor,future=output["future"].mean(-2))
 
     predict_candidates = predict
@@ -452,12 +467,14 @@ class SearchVNext(nn.Module):
             plan=torch.where((choices[:,1:n+1]==0)[...,None],actor_plan,plan)
         requested=value("log_requested_action" if "log_requested_action" in data else "log_vnext_requested").long()
         good=start&(horizon>=h)
+        initial_version=version[:,1:n+1]
+        good &= (initial_version==1)|(initial_version==2)
         for j in range(h):
             r=slice(j+1,j+n+1)
-            good&=(version[:,r]==1)&(ids[:,r]==ids[:,1:n+1])
+            good&=(version[:,r]==initial_version)&(ids[:,r]==ids[:,1:n+1])
             good&=(choices[:,r]==choices[:,1:n+1])&(phases[:,r]==phases[:,1:n+1])
             good&=requested[:,r]==plan[...,j]
-        from search_actuator import rollout_commands_torch
+        from apm.actuator import rollout_commands_torch
         expected,end=rollout_commands_torch(plan,act[:,:n])
         factual=torch.stack([controls[:,j+1:j+n+1] for j in range(h)],-2)
         good&=(expected-factual).abs().amax((-1,-2))<1.e-5
@@ -471,6 +488,8 @@ class SearchVNext(nn.Module):
         window_valid=torch.as_tensor(data.get("vnext_window_valid",np.ones((b,t))),device=device).bool()
         calibration &= window_valid
         train=(~calibration)&window_valid
+        if self.spatial:
+            train &= torch.as_tensor(data.get("vnext_spatial_valid",np.zeros((b,t))), device=device).bool()
         memory,details=self.b.batch(features,data)
         if not cfg(self.config,"vnext_memory_enabled"):
             memory=memory*0
@@ -510,6 +529,12 @@ class SearchVNext(nn.Module):
             target[...,4]=fy[:,h:,4]  # endpoint interaction affordance
             known_window=known.all(-2)|((windows>.5)&known).any(-2)
             known_window[...,4]=fk[:,h:,4]
+            if self.spatial:
+                # A clearance prefix contains attacks (no locomotion label).
+                # Its final movement tests passage; unknown attack steps do not
+                # invalidate this factual endpoint obstruction measurement.
+                target[...,6]=fy[:,h:,6]
+                known_window[...,6]=fk[:,h:,6]
             mask=known_window&valid[...,None]
             lengths=torch.full((b,n),h,device=device)
             remain=torch.as_tensor(data.get("log_vnext_remaining",np.full((b,t),1000)),device=device).float()[:,1:n+1]
@@ -528,7 +553,8 @@ class SearchVNext(nn.Module):
             verified=valid&self.matched_option_windows(data,act,controls,h)
             records.append((h,pred["logits"].sigmoid().mean(-2).detach(),target,mask&verified[...,None],
                             train[:,:n],calibration[:,:n],frameid[:,:n],option[:,1:n+1],phase[:,1:n+1]))
-        b_loss,bmetrics,bcounts=self.b.loss(features,data,memory,details,train)
+        b_train = ((~calibration)&window_valid) if self.spatial else train
+        b_loss,bmetrics,bcounts=self.b.loss(features,data,memory,details,b_train)
         if not cfg(self.config,"vnext_memory_enabled"):
             b_loss=b_loss*0
             bcounts=bcounts*0
@@ -649,7 +675,7 @@ def sample_episodes_vnext(episodes,length,slots=16,seed=0,**unused):
             segments.append((str(key),ep,start,n))
             size+=n
         out={}
-        from search_vnext_control import FIELDS
+        from apm.control import FIELDS
         # Prefill and learned episodes coexist. A fixed schema is essential:
         # batching keys from only the first sampled window drops C feedback or
         # raises KeyError when another window comes from random prefill.
@@ -748,8 +774,12 @@ def check_vnext_checkpoint(checkpoint,enabled):
     if bool(enabled)!=has:
         raise ValueError("vNext architecture differs; old ABC weights cannot initialize vNext")
     if not has:return
-    expected={"search_vnext_version":1,"vnext_memory_version":1,
+    spatial=any(key.startswith("_vnext.b.pose.") for key in state)
+    version=2 if spatial else 1
+    expected={"search_vnext_version":version,"vnext_memory_version":version,
               "search_a_label_version":3,"actuator_version":1}
+    if spatial:
+        expected.update(pose_version=1,spatial_map_version=2)
     for key,value in expected.items():
         if checkpoint.get(key)!=value:
             raise ValueError("Unsupported vNext checkpoint "+key)
@@ -765,6 +795,8 @@ def restore_vnext_config(config,checkpoint):
     for key,value in saved.items():
         if key.startswith("vnext_"):
             config[key]=value
+    config["vnext_spatial_enabled"] = any(key.startswith("_vnext.b.pose.")
+        for key in checkpoint.get("agent_state_dict",{}))
     config["search_a_enabled"]=False;config["search_b_enabled"]=False;config["search_c_enabled"]=False
     config["compile"]=False;config["search_branch_enabled"]=False
     check_vnext_checkpoint(checkpoint,True)

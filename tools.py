@@ -16,7 +16,7 @@ from torch import distributions as torchd
 from torch.utils.tensorboard import SummaryWriter
 from collections import defaultdict
 from bisect import insort
-from search_evidence import complete_episode_labels
+from apm.evidence import complete_episode_labels
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -362,6 +362,10 @@ def simulate(
     # including when multiple environments finish on the same iteration.
     active = np.ones(len(envs), bool)
     eval_started = episode
+    eval_finished = 0
+    visualizer = getattr(logger,"search_visualizer",None)
+    base_agent = getattr(agent,"func",agent)
+    visual_mode = "eval" if is_eval else "train"
     if is_eval and episodes:
         active = ~done
         eval_started += int(active.sum())
@@ -417,6 +421,12 @@ def simulate(
         else:
             action = np.array(action)
         assert len(action) == len(envs)
+        if visualizer is not None:
+            repeat = getattr(getattr(base_agent,"_config",None),"action_repeat",1)
+            before_step = int(logger.step) - (len(envs)*repeat if is_training else 0)
+            for i in np.flatnonzero(active):
+                if isinstance(action[i],dict):
+                    visualizer.observe(visual_mode,envs[i].id,obs[i],action[i],before_step)
 
         # step envs
         live = np.flatnonzero(active)
@@ -425,6 +435,8 @@ def simulate(
         done = np.zeros(len(envs), bool)
         for i, result in results.items():
             obs[i], reward[i], done[i], information[i] = result[:4]
+            if visualizer is not None:
+                visualizer.feedback(visual_mode,envs[i].id,reward[i],information[i])
         episode += int(done.sum())
         length += active
         step += len(live)
@@ -473,6 +485,13 @@ def simulate(
                 if is_eval:
                     information[i]["real_done"] = True
                 save_episodes(directory, {envs[i].id: cache[envs[i].id]})
+                if visualizer is not None:
+                    eval_finished += int(is_eval)
+                    snapshot = (base_agent.visualization_map(agent_state,i,obs[i])
+                                if hasattr(base_agent,"visualization_map") else None)
+                    visualizer.episode_end(visual_mode,envs[i].id,cache[envs[i].id],
+                        int(logger.step),eval_index=eval_finished if is_eval else None,
+                        eval_total=episodes if is_eval else None,map_state=snapshot)
 
                 step_calculator.remove_all(envs[i].id)
                 episode_length = len(cache[envs[i].id]["reward"]) - 1
@@ -506,15 +525,18 @@ def simulate(
                 ).sum()) / max(1, episode_length)
 
                 a_diagnostics = search_episode_diagnostics(cache[envs[i].id])
+                if "log_spatial_version" in cache[envs[i].id]:
+                    from apm.diagnostics import spatial_episode_diagnostics
+                    a_diagnostics.update(spatial_episode_diagnostics(cache[envs[i].id]))
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
-                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
                         # Keep search traces intact until this episode is evicted.
                         # Replay excludes log_*; C uses separate numeric search_c_*.
-                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             cache[envs[i].id].pop(key)
 
                 if not is_eval:

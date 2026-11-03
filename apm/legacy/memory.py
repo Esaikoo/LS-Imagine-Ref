@@ -98,7 +98,7 @@ def sample_episodes_with_history(episodes, length, slots=16, lookback=128, seed=
     stitched real episode boundary the bank and recurrent belief are both reset.
     """
     import tools
-    from search_evidence import complete_episode_labels
+    from apm.evidence import complete_episode_labels
     rng = np.random.RandomState(seed)
     cache = OrderedDict()
     while True:
@@ -392,7 +392,7 @@ class SearchMemory(nn.Module):
 
     def transition_loss(self, memory, features, batch, horizon=6):
         """Learn ordinary and elapsed-time jump updates from executed trajectories."""
-        from search_a import valid_windows
+        from apm.legacy.observation import valid_windows
         total = memory.shape[1]
         losses, counts = [], []
         if total < 2:

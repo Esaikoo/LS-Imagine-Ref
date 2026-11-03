@@ -11,8 +11,9 @@ import tools
 from parallel import Parallel, Damy
 
 from expr import LS_Imagine, make_env, make_dataset, check_b_checkpoint
-from search_a import check_checkpoint, restore_a_config, apply_repaired_control
-from search_c import restore_c_config, apply_c_control_mode
+from apm.legacy.observation import check_checkpoint, restore_a_config, apply_repaired_control
+from apm.legacy.control import restore_c_config, apply_c_control_mode
+from evaluate_checkpoints import create_search_visualizer
 
 os.environ["MUJOCO_GL"] = "osmesa"
 sys.path.append(str(pathlib.Path(__file__).parent))
@@ -21,7 +22,7 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 def configure_evaluation(config, checkpoint):
     """Restore trained shapes, then honor explicit runtime control-off flags."""
-    from search_vnext import restore_vnext_config
+    from apm.outcome import restore_vnext_config
     runtime_vnext_control = getattr(config, "vnext_control", True)
     runtime_vnext_interaction = getattr(config, "vnext_interaction", True)
     runtime_vnext_memory = getattr(config, "vnext_memory_enabled", True)
@@ -126,60 +127,72 @@ def main(config):
 
     state = None
 
-    print("Start evaluation.")
-    eval_dataset = make_dataset(eval_eps, config)
-    agent = LS_Imagine(
-        eval_envs[0].observation_space,
-        eval_envs[0].action_space,
-        config,
-        logger,
-        eval_dataset,
-    ).to(config.device)
-
-    checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
-    print(checkpoint_path)
-    
-    if checkpoint_path.exists():
-        print("Loading checkpoint from", config.agent_checkpoint_dir)
-        agent.load_state_dict(checkpoint["agent_state_dict"])
-        agent.requires_grad_(False)  # Optimizer state is unnecessary for evaluation.
-        agent._should_pretrain._once = False
-        if getattr(config, "search_a_enabled", False) and "step" not in checkpoint:
-            raise ValueError("A checkpoint has no training step; cannot restore search warmup")
-        agent._step = int(checkpoint.get("step", agent._step))
-        if agent._vnext_control is not None:
-            agent._vnext_control.load_rng_state(checkpoint.get("vnext_rng_state"))
-        logger.step = config.action_repeat * agent._step
-
-    else:
-        raise ValueError("no checkpoint found")
-    
-    if config.eval_episode_num > 0:
-        eval_policy = functools.partial(agent, training=False) 
-        tools.simulate(
-            eval_policy,
-            eval_envs,
-            eval_eps,
-            config.evaldir,
+    visualizer = None
+    try:
+        print("Start evaluation.")
+        eval_dataset = make_dataset(eval_eps, config)
+        agent = LS_Imagine(
+            eval_envs[0].observation_space,
+            eval_envs[0].action_space,
+            config,
             logger,
-            step_calculator,
-            config.episode_max_steps,
-            config.discount,
-            is_eval=True,
-            episodes=config.eval_episode_num,
-            is_training=False,
-        )
-        if config.video_pred_log:
-            video_pred = agent._wm.video_pred(next(eval_dataset))
-            logger.video("eval_openl", to_np(video_pred))
+            eval_dataset,
+        ).to(config.device)
 
-    for env in eval_envs:
+        checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
+        print(checkpoint_path)
+
+        if checkpoint_path.exists():
+            print("Loading checkpoint from", config.agent_checkpoint_dir)
+            agent.load_state_dict(checkpoint["agent_state_dict"])
+            agent.requires_grad_(False)  # Optimizer state is unnecessary for evaluation.
+            agent._should_pretrain._once = False
+            if getattr(config, "search_a_enabled", False) and "step" not in checkpoint:
+                raise ValueError("A checkpoint has no training step; cannot restore search warmup")
+            agent._step = int(checkpoint.get("step", agent._step))
+            if agent._vnext_control is not None:
+                agent._vnext_control.load_rng_state(checkpoint.get("vnext_rng_state"))
+            logger.step = config.action_repeat * agent._step
+
+        else:
+            raise ValueError("no checkpoint found")
+
+        visualizer = create_search_visualizer(config, logdir)
+        if visualizer is not None:
+            visualizer.set_step(logger.step)
+            logger.search_visualizer = visualizer
+
+        if config.eval_episode_num > 0:
+            eval_policy = functools.partial(agent, training=False)
+            tools.simulate(
+                eval_policy,
+                eval_envs,
+                eval_eps,
+                config.evaldir,
+                logger,
+                step_calculator,
+                config.episode_max_steps,
+                config.discount,
+                is_eval=True,
+                episodes=config.eval_episode_num,
+                is_training=False,
+            )
+            if config.video_pred_log:
+                video_pred = agent._wm.video_pred(next(eval_dataset))
+                logger.video("eval_openl", to_np(video_pred))
+
+    finally:
         try:
-            env.close()
-        except Exception:
-            pass
+            if visualizer is not None:
+                visualizer.close()
+        finally:
+            for env in eval_envs:
+                try:
+                    env.close()
+                except Exception:
+                    pass
+            logger.finish()
 
-    logger.finish()
 
 
 if __name__ == "__main__":

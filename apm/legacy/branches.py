@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import gym
 
-from search_evidence import complete_episode_labels
+from apm.evidence import complete_episode_labels
 
 
 def native_value(x):
@@ -208,7 +208,7 @@ def collect_real_branches(agent, config, replay, logger, group):
                     feat = agent._wm.dynamics.get_feat(latent)
                     # Reuse the actual executor, including interruption/protection rules.
                     # Only the first macro choice is externally intervened on.
-                    from search_a import actor_action_sequence
+                    from apm.legacy.observation import actor_action_sequence
                     def continuation(indices):
                         return actor_action_sequence(agent._wm.dynamics, agent._task_behavior.actor,
                             {key: value[indices] for key, value in latent.items()},
@@ -288,7 +288,7 @@ def collect_real_branches(agent, config, replay, logger, group):
                 factual = None
                 duration = len(episode["reward"]) - 1 - prefix
                 if branch_scene is not None and duration > 0:
-                    from search_feedback import window_targets
+                    from apm.legacy.feedback import window_targets
                     tensor = {key: torch.as_tensor(value)[None] for key, value in episode.items()
                               if value.dtype != object}
                     targets, known, _, _ = window_targets(tensor, duration, config)

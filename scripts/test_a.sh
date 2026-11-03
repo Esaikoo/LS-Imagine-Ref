@@ -27,7 +27,12 @@ python tests/test_search_vnext_evidence.py
 python tests/test_search_vnext_models.py
 python tests/test_search_vnext_control.py
 python tests/test_search_vnext_integration.py
-python -m py_compile search_actuator.py search_vnext.py search_vnext_control.py training_state.py envs/recovery.py networks.py search_a.py search_c.py search_feedback.py search_branches.py search_memory.py search_evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
+python tests/test_spatial_memory.py
+python tests/test_spatial_integration.py
+python tests/test_spatial_evidence.py
+python tests/test_runtime.py
+python tests/test_search_visualization.py
+python -m py_compile apm/actuator.py apm/outcome.py apm/control.py apm/odometry.py apm/spatial_memory.py apm/replay.py apm/diagnostics.py apm/visualization.py training_state.py envs/recovery.py envs/runtime.py networks.py apm/legacy/observation.py apm/legacy/control.py apm/legacy/feedback.py apm/legacy/branches.py apm/legacy/memory.py apm/evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
   envs/tasks/minedojo/__init__.py envs/tasks/minedojo/wrappers.py envs/tasks/base/ls_imagine_wrapper.py
 bash -n scripts/test_a.sh
 sh -n scripts/train.sh
@@ -56,7 +61,8 @@ if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "-
     EXTRA=(--vnext_slots 4 --vnext_memory_dim 16 --vnext_hidden 64
       --vnext_future_dim 16 --vnext_start_step 32 --vnext_warmup 64
       --vnext_full_step 96 --vnext_base_episode_fraction 0
-      --vnext_probe_probability 1 --eval_every 32)
+      --vnext_probe_probability 1 --eval_every 32 --eval_episode_num 3
+      --vnext_visual_every 32 --vnext_pose_min_samples 8)
   fi
   if [[ "$1" == "--minedojo-off" ]]; then
     MODE=off
@@ -104,9 +110,11 @@ for episode in episodes:
         if episode.parent.name == 'train_eps' and 'log_search_override' in data.files:
             override += data['log_search_override'].sum()
 if mode == 'vnext':
-    from search_vnext import check_vnext_checkpoint
+    from apm.outcome import check_vnext_checkpoint
     check_vnext_checkpoint(checkpoint, True)
-    assert checkpoint['search_vnext_version'] == 1
+    assert checkpoint['search_vnext_version'] == 2
+    assert checkpoint['spatial_map_version'] == 2
+    assert checkpoint['pose_version'] == 1
     assert checkpoint['search_a_label_version'] == 3
     assert not any('_wm.search_a.' in k or '_wm.search_b.' in k for k in checkpoint['agent_state_dict'])
     for key in ('A/prediction_loss','B/total_loss','C/transitions'):
@@ -116,8 +124,10 @@ if mode == 'vnext':
         with np.load(path) as d:
             assert len({len(d[k]) for k in d.files}) == 1
             if 'log_vnext_applied' in d:
-                active=d['log_vnext_version']==1
+                active=d['log_vnext_version']==2
                 np.testing.assert_allclose(d['log_vnext_applied'][active],d['log_applied_control'][active])
+            if path.parent.name == 'eval_eps' and 'search_pose_valid' in d:
+                assert not d['search_pose_valid'].any()
             if 'log_vnext_memory_refs' in d:
                 for t,refs in enumerate(d['log_vnext_memory_refs']):
                     if not d['is_first'][t]:

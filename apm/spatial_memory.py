@@ -1,0 +1,359 @@
+"""Coordinate-free online 2D search-behaviour memory.
+
+This is a rolling estimated behaviour map, not a measured occupancy map. Without
+depth, observed cells describe short-range view directions; target cells describe
+the viewpoint from which a cue was seen, never an inferred true target position.
+"""
+import math
+import numpy as np
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+from .odometry import PoseNet, normalized_rgb, wrap_angle
+
+SPATIAL_VERSION = 2
+MAP_CHANNELS = ("visited", "observed", "target_vantage", "revisit", "uncertainty", "frontier")
+POSE_DIM, SUMMARY_DIM, DIRECTION_BINS = 4, 12, 12
+DEFAULTS = dict(vnext_map_size=65, vnext_map_resolution=1.5, vnext_map_patch=21,
+    vnext_pose_hidden=128, vnext_pose_min_samples=256, vnext_pose_ready_error=.25,
+    vnext_pose_max_sigma=1.0, vnext_memory_dim=128, vnext_map_view_radius=2,
+    vnext_map_target_decay=.999, vnext_pose_loss_weight=1.,
+    vnext_pose_min_calibration=32, vnext_pose_min_moving=8,
+    vnext_pose_calibration_ratio=.8, vnext_pose_cache_size=4096,
+    vnext_map_ledger_capacity=2048)
+
+
+def cfg(config, key):
+    return getattr(config, key, DEFAULTS[key])
+
+
+def centered_cell(value, resolution=1.):
+    """Nearest cell with translation-invariant ties, shared with GT labels."""
+    if torch.is_tensor(value):
+        return torch.floor(value/resolution+.5).long()
+    return np.floor(np.asarray(value)/resolution+.5).astype(np.int64)
+
+
+def heading_sector(value, bins=DIRECTION_BINS):
+    if torch.is_tensor(value):
+        return torch.remainder(torch.floor(value/(2*math.pi)*bins+.5).long(), bins)
+    return np.floor(np.asarray(value)/(2*math.pi)*bins+.5).astype(np.int64) % bins
+
+
+def encode_grid(grid):
+    """Immutable bounded replay representation, BCHW float -> BHWC uint8."""
+    grid = grid.float()
+    values = grid.clone()
+    for index in (0, 1, 3):
+        values[:, index] = torch.log1p(values[:, index].clamp(0, 255))/math.log(256.)
+    values[:, 4] = values[:, 4]/(1.+values[:, 4])
+    return (values.clamp(0, 1).permute(0, 2, 3, 1)*255).round().to(torch.uint8)
+
+
+class MapEncoder(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.map = nn.Sequential(nn.Conv2d(6, 24, 3, 2, 1), nn.SiLU(),
+            nn.Conv2d(24, 32, 3, 2, 1), nn.SiLU(), nn.AdaptiveAvgPool2d((3, 3)), nn.Flatten())
+        self.output = nn.Sequential(nn.Linear(32*9+5, dim), nn.LayerNorm(dim), nn.SiLU())
+
+    def forward(self, patch, pose):
+        patch = torch.as_tensor(patch)
+        lead = patch.shape[:-3]
+        if patch.shape[-1] != 6:
+            raise ValueError("Spatial map patch must have six channels")
+        values = patch.float()/255. if patch.dtype == torch.uint8 else patch.float()
+        pose = torch.as_tensor(pose, device=patch.device).float()
+        if pose.shape != (*lead, POSE_DIM):
+            raise ValueError("Spatial pose must have x,z,yaw-radians,uncertainty")
+        p = torch.stack((torch.tanh(pose[..., 0]/100.), torch.tanh(pose[..., 1]/100.),
+            pose[..., 2].sin(), pose[..., 2].cos(), pose[..., 3]/(1.+pose[..., 3])), -1)
+        encoded = self.map(values.reshape(-1, *patch.shape[-3:]).permute(0, 3, 1, 2))
+        return self.output(torch.cat((encoded, p.reshape(-1, 5)), -1)).reshape(*lead, -1)
+
+
+class SpatialMapMemory(nn.Module):
+    version = SPATIAL_VERSION
+
+    def __init__(self, feature_dim, config):
+        super().__init__()
+        self.config = config
+        self.dim = int(cfg(config, "vnext_memory_dim"))
+        self.size = int(cfg(config, "vnext_map_size"))
+        self.resolution = float(cfg(config, "vnext_map_resolution"))
+        self.patch_size = int(cfg(config, "vnext_map_patch"))
+        if self.size < self.patch_size+4 or self.size % 2 != 1 or self.patch_size % 2 != 1 or self.resolution <= 0:
+            raise ValueError("Map/patch sizes must be odd, map at least patch+4, positive resolution")
+        max_steps = int(getattr(config, "episode_max_steps_override", 0) or
+                        getattr(config, "episode_max_steps", 1000))
+        requested_capacity = int(cfg(config, "vnext_map_ledger_capacity"))
+        self.ledger_capacity = max(2048, requested_capacity, max_steps+1)
+        if requested_capacity < 0 or self.ledger_capacity > 8192:
+            raise ValueError("Spatial visit ledger must cover episode_max_steps+1 and fit 8192 entries")
+        self.pose = PoseNet(int(cfg(config, "vnext_pose_hidden")),
+            int(cfg(config, "vnext_pose_min_samples")), float(cfg(config, "vnext_pose_ready_error")),
+            min_calibration=int(cfg(config, "vnext_pose_min_calibration")),
+            min_moving=int(cfg(config, "vnext_pose_min_moving")),
+            calibration_ratio=float(cfg(config, "vnext_pose_calibration_ratio")),
+            cache_size=int(cfg(config, "vnext_pose_cache_size")))
+        self.encoder = MapEncoder(self.dim)
+        self.event_head = nn.Linear(self.dim, 3)  # current evidence, new view, real progress
+        # Legacy accounting calls remain harmless for the spatial implementation.
+        self.register_buffer("place_positive", torch.zeros(()))
+        self.register_buffer("place_negative", torch.zeros(()))
+
+    def initial(self, batch, device):
+        return dict(grid=torch.zeros(batch, 6, self.size, self.size, device=device),
+            directions=torch.zeros(batch, self.size, self.size, DIRECTION_BINS, device=device),
+            pose=torch.zeros(batch, POSE_DIM, device=device),
+            origin=torch.full((batch, 2), -(self.size//2)*self.resolution, device=device),
+            previous_image=torch.zeros(batch, 64, 64, 3, device=device),
+            has_previous=torch.zeros(batch, dtype=torch.bool, device=device),
+            tracking_ready=torch.full((batch,), self.pose.ready, dtype=torch.bool, device=device),
+            ledger_cells=torch.zeros(batch, self.ledger_capacity, 2, dtype=torch.long, device=device),
+            ledger_values=torch.zeros(batch, self.ledger_capacity, 6, device=device),
+            ledger_directions=torch.zeros(batch, self.ledger_capacity, DIRECTION_BINS, device=device),
+            ledger_used=torch.zeros(batch, dtype=torch.long, device=device),
+            previous_cell=torch.full((batch, 2), -100000, device=device, dtype=torch.long),
+            dwell=torch.zeros(batch, device=device), motion_ema=torch.zeros(batch, device=device),
+            tick=torch.zeros(batch, device=device, dtype=torch.long))
+
+    @staticmethod
+    def integrate(pose, delta, sigma):
+        result = pose.clone()
+        angle = pose[:, 2]
+        result[:, 0] += angle.cos()*delta[:, 0]-angle.sin()*delta[:, 1]
+        result[:, 1] += angle.sin()*delta[:, 0]+angle.cos()*delta[:, 1]
+        result[:, 2] = wrap_angle(angle+delta[:, 2])
+        result[:, 3] = (pose[:, 3].square()+sigma[:, :2].square().sum(-1)).sqrt().clamp(max=1000.)
+        return result
+
+    def recenter(self, state):
+        """Roll when approaching the boundary, discarding exposed strips, no wrap."""
+        cells = centered_cell(state["pose"][:, :2]-state["origin"], self.resolution)
+        margin = self.patch_size//2+1
+        for b in range(len(cells)):
+            if bool(((cells[b] < margin) | (cells[b] >= self.size-margin)).any()):
+                shift = cells[b]-self.size//2
+                sx, sz = int(shift[0]), int(shift[1])
+                if abs(sx) >= self.size or abs(sz) >= self.size:
+                    state["grid"][b].zero_(); state["directions"][b].zero_()
+                else:
+                    state["grid"][b] = torch.roll(state["grid"][b], (-sz, -sx), dims=(-2, -1))
+                    state["directions"][b] = torch.roll(state["directions"][b], (-sz, -sx), dims=(0, 1))
+                    if sx > 0:
+                        state["grid"][b, :, :, -sx:] = 0; state["directions"][b, :, -sx:] = 0
+                    elif sx < 0:
+                        state["grid"][b, :, :, :-sx] = 0; state["directions"][b, :, :-sx] = 0
+                    if sz > 0:
+                        state["grid"][b, :, -sz:, :] = 0; state["directions"][b, -sz:] = 0
+                    elif sz < 0:
+                        state["grid"][b, :, :-sz, :] = 0; state["directions"][b, :-sz] = 0
+                state["origin"][b] += shift.float()*self.resolution
+                self.restore_ledger(state, b)
+        return centered_cell(state["pose"][:, :2]-state["origin"], self.resolution)
+
+    def restore_ledger(self, state, batch_index):
+        """Restore only genuinely visited vantage cells visible in the window."""
+        b = batch_index
+        used = int(state["ledger_used"][b])
+        if not used:
+            return
+        # Both origin and ledger coordinates use centered integer cells.
+        cells = state["ledger_cells"][b, :used]-centered_cell(state["origin"][b], self.resolution)
+        inside = ((cells >= 0) & (cells < self.size)).all(-1)
+        cells = cells[inside]
+        if not len(cells):
+            return
+        x, z = cells[:, 0], cells[:, 1]
+        values = state["ledger_values"][b, :used][inside]
+        for channel in (0, 3, 4):
+            state["grid"][b, channel, z, x] = values[:, channel]
+        for channel in (1, 2):
+            state["grid"][b, channel, z, x] = torch.maximum(state["grid"][b, channel, z, x], values[:, channel])
+        state["directions"][b, z, x] = state["ledger_directions"][b, :used][inside]
+
+    def ledger_entry(self, state, batch_index, absolute_cell):
+        """Find/add one estimated visited cell; never treat projected FOV as visited."""
+        b = batch_index
+        used = int(state["ledger_used"][b])
+        if used:
+            match = (state["ledger_cells"][b, :used] == absolute_cell).all(-1)
+            if bool(match.any()):
+                return int(match.long().argmax())
+        if used >= self.ledger_capacity:
+            # Capacity >= episode budget+1 makes this a protocol error rather
+            # than a reason to quietly erase the oldest visit history.
+            raise RuntimeError("Spatial episode visit ledger exhausted; check episode step budget/reset")
+        state["ledger_cells"][b, used] = absolute_cell
+        state["ledger_used"][b] += 1
+        return used
+
+    def patch(self, state, cells):
+        encoded = encode_grid(state["grid"])
+        radius = self.patch_size//2
+        patches = [encoded[b, int(cells[b, 1])-radius:int(cells[b, 1])+radius+1,
+                           int(cells[b, 0])-radius:int(cells[b, 0])+radius+1]
+                   for b in range(len(cells))]
+        return torch.stack(patches).clone()
+
+    @torch.no_grad()
+    def online(self, feat, image, heatmap, state=None, is_first=None, previous_control=None, reward=None):
+        device, batch = feat.device, len(feat)
+        fresh = self.initial(batch, device)
+        missing_state = state is None
+        state = fresh if missing_state else {k: v.detach().clone() for k, v in state.items()}
+        first = torch.zeros(batch, device=device, dtype=torch.bool) if is_first is None else is_first.reshape(batch).bool()
+        for key in state:
+            state[key] = torch.where(first.reshape(batch, *([1]*(state[key].ndim-1))), fresh[key], state[key])
+        if missing_state and is_first is not None:
+            # A learned policy can begin halfway through random prefill. Its
+            # unknown prefix is not an episode-origin pose and cannot be filled
+            # in with zeros simply because the network has since qualified.
+            state["tracking_ready"] &= first
+        # Qualification may revoke tracking, but can only enable it at reset.
+        state["tracking_ready"] &= self.pose.ready
+        current = normalized_rgb(torch.as_tensor(image, device=device))
+        control = torch.zeros(batch, 9, device=device) if previous_control is None else previous_control.to(device).float()
+        valid = state["has_previous"] & ~first
+        predicted = self.pose(state["previous_image"], current, control)
+        delta, sigma = predicted["delta"].clone(), predicted["sigma"].clone()
+        reliable = (sigma[:, :2].mean(-1) <= float(cfg(self.config, "vnext_pose_max_sigma"))) & state["tracking_ready"]
+        # Unknown translation stays unknown; commands do not imply movement.
+        delta[:, :2] *= reliable[:, None]
+        # Known camera commands keep directional coverage usable during warmup.
+        delta[:, 2] = torch.where(reliable, delta[:, 2], control[:, 8]*math.pi/180.)
+        delta *= valid[:, None]
+        sigma = torch.where(valid[:, None], sigma, torch.zeros_like(sigma))
+        state["pose"] = self.integrate(state["pose"], delta, sigma)
+        cells = self.recenter(state)
+        absolute_cell = centered_cell(state["pose"][:, :2], self.resolution)
+        same = (absolute_cell == state["previous_cell"]).all(-1) & valid
+        state["dwell"] = torch.where(same, state["dwell"]+1, torch.zeros_like(state["dwell"]))
+        displacement = torch.linalg.vector_norm(delta[:, :2], dim=-1)
+        state["motion_ema"].lerp_(displacement, .1)
+        h = torch.as_tensor(heatmap, device=device)
+        h = h.float()/255. if h.dtype == torch.uint8 else h.float()
+        cue = h.reshape(batch, -1).topk(min(32, h[0].numel()), dim=-1).values.mean(-1).clamp(0, 1)
+        state["grid"][:, 2] *= float(cfg(self.config, "vnext_map_target_decay"))
+        state["ledger_values"][..., 2] *= float(cfg(self.config, "vnext_map_target_decay"))
+        visited_before, repeated = [], []
+        radius = int(cfg(self.config, "vnext_map_view_radius"))
+        for b in range(batch):
+            x, z = int(cells[b, 0]), int(cells[b, 1])
+            entry = self.ledger_entry(state, b, absolute_cell[b])
+            historic = state["ledger_values"][b, entry]
+            state["grid"][b, 0, z, x] = historic[0]
+            state["grid"][b, 3, z, x] = historic[3]
+            state["grid"][b, 2, z, x] = torch.maximum(state["grid"][b, 2, z, x], historic[2])
+            state["directions"][b, z, x] = state["ledger_directions"][b, entry]
+            angle = state["pose"][b, 2]
+            direction = int(heading_sector(angle))
+            old_view = state["directions"][b, z, x, direction] > 0
+            visited_before.append(state["grid"][b, 0, z, x].clone())
+            repeated.append(old_view)
+            if not bool(same[b]):
+                state["grid"][b, 0, z, x] += 1
+            if bool(old_view):
+                state["grid"][b, 3, z, x] += 1
+            state["directions"][b, z, x, direction] += 1
+            state["grid"][b, 1, z, x] += float(not bool(old_view))
+            # Short directional view proxy only; not a raycast through obstacles.
+            if not bool(old_view):
+                for offset in (-math.pi/8, 0., math.pi/8):
+                    for distance in range(1, radius+1):
+                        xx = x+int(round(-math.sin(float(angle)+offset)*distance))
+                        zz = z+int(round(math.cos(float(angle)+offset)*distance))
+                        if 0 <= xx < self.size and 0 <= zz < self.size:
+                            state["grid"][b, 1, zz, xx] += 1./(1.+distance)
+            state["grid"][b, 2, z, x] = torch.maximum(state["grid"][b, 2, z, x], cue[b])
+            state["grid"][b, 4, z, x] = state["pose"][b, 3]
+            # Persist the visited viewpoint only. Nearby view-proxy cells are
+            # not inserted as physical visits or claimed reconstructed terrain.
+            state["ledger_values"][b, entry, 0] = state["grid"][b, 0, z, x]
+            state["ledger_values"][b, entry, 1] = (state["directions"][b, z, x] > 0).float().sum()
+            state["ledger_values"][b, entry, 2] = state["grid"][b, 2, z, x]
+            state["ledger_values"][b, entry, 3] = state["grid"][b, 3, z, x]
+            state["ledger_values"][b, entry, 4] = state["pose"][b, 3]
+            state["ledger_directions"][b, entry] = state["directions"][b, z, x]
+        known = (state["grid"][:, 1:2] > 0).float()
+        adjacent = F.max_pool2d(known, 3, 1, 1)
+        state["grid"][:, 5:6] = adjacent*(1.-known)
+        patch = self.patch(state, cells)
+        context = self.encoder(patch, state["pose"])
+        rows = torch.arange(batch, device=device)
+        directions = (state["directions"][rows, cells[:, 1], cells[:, 0]] > 0).float()
+        visits = state["grid"][rows, 0, cells[:, 1], cells[:, 0]]
+        visited = state["ledger_used"].float()
+        observed = known.sum((-1, -2, -3)).float()
+        repeated = torch.stack(repeated).float()
+        confidence = sigma[:, :2].mean(-1).neg().exp()*state["tracking_ready"].float()
+        u = state["pose"][:, 3]
+        summary = torch.stack((state["tracking_ready"].float(),
+            (state["motion_ema"]/.5).clamp(0, 1), (state["dwell"]/50.).clamp(0, 1),
+            repeated, (visited/(self.size**2)).clamp(max=1.), observed/(self.size**2), u/(1.+u),
+            (displacement/.5).clamp(0, 1), visits/(1.+visits), cue,
+            directions.mean(-1), confidence), -1)
+        state["previous_image"] = current.clone()
+        state["has_previous"][:] = True
+        state["previous_cell"] = absolute_cell.clone()
+        state["tick"] += 1
+        return context, state, dict(log_spatial_patch=patch, log_spatial_pose=state["pose"].clone(),
+            log_spatial_version=torch.full_like(u, SPATIAL_VERSION), log_spatial_summary=summary,
+            log_spatial_directions=directions, log_spatial_novelty=1.-repeated,
+            log_spatial_revisit=repeated, log_spatial_known_cells=observed,
+            log_spatial_visited_cells=visited)
+
+    def batch(self, features, data):
+        lead, device = features.shape[:-1], features.device
+        patch = torch.as_tensor(data.get("vnext_spatial_patch", np.zeros((*lead, self.patch_size, self.patch_size, 6), np.uint8)), device=device)
+        pose = torch.as_tensor(data.get("vnext_spatial_pose", np.zeros((*lead, 4), np.float32)), device=device).float()
+        valid = torch.as_tensor(data.get("vnext_spatial_valid", np.zeros(lead)), device=device).bool()
+        context = self.encoder(patch, pose)*valid[..., None]
+        return context, dict(valid=valid, patch=patch, pose=pose)
+
+    def loss(self, features, data, context, details, train_mask):
+        device = features.device
+        lead = features.shape[:-1]
+        labels, known = [], []
+        version = torch.as_tensor(data.get("search_label_version", np.zeros(lead)), device=device) >= 3
+        for name in ("visible", "new", "progress"):
+            labels.append(torch.as_tensor(data.get("search_"+name, np.zeros(lead)), device=device).float())
+            known.append(torch.as_tensor(data.get("search_"+name+"_valid", np.zeros(lead)), device=device).bool() & version)
+        labels, known = torch.stack(labels, -1), torch.stack(known, -1)
+        mask = known & train_mask[..., None] & details["valid"][..., None]
+        loss = F.binary_cross_entropy_with_logits(self.event_head(context), labels.nan_to_num().clamp(0, 1), reduction="none")
+        map_loss = (loss*mask).sum()/mask.sum().clamp_min(1)
+        pose_known = torch.as_tensor(data.get("search_pose_valid", np.zeros(lead)), device=device).bool()
+        pose_known &= torch.as_tensor(data.get("vnext_pose_prev_valid", np.zeros(lead)), device=device).bool()
+        window = torch.as_tensor(data.get("vnext_window_valid", np.ones(lead)), device=device).bool()
+        calibration = torch.as_tensor(data.get("vnext_calibration", np.zeros(lead)), device=device).bool()
+        pose_mask = pose_known & train_mask.bool() & ~calibration & window
+        pose_calibration = pose_known & calibration & window
+        current = torch.as_tensor(data["image"], device=device)
+        previous = torch.as_tensor(data.get("vnext_pose_prev_image", data["image"]), device=device)
+        control = torch.as_tensor(data.get("vnext_pose_control", np.zeros((*lead, 9))), device=device).float()
+        target = torch.as_tensor(data.get("search_pose_delta", np.zeros((*lead, 3))), device=device).float()
+        pose_loss, metrics, _ = self.pose.supervised_loss(previous, current, control, target, pose_mask,
+            calibration_mask=pose_calibration, frame_ids=data.get("vnext_frame_id"))
+        total = map_loss+float(cfg(self.config, "vnext_pose_loss_weight"))*pose_loss
+        metrics.update({"B/map_loss": map_loss.detach(), "B/total_loss": total.detach(),
+                        "B/map_valid": details["valid"].float().mean().detach()})
+        return total, metrics, features.new_zeros(2)
+
+    @torch.no_grad()
+    def visualization_state(self, state):
+        if state is None:
+            return None
+        used = int(state["ledger_used"][0])
+        ledger = {"cells": state["ledger_cells"][0, :used].detach().cpu().numpy().copy(),
+                  "values": state["ledger_values"][0, :used].detach().cpu().numpy().copy(),
+                  "directions": state["ledger_directions"][0, :used].detach().cpu().numpy().copy()}
+        return dict(grid=state["grid"][0].permute(1, 2, 0).detach().cpu().numpy().copy(),
+            pose=state["pose"][0].detach().cpu().numpy().copy(),
+            origin=state["origin"][0].detach().cpu().numpy().copy(), resolution=self.resolution,
+            channels=MAP_CHANNELS, predicted=True, observation_type="directional-view proxy",
+            target_type="cue-observation viewpoint", tracking_ready=bool(state["tracking_ready"][0]),
+            localization=("estimated" if bool(state["tracking_ready"][0]) else "unknown: pose not qualified at episode start"),
+            ledger=ledger, ledger_capacity=self.ledger_capacity)

@@ -6,7 +6,7 @@ masked per component; imagined transitions are never written as real Replay.
 import torch
 from torch import nn
 from torch.nn import functional as F
-from search_a import SearchOutcomeHead
+from apm.legacy.observation import SearchOutcomeHead
 
 COMPONENTS = ("task", "discovery", "new", "revisit", "cost", "potential")
 FULL_PREDICTION_DIM = 30  # old 11 + returns 6 + reliability 6 + support 6 + first 1
@@ -169,7 +169,7 @@ def imagined_search_transitions(agent, snapshot, state, predictions, records):
     task feedback and event validity still come exclusively from executed data.
     """
     import numpy as np
-    from search_a import prefix_macro_actions, actor_action_sequence, prefix_candidate_predictions
+    from apm.legacy.observation import prefix_macro_actions, actor_action_sequence, prefix_candidate_predictions
     cfg, head = agent._config, agent._wm.search_a
     if (agent._search_c.model_version < 2 or head is None or head.model_version < 5
             or cfg.search_c_imagined_weight <= 0 or not cfg.search_c_use_predictions):

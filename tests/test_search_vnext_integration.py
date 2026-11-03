@@ -12,8 +12,8 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/"tests"))
 from test_search_a import config_for_test, make_agent, replay_batch
-from search_vnext import _hash_int, check_vnext_checkpoint
-from search_evidence import VNEXT_LABEL_KEYS
+from apm.outcome import _hash_int, check_vnext_checkpoint
+from apm.evidence import VNEXT_LABEL_KEYS
 from expr import make_dataset
 import tools
 from training_state import save_training_checkpoint, prepare_resume, restore_training_state
@@ -131,7 +131,7 @@ class IntegrationTests(unittest.TestCase):
         torch.testing.assert_close(actual["action"],again["action"],rtol=0,atol=0)
 
     def test_mixed_prefill_and_learned_episodes_have_fixed_batch_schema(self):
-        from search_vnext_control import build_transitions
+        from apm.control import build_transitions
         cfg=config(batch_size=16,batch_length=32)
         agent=make_agent(cfg)
         learned=episode(agent,48)
@@ -152,7 +152,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(initial["log_vnext_version"].sum(),0)
 
     def test_base_window_sampling_matches_original_distribution(self):
-        from search_vnext import sample_episodes_vnext
+        from apm.outcome import sample_episodes_vnext
         one={k:v[0] for k,v in replay_batch(13).items()}
         two={k:v[0] for k,v in replay_batch(19).items()}
         episodes={"one":one,"two":two}
@@ -186,7 +186,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(np.all(meta[refs>=0,1]==7))
 
     def test_formal_auxiliary_dimensions_and_batch(self):
-        from search_vnext import SearchVNext
+        from apm.outcome import SearchVNext
         cfg=config(vnext_slots=16,vnext_memory_dim=128,vnext_hidden=256,
                    vnext_future_dim=128,batch_size=16,batch_length=32)
         generator_agent=make_agent(cfg)

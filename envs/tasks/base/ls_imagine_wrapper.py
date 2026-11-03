@@ -7,8 +7,9 @@ from collections import OrderedDict
 
 import copy
 import uuid
-from search_evidence import SEARCH_LABEL_KEYS, VNEXT_LABEL_KEYS, empty_labels
-from search_actuator import CONTROL_KEYS, CONTROL_DIM, STATE_DIM, apply_command, world_group_id
+from apm.evidence import (SEARCH_LABEL_KEYS, VNEXT_LABEL_KEYS, empty_labels,
+                          SPATIAL_LABEL_SHAPES, empty_spatial_labels)
+from apm.actuator import CONTROL_KEYS, CONTROL_DIM, STATE_DIM, apply_command, world_group_id
 
 BASIC_ACTIONS = {
     "noop": dict(),
@@ -56,10 +57,11 @@ NOOP_ACTION = {
 
 class LSImagineWrapper(Wrapper, ABC):
     def __init__(self, env, repeat=1, sticky_attack=0, sticky_jump=10, pitch_limit=(-70, 70), vnext=False,
-                 vnext_world_seed=None):
+                 vnext_world_seed=None, spatial=False):
         super().__init__(env)
         self.wrapper_name = "LSImagineWrapper"
         self._vnext = bool(vnext)
+        self._spatial = bool(spatial)
         self._fixed_world_seed = None if vnext_world_seed is None else str(vnext_world_seed)
         if self._fixed_world_seed is not None:
             try:
@@ -119,6 +121,9 @@ class LSImagineWrapper(Wrapper, ABC):
                 "log_vnext_world_group": spaces.Box(0, (1 << 24)-1, (), dtype=np.int64),
             })
         self.action_space = spaces.discrete.Discrete(len(BASIC_ACTIONS))
+        if self._spatial:
+            for key, shape in SPATIAL_LABEL_SHAPES.items():
+                self.observation_space.spaces[key] = spaces.Box(-np.inf, np.inf, shape, dtype=np.float32)
         self.action_space.discrete = True
         self._repeat = repeat
         self._sticky_attack_length = sticky_attack
@@ -199,6 +204,9 @@ class LSImagineWrapper(Wrapper, ABC):
 
     def _obs(self, obs):
         evidence = {key: np.float32(obs.get(key, value)) for key, value in empty_labels(3 if self._vnext else 2).items()}
+        if self._spatial:
+            evidence.update({key: np.asarray(obs.get(key, value), np.float32).copy()
+                             for key, value in empty_spatial_labels().items()})
         image = obs['rgb'] # 3 * H * W
         image = image.transpose(1, 2, 0).astype(np.uint8) # H * W * 3
         image = cv2.resize(image, (64, 64)) # 64 * 64 * 3
@@ -284,4 +292,4 @@ class LSImagineWrapper(Wrapper, ABC):
                     action[key] = default
         return actions
 
-        
+
