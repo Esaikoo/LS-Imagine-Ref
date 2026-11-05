@@ -23,6 +23,11 @@ DEFAULTS = dict(
     vnext_min_labels=128, vnext_min_positives=8, vnext_min_calibration=32,
     vnext_max_disagreement=0.15, vnext_match_threshold=0.94,
     vnext_dynamic_target=False,
+    vnext_current_min_operating_samples=16,
+    vnext_current_min_precision=.8, vnext_interaction_min_precision=.9,
+    vnext_current_consistency_min=.5,
+    vnext_direction_min_contrast=.1, vnext_direction_min_peak=.5,
+    vnext_direction_max_up_pitch=30.,
 )
 
 
@@ -309,6 +314,51 @@ class OutcomeHeads(nn.Module):
         self.register_buffer("cal_option",torch.full((9,65536),-1,dtype=torch.long))
         self.register_buffer("cal_phase",torch.full((9,65536),-1,dtype=torch.long))
         self.register_buffer("updates",torch.zeros((),dtype=torch.long))
+        # Derived held-out statistics are not additional learned state. They
+        # are rebuilt after checkpoint loading and invalidated on each record
+        # update, rather than scanning the full reservoir on every env step.
+        self._current_operating_cache = None
+
+    def _load_from_state_dict(self, *args, **kwargs):
+        self._current_operating_cache = None
+        return super()._load_from_state_dict(*args, **kwargs)
+
+    def current_thresholds(self):
+        consistency = float(cfg(self.config,"vnext_current_consistency_min"))
+        return self.current_counts.new_tensor([
+            float(getattr(self.config,"vnext_visible_high",.7)), consistency, consistency,
+            float(getattr(self.config,"vnext_interactable_high",.85)), .5])
+
+    @torch.no_grad()
+    def current_operating_statistics(self):
+        """Unique held-out support at the thresholds actually used to act.
+
+        The current reservoir already saves binary labels and squared error.
+        Therefore its original probability is exactly recoverable as sqrt(e)
+        for a negative and 1-sqrt(e) for a positive. No eval labels are used and
+        no new persistent checkpoint buffers are needed.
+        """
+        thresholds = self.current_thresholds()
+        key = (tuple(float(x) for x in thresholds.detach().cpu()), thresholds.device, thresholds.dtype)
+        if self._current_operating_cache is not None and self._current_operating_cache[0] == key:
+            return self._current_operating_cache[1]
+        label = self.cal_label[0,:,:len(CURRENT_EVENTS)]
+        error = self.cal_error[0,:,:len(CURRENT_EVENTS)]
+        valid = self.cal_valid[0,:,:len(CURRENT_EVENTS)] & (self.cal_identity[0]>=0)[:,None]
+        valid &= torch.isfinite(label) & torch.isfinite(error) & (error>=0)
+        # Fractional targets cannot certify a binary operating decision.
+        valid &= (label==0)|(label==1)
+        probability = (label+(1-2*label)*error.clamp(0,1).sqrt()).clamp(0,1)
+        selected = valid & (probability>=thresholds)
+        positive = valid & (label>.5)
+        tp = (selected & positive).sum(0).float()
+        samples = selected.sum(0).float()
+        positives = positive.sum(0).float()
+        result = dict(samples=samples, true_positive=tp, positives=positives,
+            precision=tp/samples.clamp_min(1), recall=tp/positives.clamp_min(1),
+            threshold=thresholds)
+        self._current_operating_cache = (key,result)
+        return result
 
     def current_logits(self,feat,memory):
         x = self.current_trunk(torch.cat((feat.detach().float(),memory.float()),-1))
@@ -318,13 +368,21 @@ class OutcomeHeads(nn.Module):
         n = self.current_cal_counts.clamp_min(1)
         rate = self.current_cal_positives/n
         baseline = (rate*(1-rate)).clamp_min(.001)
-        return ((self.current_counts>=cfg(self.config,"vnext_min_labels"))&
+        ready = ((self.current_counts>=cfg(self.config,"vnext_min_labels"))&
             (self.current_positives>=cfg(self.config,"vnext_min_positives"))&
             ((self.current_counts-self.current_positives)>=cfg(self.config,"vnext_min_positives"))&
             (self.current_cal_counts>=cfg(self.config,"vnext_min_calibration"))&
             (self.current_cal_positives>=min(4,cfg(self.config,"vnext_min_positives")))&
             ((self.current_cal_counts-self.current_cal_positives)>=min(4,cfg(self.config,"vnext_min_positives")))&
             (self.current_cal_errors/n <= baseline))
+        if (bool(getattr(self.config,"vnext_spatial_enabled",False)) and
+                int(getattr(self.config,"vnext_spatial_fix_version",0)) >= 2):
+            stats = self.current_operating_statistics()
+            required = self.current_counts.new_full((5,),float(cfg(self.config,"vnext_current_min_precision")))
+            required[3] = float(cfg(self.config,"vnext_interaction_min_precision"))
+            ready &= stats["samples"]>=int(cfg(self.config,"vnext_current_min_operating_samples"))
+            ready &= stats["precision"]>=required
+        return ready
 
     def forward(self,feat,memory,controls,actuator,lengths,phase,remaining):
         logits,x = self.current_logits(feat,memory)
@@ -350,6 +408,20 @@ class SearchVNext(nn.Module):
         self.config = config
         self.memory_dim = int(cfg(config,"vnext_memory_dim"))
         self.spatial = bool(getattr(config, "vnext_spatial_enabled", False))
+        self.current_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",0)) >= 2
+        if self.spatial and getattr(config,"vnext_spatial_fix_version",0) not in (0,1,2):
+            raise ValueError("Unsupported spatial fix revision")
+        if self.current_fix:
+            probabilities = ("vnext_current_min_precision","vnext_interaction_min_precision",
+                "vnext_current_consistency_min","vnext_direction_min_peak")
+            if any(not 0<float(cfg(config,key))<=1 for key in probabilities):
+                raise ValueError("Current operating probabilities must be in (0,1]")
+            if int(cfg(config,"vnext_current_min_operating_samples"))<1:
+                raise ValueError("Current operating support must be positive")
+            if not 0<float(cfg(config,"vnext_direction_min_contrast"))<=1:
+                raise ValueError("Direction contrast must be in (0,1]")
+            if not 0<=float(cfg(config,"vnext_direction_max_up_pitch"))<=70:
+                raise ValueError("Direction upward pitch bound must be between 0 and 70 degrees")
         if self.spatial:
             from .spatial_memory import SpatialMapMemory
             self.b = SpatialMapMemory(feature_dim, config)
@@ -368,16 +440,56 @@ class SearchVNext(nn.Module):
         return self.b.batch(features.detach(),data)[0]
 
     @torch.no_grad()
-    def online_memory(self,feat,image,heatmap,state=None,is_first=None,previous_control=None,reward=None):
-        context,state,info = self.b.online(feat,image,heatmap,state,is_first,previous_control,reward)
+    def online_memory(self,feat,image,heatmap,state=None,is_first=None,previous_control=None,reward=None,camera_pitch=None):
+        if self.spatial:
+            context,state,info = self.b.online(feat,image,heatmap,state,is_first,previous_control,reward,
+                camera_pitch=camera_pitch)
+        else:
+            context,state,info = self.b.online(feat,image,heatmap,state,is_first,previous_control,reward)
         if not cfg(self.config,"vnext_memory_enabled"):
             context.zero_()
         return context,state,info
 
     @torch.no_grad()
-    def online(self,feat,image,heatmap,memory_state=None,is_first=None,previous_control=None,reward=None):
-        memory,state,info = self.online_memory(feat,image,heatmap,memory_state,is_first,previous_control,reward)
-        return self.current(feat,memory),memory,state,info
+    def online(self,feat,image,heatmap,memory_state=None,is_first=None,previous_control=None,reward=None,camera_pitch=None):
+        memory,state,info = self.online_memory(feat,image,heatmap,memory_state,is_first,previous_control,reward,camera_pitch)
+        current = self.current(feat,memory)
+        if self.current_fix:
+            direction, valid, strength = self.visual_direction(heatmap,camera_pitch,feat)
+            valid &= current["ready"]["visible"] & (current["visible"]>=float(getattr(self.config,"vnext_visible_high",.7)))
+            current.update(direction=direction,direction_ready=valid,direction_strength=strength)
+        return current,memory,state,info
+
+    def visual_direction(self, heatmap, camera_pitch, ref):
+        """A heatmap-centroid bearing proxy, not a trained direction head.
+
+        Only a contrasted cue at a usable own-camera angle can propose a
+        direction. The caller additionally requires calibrated visible-target
+        evidence. Unknown pitch never silently means a level camera.
+        """
+        heat = torch.as_tensor(heatmap,device=ref.device)
+        if heat.ndim==4 and heat.shape[-1]==1:heat=heat[...,0]
+        if heat.shape!=(len(ref),64,64):
+            raise ValueError("Visual direction requires [batch,64,64] heatmap")
+        heat = heat.float()/255. if heat.dtype==torch.uint8 else heat.float()
+        finite = torch.isfinite(heat).flatten(1).all(-1)
+        heat = heat.nan_to_num().clamp(0,1)
+        peak = heat.flatten(1).amax(-1)
+        baseline = heat.mean((-1,-2))
+        contrast = peak-baseline
+        weights = (heat-baseline[:,None,None]-.25*heat.std((-1,-2),unbiased=False)[:,None,None]).clamp_min(0)
+        x = torch.linspace(-1,1,64,device=ref.device)
+        mass = weights.sum((-1,-2))
+        direction = torch.stack(((weights*x[None,None,:]).sum((-1,-2)),
+            (weights*x[None,:,None]).sum((-1,-2))),-1)/mass.clamp_min(1.e-6)[:,None]
+        valid = finite & (peak>=float(cfg(self.config,"vnext_direction_min_peak")))
+        valid &= (contrast>=float(cfg(self.config,"vnext_direction_min_contrast"))) & (mass>0)
+        if camera_pitch is None:
+            valid[:] = False
+        else:
+            pitch = torch.as_tensor(camera_pitch,device=ref.device).float().reshape(len(ref))
+            valid &= torch.isfinite(pitch) & (pitch>=-float(cfg(self.config,"vnext_direction_max_up_pitch"))) & (pitch<=70)
+        return direction.clamp(-1,1),valid,contrast
 
     @torch.no_grad()
     def current(self,feat,memory=None):
@@ -386,9 +498,19 @@ class SearchVNext(nn.Module):
         probs = logits.sigmoid()
         mean = probs.mean(-2)
         ready = self.a.ready_current().expand(*mean.shape[:-1],5)
+        disagreement = probs.std(-2,unbiased=False)
+        if self.current_fix:
+            ready = ready & torch.isfinite(mean) & torch.isfinite(disagreement)
+            ready &= disagreement<=float(cfg(self.config,"vnext_max_disagreement"))
+            consistent = ready[...,:3].all(-1)
+            consistent &= mean[...,0]>=float(getattr(self.config,"vnext_visible_high",.7))
+            consistent &= (mean[...,1:3]>=float(cfg(self.config,"vnext_current_consistency_min"))).all(-1)
+            ready[...,3] &= consistent
         result = {name:mean[...,i] for i,name in enumerate(CURRENT_EVENTS)}
-        result.update(probs=mean,disagreement=probs.std(-2,unbiased=False),
+        result.update(probs=mean,disagreement=disagreement,
             ready={name:ready[...,i] for i,name in enumerate(CURRENT_EVENTS)},current_ready=ready)
+        if self.current_fix:
+            result["interaction_ready"] = ready[...,3]
         return result
 
     @torch.no_grad()
@@ -488,8 +610,11 @@ class SearchVNext(nn.Module):
         window_valid=torch.as_tensor(data.get("vnext_window_valid",np.ones((b,t))),device=device).bool()
         calibration &= window_valid
         train=(~calibration)&window_valid
+        a_calibration=calibration
         if self.spatial:
-            train &= torch.as_tensor(data.get("vnext_spatial_valid",np.zeros((b,t))), device=device).bool()
+            spatial_valid=torch.as_tensor(data.get("vnext_spatial_valid",np.zeros((b,t))), device=device).bool()
+            train &= spatial_valid
+            a_calibration=calibration&spatial_valid
         memory,details=self.b.batch(features,data)
         if not cfg(self.config,"vnext_memory_enabled"):
             memory=memory*0
@@ -502,27 +627,50 @@ class SearchVNext(nn.Module):
         for head in range(self.a.heads):
             boot=((frameid*5+frameid//(head+1)*3+head*71)%7)!=0
             loss=loss+_masked_bce(current_logits[...,head,:],current_y,current_k&train[...,None]&boot[...,None])/self.a.heads
-        metrics={"A/current_loss":loss.detach()}
-        records=[("current",current_logits.sigmoid().mean(-2).detach(),current_y,current_k,train,calibration,frameid)]
+        metrics={"A/current_loss":loss.detach(),
+                 "A/current_valid_labels":(current_k&train[...,None]).sum().detach()}
+        records=[("current",current_logits.sigmoid().mean(-2).detach(),current_y,current_k,train,a_calibration,frameid)]
         horizons=[h for h in (1,2,3) if h<t]
         if int(self.a.updates)%int(cfg(self.config,"vnext_aux_every"))==0 and t>int(cfg(self.config,"vnext_aux_horizon")):
             horizons.append(int(cfg(self.config,"vnext_aux_horizon")))
         controls=torch.as_tensor(data.get("log_applied_control",np.zeros((b,t,9))),device=device).float()
+        if controls.shape != (b,t,9):
+            raise ValueError("A factual controls must have shape [batch,time,9]")
+        finite_control=torch.isfinite(controls).all(-1)
+        marker=torch.as_tensor(data.get("log_actuator_valid",
+            np.ones((b,t)) if "log_applied_control" in data else np.zeros((b,t))),device=device)
+        if marker.shape != (b,t):
+            raise ValueError("A control validity must have shape [batch,time]")
+        control_known=torch.isfinite(marker)&(marker>.5)&finite_control
+        # Invalid rows may still be evaluated in a batched forward pass. Masking
+        # NaN losses afterwards is insufficient (NaN * 0 is NaN), so sanitize
+        # the inactive input while retaining its false validity/provenance.
+        controls=controls.nan_to_num(nan=0.,posinf=0.,neginf=0.)
         act=torch.as_tensor(data.get("log_actuator_after",np.zeros((b,t,3))),device=device).float()
+        if act.shape != (b,t,3):
+            raise ValueError("A factual actuator states must have shape [batch,time,3]")
+        actuator_known=torch.isfinite(act).all(-1)
+        act=act.nan_to_num(nan=0.,posinf=0.,neginf=0.)
         phase=torch.as_tensor(data.get("log_vnext_phase",np.zeros((b,t))),device=device).long()
         option=torch.as_tensor(data.get("log_vnext_choice",np.zeros((b,t))),device=device).long()
         first=torch.as_tensor(data["is_first"],device=device).bool()
         last=torch.as_tensor(data.get("is_last",np.zeros((b,t))),device=device).bool()
         terminal=torch.as_tensor(data.get("is_terminal",np.zeros((b,t))),device=device).bool()
         fy,fk=_labels(data,FUTURE_EVENTS,device)
+        env_error=torch.as_tensor(data.get("log_env_error",np.zeros((b,t))),device=device)
+        error_known=torch.isfinite(env_error)&(env_error<=.5)
+        future_loss=features.sum()*0
+        future_windows=torch.zeros((),device=device,dtype=torch.long)
+        future_labels=torch.zeros((),device=device,dtype=torch.long)
+        metrics["A/future_control_known_rows"]=control_known.sum().detach()
         for h in horizons:
             n=t-h
             seq=torch.stack([controls[:,j+1:j+n+1] for j in range(h)],-2)
             valid=~torch.stack([first[:,j+1:j+n+1]|terminal[:,j:j+n]|last[:,j:j+n] for j in range(h)]).any(0)
-            control_known=torch.as_tensor(data.get("log_actuator_valid",np.ones((b,t)) if "log_applied_control" in data else np.zeros((b,t))),device=device).bool()
             valid &= torch.stack([control_known[:,j+1:j+n+1] for j in range(h)]).all(0)
-            env_error=torch.as_tensor(data.get("log_env_error",np.zeros((b,t))),device=device).bool()
-            valid &= ~torch.stack([env_error[:,j+1:j+n+1] for j in range(h)]).any(0)
+            valid &= torch.stack([error_known[:,j:j+n+1].unfold(1,2,1).all(-1) for j in range(h)]).all(0)
+            valid &= torch.stack([window_valid[:,j:j+n+1].unfold(1,2,1).all(-1) for j in range(h)]).all(0)
+            valid &= actuator_known[:,:n]
             windows=torch.stack([fy[:,j+1:j+n+1] for j in range(h)],-2)
             known=torch.stack([fk[:,j+1:j+n+1] for j in range(h)],-2)
             target=windows.max(-2).values
@@ -535,24 +683,38 @@ class SearchVNext(nn.Module):
                 # invalidate this factual endpoint obstruction measurement.
                 target[...,6]=fy[:,h:,6]
                 known_window[...,6]=fk[:,h:,6]
-            mask=known_window&valid[...,None]
             lengths=torch.full((b,n),h,device=device)
             remain=torch.as_tensor(data.get("log_vnext_remaining",np.full((b,t),1000)),device=device).float()[:,1:n+1]
+            valid &= torch.isfinite(remain)
+            remain=remain.nan_to_num(nan=0.,posinf=0.,neginf=0.)
+            mask=known_window&valid[...,None]
             pred=self.a(features[:,:n],memory[:,:n],seq,act[:,:n],lengths,phase[:,1:n+1],remain)
             hloss=features.sum()*0
+            future_target=F.layer_norm(features[:,h:],(features.shape[-1],))@self.a.projection
             for head in range(self.a.heads):
                 boot=((frameid[:,:n]*5+frameid[:,:n]//(head+1)*3+head*71)%7)!=0
                 mk=mask&train[:,:n,None]&boot[...,None]
                 hloss+=_masked_bce(pred["logits"][...,head,:],target,mk)/self.a.heads
-                future_target=F.layer_norm(features[:,h:],(features.shape[-1],))@self.a.projection
                 ferr=F.smooth_l1_loss(pred["future"][...,head,:],future_target,reduction="none").mean(-1)
                 vm=valid&train[:,:n]&boot
                 hloss+=(ferr*vm).sum()/vm.sum().clamp_min(1)/self.a.heads
-            loss=loss+hloss/len(horizons)
+            future_loss=future_loss+hloss/len(horizons)
             metrics["A/H%d/prediction_loss"%h]=hloss.detach()
             verified=valid&self.matched_option_windows(data,act,controls,h)
+            supervised=valid&train[:,:n]
+            labelled=mask&train[:,:n,None]
+            future_windows+=supervised.sum()
+            future_labels+=labelled.sum()
+            metrics["A/H%d/valid_windows"%h]=valid.sum().detach()
+            metrics["A/H%d/train_windows"%h]=supervised.sum().detach()
+            metrics["A/H%d/label_count"%h]=labelled.sum().detach()
+            metrics["A/H%d/support_windows"%h]=(verified&train[:,:n]).sum().detach()
             records.append((h,pred["logits"].sigmoid().mean(-2).detach(),target,mask&verified[...,None],
-                            train[:,:n],calibration[:,:n],frameid[:,:n],option[:,1:n+1],phase[:,1:n+1]))
+                            train[:,:n],a_calibration[:,:n],frameid[:,:n],option[:,1:n+1],phase[:,1:n+1]))
+        loss=loss+future_loss
+        metrics.update({"A/future_prediction_loss":future_loss.detach(),
+            "A/future_train_windows":future_windows.detach(),
+            "A/future_valid_labels":future_labels.detach()})
         b_train = ((~calibration)&window_valid) if self.spatial else train
         b_loss,bmetrics,bcounts=self.b.loss(features,data,memory,details,b_train)
         if not cfg(self.config,"vnext_memory_enabled"):
@@ -563,6 +725,7 @@ class SearchVNext(nn.Module):
 
     @torch.no_grad()
     def _record(self,records,bcounts):
+        self.a._current_operating_cache = None
         self.b.place_positive+=bcounts[0];self.b.place_negative+=bcounts[1]
         for record in records:
             kind,p,y,k,train,cal,ids,*rest=record
@@ -619,6 +782,21 @@ class SearchVNext(nn.Module):
             self.a.cal_label[binid,slots,:n]=newy
             self.a.cal_error[binid,slots,:n]=newerror
 
+    def current_calibration_metrics(self):
+        if not self.current_fix:
+            return {}
+        stats = self.a.current_operating_statistics()
+        result = {}
+        for name,index in (("visible",0),("interactable",3)):
+            prefix = "A/current_"+name+"_"
+            result[prefix+"operating_samples"] = stats["samples"][index].detach()
+            result[prefix+"positive_samples"] = stats["positives"][index].detach()
+            if bool(stats["samples"][index]>0):
+                result[prefix+"precision"] = stats["precision"][index].detach()
+            if bool(stats["positives"][index]>0):
+                result[prefix+"recall"] = stats["recall"][index].detach()
+        return result
+
     def train_step(self,features,data,step=None):
         prior=[p.requires_grad for p in self.parameters()]
         try:
@@ -633,18 +811,23 @@ class SearchVNext(nn.Module):
                 has_train=bool(((~calibration)&window).any())
                 if not has_train:
                     self._record(records,bcounts*0)
-                    metrics.update({"A/grad_norm":0.,"B/grad_norm":0.,
+                    metrics.update(self.current_calibration_metrics())
+                    metrics.update({"A/grad_norm":0.,"A/future_grad_norm":0.,"B/grad_norm":0.,
                         "A/update_applied":0.,"B/update_applied":0.})
                     return metrics
                 loss.backward()
             a_norm=torch.nn.utils.clip_grad_norm_(self.a.parameters(),cfg(self.config,"vnext_grad_clip"))
             b_norm=torch.nn.utils.clip_grad_norm_(self.b.parameters(),cfg(self.config,"vnext_grad_clip"))
+            future_parameters=list(self.a.trunk.parameters())+list(self.a.events.parameters())+list(self.a.future.parameters())
+            future_grads=[p.grad.detach().float().norm() for p in future_parameters if p.grad is not None]
+            future_norm=torch.stack(future_grads).norm() if future_grads else a_norm*0
             if not bool(torch.isfinite(a_norm)&torch.isfinite(b_norm)):
                 raise FloatingPointError("Nonfinite vNext A/B gradient")
             self._a_opt.step()
             if cfg(self.config,"vnext_memory_enabled"):self._b_opt.step()
             self._record(records,bcounts);self.a.updates+=1
-            metrics.update({"A/grad_norm":a_norm.detach(),"B/grad_norm":b_norm.detach(),
+            metrics.update(self.current_calibration_metrics())
+            metrics.update({"A/grad_norm":a_norm.detach(),"A/future_grad_norm":future_norm.detach(),"B/grad_norm":b_norm.detach(),
                 "A/update_applied":1.,"B/update_applied":float(cfg(self.config,"vnext_memory_enabled")),})
             return metrics
         finally:
@@ -780,6 +963,9 @@ def check_vnext_checkpoint(checkpoint,enabled):
               "search_a_label_version":3,"actuator_version":1}
     if spatial:
         expected.update(pose_version=1,spatial_map_version=2)
+        revision=checkpoint.get("spatial_fix_version",0)
+        if revision not in (0,1,2) or revision != checkpoint.get("config",{}).get("vnext_spatial_fix_version",0):
+            raise ValueError("Unsupported or inconsistent spatial fix revision")
     for key,value in expected.items():
         if checkpoint.get(key)!=value:
             raise ValueError("Unsupported vNext checkpoint "+key)
@@ -797,6 +983,8 @@ def restore_vnext_config(config,checkpoint):
             config[key]=value
     config["vnext_spatial_enabled"] = any(key.startswith("_vnext.b.pose.")
         for key in checkpoint.get("agent_state_dict",{}))
+    if config["vnext_spatial_enabled"]:
+        config["vnext_spatial_fix_version"]=checkpoint.get("spatial_fix_version",0)
     config["search_a_enabled"]=False;config["search_b_enabled"]=False;config["search_c_enabled"]=False
     config["compile"]=False;config["search_branch_enabled"]=False
     check_vnext_checkpoint(checkpoint,True)

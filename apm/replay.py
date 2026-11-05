@@ -9,6 +9,45 @@ def identity(value):
     return int.from_bytes(hashlib.blake2b(str(value).encode(), digest_size=8).digest(), "little") % (2**31-1)
 
 
+def _actual_control_valid(episode, index):
+    """Validate an incoming real transition before missing fields are filled.
+
+    Older collected episodes have actual controls but no explicit validity
+    marker. Zero controls are legitimate no-ops; missing/None/nonfinite controls
+    are unknown. A present marker is authoritative, including unknown entries.
+    This must inspect the source episode, never a schema-padded replay row.
+    """
+    controls = episode.get("log_applied_control")
+    if index <= 0 or controls is None or controls[index] is None:
+        return False
+    value = np.asarray(controls[index])
+    if value.shape != (9,):
+        raise ValueError("Spatial replay actual control must have nine components")
+    if not np.isfinite(value).all():
+        return False
+    for name in ("log_actuator_before", "log_actuator_after"):
+        states = episode.get(name)
+        if states is not None:
+            state = states[index]
+            if state is None or np.shape(state) != (3,) or not np.isfinite(state).all():
+                return False
+    if "log_actuator_valid" in episode:
+        marker = episode["log_actuator_valid"][index]
+        if marker is None or not np.isfinite(marker) or not float(marker) > .5:
+            return False
+    first = episode.get("is_first")
+    if first is None or first[index] is None or bool(first[index]):
+        return False
+    for name, row in (("log_env_error", index), ("log_env_error", index-1),
+                      ("is_last", index-1), ("is_terminal", index-1)):
+        values = episode.get(name)
+        if values is not None:
+            marker = values[row]
+            if marker is None or not np.isfinite(marker) or bool(marker):
+                return False
+    return True
+
+
 def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
     """Preserve original LS episode/window sampling; align outgoing map logs.
 
@@ -24,7 +63,13 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
     shapes.update(log_spatial_patch=(patch_size, patch_size, 6), log_spatial_pose=(4,),
         log_spatial_summary=(12,), log_spatial_directions=(12,), log_spatial_version=(),
         log_spatial_novelty=(), log_spatial_revisit=(), log_spatial_known_cells=(),
-        log_spatial_visited_cells=(), log_actuator_before=(3,), log_actuator_after=(3,),
+        log_spatial_visited_cells=(), log_spatial_motion_accepted=(), log_spatial_raw_motion=(),
+        log_spatial_rejected_motion=(), log_spatial_pair_valid=(), log_spatial_motion_probability=(),
+        log_spatial_trajectory_valid=(), log_spatial_map_write=(), log_spatial_ground_view=(),
+        log_spatial_cue_valid=(), log_spatial_raw_cue=(), log_spatial_motion_unknown=(),
+        log_spatial_pose_gap_count=(), log_spatial_first_gap_step=(),
+        log_spatial_camera_pitch=(), log_spatial_pitch_known=(),
+        log_actuator_before=(3,), log_actuator_after=(3,),
         log_applied_control=(9,), log_env_error=(), log_actuator_valid=(),
         log_search_override=(), log_search_decision=(), log_vnext_world_group=())
     while True:
@@ -63,8 +108,10 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
         poses = np.zeros((length,4), np.float32)
         summaries = np.zeros((length,12), np.float32)
         spatial_valid = np.zeros(length, np.float32)
+        trajectory_valid = np.zeros(length, np.float32)
         previous = np.zeros((length,64,64,3), np.uint8)
         controls = np.zeros((length,9), np.float32)
+        actuator_valid = np.zeros(length, np.float32)
         pair_valid = np.zeros(length, np.float32)
         calibration = np.zeros(length, np.float32)
         frameids = np.zeros(length, np.int64)
@@ -82,6 +129,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
                 calibration[row] = holdout
                 frameids[row] = identity(key+":"+str(i))
                 observations[row] = i
+                actuator_valid[row] = _actual_control_valid(ep, i)
                 if i+1 < total and "log_spatial_patch" in ep:
                     version = ep.get("log_spatial_version", np.zeros(total))
                     if int(np.asarray(version[i+1])) == 2:
@@ -93,9 +141,14 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
                         if "log_spatial_summary" in ep:
                             summaries[row] = ep["log_spatial_summary"][i+1]
                         spatial_valid[row] = 1
+                        if "log_spatial_trajectory_valid" in ep:
+                            marker = ep["log_spatial_trajectory_valid"][i+1]
+                            trajectory_valid[row] = bool(marker is not None and np.isfinite(marker) and float(marker)>.5)
+                        # Revision 0/1 readers ignore this new field. A revision
+                        # 2 reader must not certify a missing historical marker.
                 if i > 0 and not realfirst[row]:
                     error = bool(ep.get("log_env_error", np.zeros(total))[i])
-                    if not error and not bool(ep.get("is_last", np.zeros(total))[i-1]):
+                    if not error and bool(actuator_valid[row]):
                         previous[row] = ep["image"][i-1]
                         if "log_applied_control" in ep:
                             controls[row] = ep["log_applied_control"][i]
@@ -103,8 +156,15 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
                 row += 1
         result.update(vnext_spatial_patch=patches, vnext_spatial_pose=poses,
             vnext_spatial_summary=summaries, vnext_spatial_valid=spatial_valid,
+            vnext_spatial_trajectory_valid=trajectory_valid,
             vnext_pose_prev_image=previous, vnext_pose_control=controls,
             vnext_pose_prev_valid=pair_valid, vnext_calibration=calibration,
             vnext_window_valid=np.ones(length,np.float32),vnext_real_first=realfirst,
             vnext_frame_id=frameids,vnext_observation_index=observations)
+        # Override schema padding using source provenance. In particular, legacy
+        # episodes without a validity field must not silently disable all A
+        # future losses merely because the fixed mixed-replay schema adds it.
+        result["log_actuator_valid"] = actuator_valid
+        for name in ("log_applied_control", "log_actuator_before", "log_actuator_after"):
+            result[name] = np.nan_to_num(result[name], nan=0., posinf=0., neginf=0.)
         yield result

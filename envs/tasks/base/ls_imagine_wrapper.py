@@ -79,6 +79,7 @@ class LSImagineWrapper(Wrapper, ABC):
             "log_applied_control": np.zeros(CONTROL_DIM, np.float32),
             "log_requested_action": np.int32(0),
             "log_env_error": np.float32(0),
+            "log_actuator_valid": np.float32(0),
         }
 
         self._noop_action = NOOP_ACTION
@@ -118,6 +119,7 @@ class LSImagineWrapper(Wrapper, ABC):
                 "log_applied_control": spaces.Box(-np.inf, np.inf, (CONTROL_DIM,), dtype=np.float32),
                 "log_requested_action": spaces.Box(0, 11, (), dtype=np.int32),
                 "log_env_error": spaces.Box(0, 1, (), dtype=np.float32),
+                "log_actuator_valid": spaces.Box(0, 1, (), dtype=np.float32),
                 "log_vnext_world_group": spaces.Box(0, (1 << 24)-1, (), dtype=np.int64),
             })
         self.action_space = spaces.discrete.Discrete(len(BASIC_ACTIONS))
@@ -180,6 +182,7 @@ class LSImagineWrapper(Wrapper, ABC):
                 "log_applied_control": applied,
                 "log_requested_action": np.int32(requested),
                 "log_env_error": np.float32(0),
+                "log_actuator_valid": np.float32(0),
             }
         else:
             action = self._action(action)
@@ -192,7 +195,12 @@ class LSImagineWrapper(Wrapper, ABC):
                 done = True
                 break
         if self._vnext:
-            self._actuator_log["log_env_error"] = np.float32(bool(info.get("error")))
+            failed = "error" in info
+            self._actuator_log["log_env_error"] = np.float32(failed)
+            # A known zero/noop control is valid too. Reset rows and failed
+            # steps have no confirmed transition and must never train futures.
+            self._actuator_log["log_actuator_valid"] = np.float32(
+                not failed and np.isfinite(self._actuator_log["log_applied_control"]).all())
         obs["is_first"] = False
         obs["is_last"] = bool(done)
         obs["is_terminal"] = bool(info.get("is_terminal", info.get("real_done", False)))

@@ -63,6 +63,7 @@ class ActuatorTests(unittest.TestCase):
         old, new = Wrapper(old_env), Wrapper(new_env, vnext=True)
         old.reset()
         initial = new.reset()
+        self.assertEqual(float(initial["log_actuator_valid"]), 0.)
         np.testing.assert_array_equal(initial["log_actuator_after"], [0,0,0])
         self.assertEqual(initial["search_label_version"], 3)
         self.assertTrue(new.observation_space["search_label_version"].contains(initial["search_label_version"]))
@@ -75,8 +76,25 @@ class ActuatorTests(unittest.TestCase):
             self.assertEqual(obs["log_requested_action"], command)
             expected = np.array([a[k] for k in CONTROL_KEYS[:7]] + list(a["camera"]), np.float32)
             np.testing.assert_array_equal(obs["log_applied_control"], expected)
+            self.assertEqual(float(obs["log_actuator_valid"]), 1.)
         self.assertNotIn("log_applied_control", old.observation_space.spaces)
         self.assertIn("search_center_interactable", new.observation_space.spaces)
+
+    def test_control_validity_marks_noop_error_and_reset_separately(self):
+        env = FakeEnv()
+        wrapped = load_wrapper()(env, vnext=True)
+        self.assertEqual(float(wrapped.reset()["log_actuator_valid"]), 0.)
+        obs, _, _, _ = wrapped.step(0)
+        self.assertFalse(obs["log_applied_control"].any())
+        self.assertEqual(float(obs["log_actuator_valid"]), 1.)
+        def fail(action):
+            return observation(), 0., False, {"error": "transport"}
+        env.step = fail
+        obs, _, done, _ = wrapped.step(6)
+        self.assertTrue(done)
+        self.assertEqual(float(obs["log_actuator_valid"]), 0.)
+        self.assertEqual(float(obs["log_env_error"]), 1.)
+        self.assertEqual(float(wrapped.reset()["log_actuator_valid"]), 0.)
 
     def test_numpy_torch_batched_parity(self):
         state = initial_state(7)

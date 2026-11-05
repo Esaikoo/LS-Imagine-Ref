@@ -46,7 +46,8 @@ def config(**kw):
     result=dict(seed=0,episode_max_steps=1000,episode_max_steps_override=0,
         target_item="sand",vnext_memory_dim=4,vnext_c_hidden=16,
         vnext_start_step=0,vnext_base_episode_fraction=0.,
-        vnext_probe_probability=1.,vnext_stall_steps=2000)
+        vnext_probe_probability=1.,vnext_stall_steps=2000,
+        vnext_spatial_fix_version=0)
     result.update(kw);return SimpleNamespace(**result)
 
 
@@ -611,6 +612,352 @@ class SpatialControlTests(unittest.TestCase):
             self.assertLessEqual(info["log_vnext_search_used"].item(),10)
             self.assertLessEqual(info["log_vnext_extra_used"].item(),25)
         self.assertEqual(sum(chosen),9)  # three K3 sweeps, no unbudgeted scan
+
+
+class SpatialRecoveryFixTests(unittest.TestCase):
+    run_step = VNextControlTests.run_step
+    summary = staticmethod(SpatialControlTests.summary)
+
+    def setUp(self):
+        self.cfg=config(vnext_spatial_enabled=True,vnext_spatial_fix_version=1,
+            vnext_probe_probability=0.,vnext_stall_steps=8)
+
+    @staticmethod
+    def frame(shift=0):
+        y,x=torch.meshgrid(torch.arange(64),torch.arange(64),indexing="ij")
+        p=((x//8+y//8+shift)%2).float()*.6+.1
+        return torch.stack((p,p*.7,p*.3),-1)[None]
+
+    def test_false_b_motion_cannot_reset_independent_stall(self):
+        cfg=config(vnext_spatial_enabled=True,vnext_spatial_fix_version=1,vnext_control=False,
+                   vnext_stall_steps=8)
+        c=VNextController(8,cfg);state=None;ab=UnsupportedSpatialAB()
+        for i in range(16):
+            _,state,info=self.run_step(c,ab,state,proposal=6,first=i==0,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":self.summary(motion=.12)})
+        self.assertGreaterEqual(state["stalled"].item(),15)
+        self.assertGreaterEqual(state["forward_stall"].item(),12)
+        self.assertEqual(info["log_vnext_motion_rejected"].item(),1)
+        self.assertEqual(info["log_vnext_spatial_progress"].item(),0)
+        self.assertEqual(state["phase"].item(),RECOVERY)
+
+    def test_visual_translation_is_independent_of_pose_qualification(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=6,training=False,
+            obs={"image":self.frame(),"vnext_spatial_summary":self.summary(ready=False)})
+        state["stalled"][:]=50;state["forward_stall"][:]=20
+        state["interact_failures"][:]=2;state["clear_attempts"][:]=2
+        _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=6,training=False,
+            obs={"image":self.frame(1),"vnext_spatial_summary":self.summary(ready=False)})
+        self.assertEqual(info["log_vnext_visual_progress"].item(),1)
+        self.assertEqual(state["stalled"].item(),0)
+        self.assertEqual(state["forward_stall"].item(),0)
+        self.assertEqual(state["interact_failures"].item(),0)
+
+    def test_rotating_image_cannot_erase_blocked_history(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=4,training=False,
+            obs={"image":self.frame(),"vnext_spatial_summary":self.summary()})
+        state["stalled"][:]=5;state["forward_stall"][:]=5;state["clear_attempts"][:]=1
+        _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=4,training=False,
+            obs={"image":self.frame(1),"vnext_spatial_summary":self.summary(motion=.2)})
+        self.assertEqual(info["log_vnext_visual_progress"].item(),0)
+        self.assertEqual(state["stalled"].item(),6)
+        self.assertEqual(state["forward_stall"].item(),5)
+        self.assertEqual(state["clear_attempts"].item(),1)
+
+    def test_repeating_jump_animation_is_not_endless_visual_progress(self):
+        c=VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=1,
+            vnext_control=False));state=None;progress=[]
+        for i in range(40):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=10,first=i==0,training=False,
+                obs={"image":self.frame(i%2),"vnext_spatial_summary":self.summary(motion=.2)})
+            progress.append(info["log_vnext_visual_progress"].item())
+        self.assertLessEqual(sum(progress),1)
+        self.assertEqual(sum(progress[4:]),0)
+        self.assertGreaterEqual(state["forward_stall"].item(),35)
+
+    def test_missing_image_is_unknown_not_motion_or_blocked_evidence(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        state["has_visual"][:]=True;state["previous_control"][:,1]=1
+        state["stalled"][:]=5;state["forward_stall"][:]=2
+        _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=6,training=False,
+            obs={"vnext_spatial_summary":self.summary(motion=.2)})
+        self.assertEqual(state["stalled"].item(),6)
+        self.assertEqual(state["forward_stall"].item(),2)
+        self.assertEqual(info["log_vnext_motion_rejected"].item(),1)
+
+    def test_cold_clearance_trial_is_real_bounded_and_not_learned(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        state["stalled"][:]=30;state["forward_stall"][:]=6
+        for expected in [1,1,6]:
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":self.summary(ready=False)})
+            self.assertEqual(action.argmax(-1).item(),expected)
+            self.assertEqual(info["log_vnext_choice"].item(),7)
+            self.assertEqual(info["log_vnext_source"].item(),6)
+            self.assertEqual(info["log_vnext_score_supported"].sum().item(),0)
+        self.assertEqual(state["clear_attempts"].item(),1)
+        self.assertEqual(state["recovery_trials"].item(),1)
+        self.assertEqual(info["log_vnext_extra_used"].item(),3)
+        self.assertEqual(c.coverage.sum().item(),0)  # eval never adds experience
+
+    def test_cold_recovery_waits_for_sticky_jump_then_clears(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        state["stalled"][:]=30;state["forward_stall"][:]=6;state["actuator"][:,1]=9
+        for i in range(9):
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=10,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":self.summary(ready=False)})
+            self.assertEqual(action.argmax(-1).item(),0)
+            self.assertEqual(state["actuator"][0,1].item(),8-i)
+        action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=10,training=False,
+            obs={"image":self.frame(),"vnext_spatial_summary":self.summary(ready=False)})
+        self.assertEqual(action.argmax(-1).item(),1)
+        self.assertEqual(info["log_vnext_choice"].item(),7)
+
+    def test_full_repeated_forward_jump_false_pose_chain_reaches_actual_clearance(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        events=[];ab=UnsupportedSpatialAB()
+        for _ in range(65):
+            action,state,info=self.run_step(c,ab,state,proposal=10,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":self.summary(motion=.2)})
+            events.append((int(action.argmax(-1)),int(info["log_vnext_choice"]),
+                           int(state["actuator"][0,1]),int(info["log_vnext_source"])))
+            self.assertLessEqual(info["log_vnext_extra_used"].item(),25)
+            self.assertLessEqual(state["recovery_trials"].item(),4)
+        self.assertTrue(any(option==9 for command,option,jump,source in events))
+        attacks=[i for i,(command,option,jump,source) in enumerate(events)
+                 if command==1 and option==7 and source==6]
+        self.assertTrue(attacks,events)
+        self.assertTrue(all(events[i][2]==0 for i in attacks))
+        self.assertEqual(c.coverage.sum().item(),0)
+        self.assertGreaterEqual(state["forward_stall"].item(),6)
+
+    def test_episode_reset_clears_recovery_and_visual_memory_only_reset_rows(self):
+        c=VNextController(8,self.cfg);state=c.initial(2,"cpu")
+        state["recovery_trials"][:]=4;state["forward_stall"][:]=30
+        state["visual_valid"][:]=True;state["visual_yaw"][:]=80
+        _,state,_=c.choose(UnsupportedSpatialAB(),torch.ones(2,8),torch.zeros(2,4),current(2),{},
+            F.one_hot(torch.tensor([0,0]),12).float(),state,torch.tensor([True,False]),100000,False)
+        self.assertEqual(state["recovery_trials"].tolist(),[0,4])
+        self.assertEqual(state["forward_stall"].tolist(),[0,30])
+        self.assertFalse(state["visual_valid"][0].any())
+        self.assertTrue(state["visual_valid"][1].all())
+
+    def test_recovery_probes_exhaust_and_return_to_search(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        state["stalled"][:]=30
+        starts=0
+        for i in range(70):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":self.summary(ready=False)})
+            starts+=int(info["log_vnext_recovery_probe"].item())
+            self.assertLessEqual(info["log_vnext_extra_used"].item(),25)
+        self.assertEqual(starts,4)
+        self.assertEqual(state["recovery_trials"].item(),4)
+        self.assertEqual(state["phase"].item(),SEARCH)
+        self.assertEqual(info["log_vnext_override"].item(),0)
+
+    def test_camera_recovery_cannot_repeat_forever(self):
+        c=VNextController(8,self.cfg);state=c.initial(1,"cpu");state["age"][:]=100
+        state["stalled"][:]=30;state["actuator"][:,2]=-70
+        for _ in range(100):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=2,training=False,
+                obs={"image":torch.full((1,64,64,3),.7),"vnext_spatial_summary":self.summary(ready=False)})
+        self.assertEqual(state["recovery_trials"].item(),4)
+        self.assertEqual(state["phase"].item(),SEARCH)
+
+    def test_recovery_probe_still_respects_protection_budget_and_off(self):
+        for reason in ["attack","budget","off","unknown_obstruction"]:
+            c=VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=1,
+                vnext_probe_probability=0.,vnext_control=reason!="off",vnext_stall_steps=8))
+            state=c.initial(1,"cpu");state["age"][:]=100;state["stalled"][:]=30
+            state["forward_stall"][:]=0 if reason=="unknown_obstruction" else 6
+            if reason=="budget":state["history"][0,:26]=2
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,
+                proposal=1 if reason=="attack" else 0,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":self.summary(ready=False)})
+            self.assertNotEqual(info["log_vnext_choice"].item(),7,reason)
+            if reason!="unknown_obstruction":self.assertEqual(info["log_vnext_override"].item(),0,reason)
+
+
+class SpatialInteractionV2Tests(unittest.TestCase):
+    run_step = VNextControlTests.run_step
+    frame = staticmethod(SpatialRecoveryFixTests.frame)
+
+    def cfg(self,**values):
+        kwargs=dict(vnext_spatial_enabled=True,vnext_spatial_fix_version=2,
+            vnext_probe_probability=0.,vnext_stall_steps=2000,
+            vnext_interact_result_wait=4,vnext_retry_cooldown=5)
+        kwargs.update(values)
+        return config(**kwargs)
+
+    def credible(self,x=0.,y=0.,joint=.99,direction_ready=True):
+        result=current(visible=.99,joint=joint)
+        result.update(direction=torch.tensor([[x,y]]),direction_ready=torch.tensor([direction_ready]))
+        return result
+
+    def test_persistent_target_retries_after_two_inconclusive_attacks_but_is_bounded(self):
+        c=VNextController(8,self.cfg(vnext_interact_max_trials=4));state=c.initial(1,"cpu")
+        state["age"][:]=100;events=[]
+        for _ in range(100):
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=current(visible=.99,joint=.99),training=False,obs={"image":self.frame()})
+            events.append((int(action.argmax(-1)),int(info["log_vnext_choice"]),int(info["log_vnext_decision"])))
+            self.assertLessEqual(state["interaction_trials"].item(),4)
+            self.assertLessEqual(info["log_vnext_extra_used"].item(),25)
+        self.assertEqual(state["interaction_trials"].item(),4)
+        self.assertEqual(sum(cmd==1 and option==8 for cmd,option,start in events),8)
+        self.assertEqual(sum(cmd==6 and option==8 for cmd,option,start in events),4)
+        self.assertEqual(state["interact_failures"].item(),4)
+        self.assertFalse(state["pending_interact"].item())
+        self.assertEqual(state["phase"].item(),ALIGN)
+        self.assertEqual(info["log_vnext_interaction_exhausted"].item(),1)
+
+    def test_last_permitted_interaction_completes_its_pickup_lease(self):
+        c=VNextController(8,self.cfg(vnext_interact_max_trials=1));state=c.initial(1,"cpu")
+        state["age"][:]=100;state["actionable_run"][:]=3;state["visible_run"][:]=3
+        commands=[]
+        for _ in range(3):
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=current(visible=.99,joint=.99),training=False)
+            commands.append(int(action.argmax(-1)))
+            self.assertEqual(info["log_vnext_choice"].item(),8)
+        self.assertEqual(commands,[1,1,6])
+        self.assertTrue(state["pending_interact"].item())
+        self.assertEqual(state["interaction_wait"].item(),4)
+
+    def test_delayed_task_reward_clears_pending_result_without_false_failure(self):
+        c=VNextController(8,self.cfg());state=c.initial(1,"cpu")
+        state["age"][:]=100;state["actionable_run"][:]=3;state["visible_run"][:]=3
+        for _ in range(3):
+            _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=current(visible=.99,joint=.99),training=False)
+        for _ in range(2):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=current(visible=.99,joint=.99),training=False)
+            self.assertEqual(state["interact_failures"].item(),0)
+            self.assertTrue(state["pending_interact"].item())
+            self.assertNotEqual(info["log_vnext_choice"].item(),8)
+        _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+            cur=current(visible=.99,joint=.99),training=False,obs={"reward":torch.ones(1)})
+        self.assertEqual(state["interact_failures"].item(),0)
+        self.assertFalse(state["pending_interact"].item())
+        self.assertEqual(state["interaction_wait"].item(),0)
+        self.assertEqual(state["interaction_trials"].item(),0)
+
+    def test_historical_two_failures_do_not_permanently_mask_credible_target(self):
+        c=VNextController(8,self.cfg());state=c.initial(1,"cpu")
+        state["age"][:]=100;state["phase"][:]=INTERACT
+        state["actionable_run"][:]=3;state["visible_run"][:]=3
+        state["interact_failures"][:]=2;state["interaction_trials"][:]=2
+        action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+            cur=current(visible=.99,joint=.99),training=False)
+        self.assertEqual(action.argmax(-1).item(),1)
+        self.assertEqual(info["log_vnext_choice"].item(),8)
+        self.assertEqual(state["interaction_trials"].item(),3)
+
+    def test_result_wait_expiry_is_inconclusive_then_cooldown_not_immediate_failure(self):
+        c=VNextController(8,self.cfg(vnext_retry_cooldown=20));state=c.initial(1,"cpu")
+        state["age"][:]=100;state["actionable_run"][:]=3;state["visible_run"][:]=3
+        for _ in range(3):
+            _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=current(visible=.99,joint=.99),training=False)
+        for tick in range(4):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=current(visible=.99,joint=.99),training=False)
+            self.assertEqual(state["interact_failures"].item(),int(tick==3))
+            self.assertNotEqual(info["log_vnext_choice"].item(),8)
+        self.assertEqual(state["interaction_trials"].item(),1)
+
+    def test_alignment_phase_templates_do_not_attack_or_count_as_clearance(self):
+        c=VNextController(8,self.cfg())
+        commands,lengths=c.templates(torch.zeros(3,3),torch.tensor([100,100,100]),
+            torch.tensor([ALIGN,SEARCH,RECOVERY]))
+        self.assertEqual(commands[0,6].tolist(),[2,0,0])
+        self.assertEqual(commands[0,7].tolist(),[3,0,0])
+        self.assertEqual(lengths[0,[1,2,6,7]].tolist(),[1,1,1,1])
+        self.assertEqual(commands[1,7].tolist(),[1,1,6])
+        self.assertEqual(commands[2,6].tolist(),[4,5,5])
+        self.assertEqual(option_names(True,ALIGN)[6:8],("align_up","align_down"))
+        state=c.initial(1,"cpu");state["age"][:]=100;state["phase"][:]=ALIGN;state["visible_run"][:]=3
+        _,state,info=self.run_step(c,SpatialAB(7),state,proposal=0,
+            cur=current(visible=.99,joint=0.),training=False)
+        self.assertEqual(info["log_vnext_choice"].item(),7)
+        self.assertEqual(state["clear_attempts"].item(),0)
+        self.assertEqual(state["clear_cooldown"].item(),0)
+        self.assertEqual(state["recovery_trials"].item(),0)
+
+    def test_qualified_visual_direction_can_try_each_camera_axis_without_A_or_Q_support(self):
+        for x,y,command,option in [(-.6,0.,4,1),(.6,0.,5,2),(0.,-.6,2,6),(0.,.6,3,7)]:
+            c=VNextController(8,self.cfg(vnext_probe_probability=1.));state=c.initial(1,"cpu")
+            state["age"][:]=100;state["phase"][:]=ALIGN;state["visible_run"][:]=3
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=self.credible(x,y,joint=0.),training=True)
+            self.assertEqual(action.argmax(-1).item(),command)
+            self.assertEqual(info["log_vnext_choice"].item(),option)
+            self.assertEqual(info["log_vnext_source"].item(),7)
+            self.assertEqual(info["log_vnext_behavior_probability"].item(),1)
+            self.assertEqual(state["alignment_trials"].item(),1)
+            self.assertEqual(info["log_vnext_option_duration"].item(),1)
+
+    def test_unknown_direction_cannot_force_alignment_or_bypass_pitch_clamp(self):
+        for ready,pitch in [(False,0.),(True,70.)]:
+            c=VNextController(8,self.cfg());state=c.initial(1,"cpu")
+            state["age"][:]=100;state["phase"][:]=ALIGN;state["visible_run"][:]=3
+            state["actuator"][:,2]=pitch
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=self.credible(0.,.6,joint=0.,direction_ready=ready),training=False)
+            self.assertEqual(action.argmax(-1).item(),0)
+            self.assertEqual(info["log_vnext_alignment_probe"].item(),0)
+
+    def test_alignment_probe_is_bounded_and_respects_off_protection_and_budget(self):
+        for reason in ["off","attack","budget","exhausted"]:
+            c=VNextController(8,self.cfg(vnext_control=reason!="off"));state=c.initial(1,"cpu")
+            state["age"][:]=100;state["phase"][:]=ALIGN;state["visible_run"][:]=3
+            if reason=="budget":state["history"][0,:26]=2
+            if reason=="exhausted":state["alignment_trials"][:]=4
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,
+                proposal=1 if reason=="attack" else 0,cur=self.credible(.6,0.,joint=0.),training=False)
+            self.assertEqual(info["log_vnext_alignment_probe"].item(),0,reason)
+            self.assertEqual(info["log_vnext_override"].item(),0,reason)
+
+    def test_water_and_wool_keep_legal_use_interactions(self):
+        for target in ["water_bucket","wool"]:
+            c=VNextController(8,self.cfg(target_item=target))
+            commands,lengths=c.templates(torch.zeros(1,3),torch.tensor([100]),torch.tensor([INTERACT]))
+            self.assertEqual(commands[0,8].tolist(),[11,11,11])
+            self.assertEqual(lengths[0,8].item(),2)
+
+    def test_partial_reset_clears_only_new_interaction_and_alignment_state(self):
+        c=VNextController(8,self.cfg());state=c.initial(2,"cpu")
+        state["interaction_trials"][:]=5;state["interaction_wait"][:]=3
+        state["pending_interact"][:]=True;state["alignment_trials"][:]=4
+        _,state,info=c.choose(UnsupportedSpatialAB(),torch.ones(2,8),torch.zeros(2,4),current(2),{},
+            F.one_hot(torch.tensor([0,0]),12).float(),state,torch.tensor([True,False]),100000,False)
+        self.assertEqual(state["interaction_trials"].tolist(),[0,5])
+        self.assertEqual(state["interaction_wait"].tolist(),[0,2])
+        self.assertEqual(state["alignment_trials"].tolist(),[0,4])
+        self.assertEqual(state["pending_interact"].tolist(),[False,True])
+
+    def test_replay_reconstructs_alignment_camera_candidates_using_logged_phase(self):
+        class RecordingAB(UnsupportedSpatialAB):
+            def __init__(self):super().__init__();self.saved=[]
+            def predict_candidates(self,feat,memory,controls,actuator,**kw):
+                self.saved.append((controls.detach().clone(),kw["phase"].detach().clone()))
+                return super().predict_candidates(feat,memory,controls,actuator,**kw)
+        c=VNextController(8,self.cfg());ab=RecordingAB();d=replay(time=7)
+        d["log_vnext_version"][:]=2
+        d["log_vnext_context"][:,:,1:5]=0;d["log_vnext_context"][:,:,2]=1
+        d["log_vnext_mask"][:,:,[1,2,3,6,7]]=1
+        m=c.train_batch(torch.randn(1,7,8),torch.zeros(1,7,4),ab,d)
+        self.assertGreater(m["C/transitions"],0)
+        self.assertTrue(ab.saved)
+        for controls,phase in ab.saved:
+            self.assertTrue((phase==ALIGN).all())
+            self.assertTrue((controls[:,7,:,0]==0).all())
+            self.assertTrue((controls[:,7,0,7]==10).all())
+            self.assertTrue((controls[:,7,1:]==0).all())
 
 
 if __name__=="__main__":unittest.main()

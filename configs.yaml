@@ -11,6 +11,7 @@ defaults:
   resume_from: ''
   search_vnext_enabled: False
   vnext_spatial_enabled: False
+  vnext_spatial_fix_version: 2  # Restore historical revisions explicitly.
   vnext_pose_supervision: True
   vnext_map_size: 65
   vnext_map_resolution: 1.5
@@ -47,6 +48,9 @@ defaults:
   vnext_reward_progress: 0.25
   vnext_motion_confidence: 0.4
   vnext_motion_threshold: 0.03
+  vnext_visual_novelty_threshold: 0.025
+  vnext_blocked_forward_steps: 6
+  vnext_recovery_probe_limit: 4
   vnext_clearance_enabled: True
   vnext_clearance_attempts: 2
   vnext_visual_strict: True
@@ -70,6 +74,13 @@ defaults:
   vnext_min_positives: 8
   vnext_min_calibration: 32
   vnext_max_disagreement: 0.15
+  vnext_current_min_operating_samples: 16
+  vnext_current_min_precision: 0.8
+  vnext_interaction_min_precision: 0.9
+  vnext_current_consistency_min: 0.5
+  vnext_direction_min_contrast: 0.1
+  vnext_direction_min_peak: 0.5
+  vnext_direction_max_up_pitch: 30.0
   vnext_match_threshold: 0.94
   vnext_dynamic_target: False
   vnext_control: True
@@ -97,6 +108,10 @@ defaults:
   vnext_interaction_protect: 32
   vnext_interact_steps: 2
   vnext_interact_retries: 2
+  vnext_interact_result_wait: 6
+  vnext_interact_max_trials: 8
+  vnext_align_probe_limit: 4
+  vnext_align_deadzone: 0.15
   vnext_retry_cooldown: 20
   vnext_commit_steps: 3
   vnext_c_margin: 0.01

@@ -173,6 +173,24 @@ def episode(points=3):
 
 
 class SpatialDiagnosticsTests(unittest.TestCase):
+    def test_explicit_trajectory_gap_overrides_stale_readiness_and_reports_unknown(self):
+        data=episode()
+        data['log_spatial_trajectory_valid']=np.array([0,1,0,0],np.float32)
+        data['log_spatial_motion_unknown']=np.array([0,0,1,0],np.float32)
+        data['log_spatial_map_write']=np.array([0,1,0,0],np.float32)
+        data['log_spatial_ground_view']=np.array([0,1,0,0],np.float32)
+        data['log_spatial_cue_valid']=np.zeros(4,np.float32)
+        data['log_spatial_pose_gap_count']=np.array([0,0,1,1],np.float32)
+        result=spatial_episode_diagnostics(data)
+        self.assertAlmostEqual(result['spatial_localization_rate'],1./3)
+        self.assertEqual(result['spatial_trajectory_available'],0.)
+        self.assertEqual(result['spatial_pose_gap_count'],1.)
+        self.assertAlmostEqual(result['spatial_unknown_motion_rate'],1./3)
+        self.assertAlmostEqual(result['spatial_map_write_rate'],1./3)
+        self.assertEqual(result['spatial_cue_write_rate'],0.)
+        self.assertNotIn('spatial_estimated_path_length',result)
+        self.assertNotIn('spatial_ate_rmse',result)
+
     def test_outgoing_map_alignment_and_terminal_exclusion(self):
         data = episode()
         data["log_spatial_pose"][0] = 1000  # unknown cache row cannot be used

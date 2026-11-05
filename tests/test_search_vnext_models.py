@@ -2,6 +2,7 @@
 import pathlib
 import sys
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 import numpy as np
@@ -301,6 +302,83 @@ class VNextModelsTest(unittest.TestCase):
         c={}
         restore_vnext_config(c,{"agent_state_dict":{}})
         self.assertFalse(c["search_vnext_enabled"])
+
+
+class CurrentOperatingCalibrationTests(unittest.TestCase):
+    def model(self, revision=2):
+        cfg=config()
+        cfg.vnext_spatial_enabled=True
+        cfg.vnext_spatial_fix_version=revision
+        return SearchVNext(24,cfg)
+
+    @staticmethod
+    def calibrate(model, false_confident=0):
+        a=model.a;n=1000
+        label=torch.zeros(n,5);label[:20]=1
+        probability=torch.full((n,5),.05);probability[:20]=.95
+        probability[20:20+false_confident,3]=.95
+        with torch.no_grad():
+            a.current_counts.fill_(2000);a.current_positives.fill_(200)
+            a.cal_identity[0,:n]=torch.arange(n)
+            a.cal_valid[0,:n,:5]=True
+            a.cal_label[0,:n,:5]=label
+            a.cal_error[0,:n,:5]=(probability-label).square()
+            a.current_cal_counts.fill_(n)
+            a.current_cal_positives.copy_(label.sum(0))
+            a.current_cal_errors.copy_((probability-label).square().sum(0))
+        a._current_operating_cache=None
+
+    def test_low_global_Brier_cannot_certify_bad_high_confidence_precision(self):
+        model=self.model();self.calibrate(model,false_confident=10)
+        stats=model.a.current_operating_statistics()
+        self.assertAlmostEqual(float(stats["precision"][3]),2/3,places=6)
+        self.assertEqual(float(stats["samples"][3]),30.)
+        self.assertFalse(bool(model.a.ready_current()[3]))
+        self.assertTrue(bool(model.a.ready_current()[0]))
+        legacy=self.model(1);legacy.load_state_dict(model.state_dict())
+        self.assertTrue(bool(legacy.a.ready_current()[3]))
+
+    def test_load_rebuilds_cached_qualification_and_cache_is_not_checkpoint_state(self):
+        good=self.model();self.calibrate(good)
+        self.assertTrue(bool(good.a.ready_current()[3]))
+        bad=self.model();self.calibrate(bad,false_confident=10)
+        good.load_state_dict(bad.state_dict())
+        self.assertFalse(bool(good.a.ready_current()[3]))
+        self.assertFalse(any('operating_cache' in key for key in good.state_dict()))
+        self.assertEqual(float(good.a.current_operating_statistics()["samples"][3]),30.)
+
+    def test_online_disagreement_and_cross_head_consistency_are_required(self):
+        model=self.model();self.calibrate(model)
+        features=torch.zeros(1,24);memory=torch.zeros(1,16)
+        probability=torch.full((1,3,5),.95)
+        probability[0,1]=.55
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(probability),None)):
+            result=model.current(features,memory)
+        self.assertFalse(bool(result['ready']['visible'][0]))
+        self.assertFalse(bool(result['interaction_ready'][0]))
+        probability.fill_(.95);probability[:,:,1]=.2
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(probability),None)):
+            result=model.current(features,memory)
+        self.assertTrue(bool(result['ready']['visible'][0]))
+        self.assertFalse(bool(result['interaction_ready'][0]))
+
+    def test_visual_bearing_rejects_unknown_pitch_sky_and_uniform_heat(self):
+        model=self.model();reference=torch.zeros(1,24)
+        heat=torch.zeros(1,64,64);heat[:,44:56,46:60]=1
+        direction,valid,_=model.visual_direction(heat,torch.zeros(1),reference)
+        self.assertTrue(bool(valid[0]));self.assertGreater(float(direction[0,0]),.3)
+        self.assertGreater(float(direction[0,1]),.3)
+        for candidate,pitch in [(heat,None),(heat,torch.tensor([-60.])),
+                                (torch.ones_like(heat),torch.zeros(1))]:
+            self.assertFalse(bool(model.visual_direction(candidate,pitch,reference)[1][0]))
+
+    def test_visual_bearing_does_not_override_unqualified_target(self):
+        model=self.model()
+        image=torch.zeros(1,64,64,3,dtype=torch.uint8)
+        heat=torch.zeros(1,64,64,dtype=torch.uint8);heat[:,44:56,46:60]=255
+        result,_,_,_=model.online(torch.zeros(1,24),image,heat,is_first=torch.ones(1),
+                                  previous_control=torch.zeros(1,9),camera_pitch=torch.zeros(1))
+        self.assertFalse(bool(result['direction_ready'][0]))
 
 
 if __name__=="__main__":

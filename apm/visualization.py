@@ -16,7 +16,8 @@ import numpy as np
 
 PHASES = ("SEARCH", "APPROACH", "INTERACT", "RECOVERY")
 SOURCES = {-1: "unspecified", 0: "actor", 1: "learned", 2: "rule interaction",
-           3: "rule recovery", 4: "settle", 5: "training probe"}
+           3: "rule recovery", 4: "settle", 5: "training probe",
+           6: "bounded recovery probe", 7: "alignment probe"}
 
 
 def _get(config, name, default):
@@ -166,6 +167,8 @@ class SearchVisualizer:
         pose = np.pad(pose[:4], (0, max(0, 4-len(pose))))
         spatial_summary = _array(policy_output.get("log_spatial_summary"), []).reshape(-1)
         pose_ready = bool(len(spatial_summary) and np.isfinite(spatial_summary[0]) and spatial_summary[0] > .5)
+        if "log_spatial_trajectory_valid" in policy_output:
+            pose_ready = bool(_scalar(policy_output,"log_spatial_trajectory_valid") > .5)
         ep.pose_steps += 1
         ep.localized_steps += int(pose_ready)
         phase = int(_scalar(policy_output, "log_vnext_phase"))
@@ -174,6 +177,7 @@ class SearchVisualizer:
                    source=int(_scalar(policy_output, "log_vnext_source", -1)),
                    override=bool(_scalar(policy_output, "log_vnext_override")),
                    visible=visible, pose=pose.tolist(), pose_ready=pose_ready, reward=0., success=False,
+                   pose_gap_count=int(_scalar(policy_output,"log_spatial_pose_gap_count")),
                    value=None)
         if len(ep.rows) >= self.max_rows:
             ep.omitted_rows += 1
@@ -293,10 +297,16 @@ class SearchVisualizer:
                 raise ValueError("Terminal visualization pose must be finite [x,z,yaw,uncertainty]")
             terminal_pose = terminal_pose[:4].copy()
             positions = np.concatenate((positions, terminal_pose[None, :2]), axis=0)
-        trajectory = float(np.linalg.norm(np.diff(positions, axis=0), axis=-1).sum())
         localized_fraction = ep.localized_steps/max(1, ep.pose_steps)
         terminal_tracking_ready = (bool(_scalar(map_state, "tracking_ready")) if map_state is not None
                                    and "tracking_ready" in map_state else bool(ep.rows[-1]["pose_ready"]))
+        lengths = np.linalg.norm(np.diff(positions, axis=0), axis=-1)
+        if int(_get(self.config,"vnext_spatial_fix_version",0)) >= 2:
+            available = np.asarray([row["pose_ready"] for row in ep.rows],bool)
+            if terminal_pose is not None:
+                available = np.r_[available,terminal_tracking_ready]
+            lengths = lengths[available[:-1]&available[1:]]
+        trajectory = float(lengths.sum())
         fully_localized = ep.localized_steps == ep.pose_steps and terminal_tracking_ready
         grid = None if map_state is None else _array(map_state.get("grid"))
         while grid is not None and grid.ndim > 3 and grid.shape[0] == 1:
@@ -318,6 +328,10 @@ class SearchVisualizer:
         revisits = (float(ledger_values[:, 3].sum()) if has_ledger else
                     float(grid[..., 3].sum()) if grid is not None else None)
         summary = dict(episode_id=str(env_id), episode_completed_at_training_step=int(training_step),
+            spatial_fix_version=int(_get(self.config, "vnext_spatial_fix_version", 0)),
+            pose_gap_count=max(max((row["pose_gap_count"] for row in ep.rows),default=0),
+                               int(_scalar(map_state,"gap_count")) if map_state is not None else 0),
+            first_pose_gap_step=next((row["step"] for row in ep.rows if row["pose_gap_count"]>0),None),
             success=bool(success.any()) if success.size else ep.success,
             total_steps=max(0, len(reward)-1) if reward.size else len(ep.rows)+ep.omitted_rows,
             total_reward=float(reward.sum()) if reward.size else ep.reward,
@@ -380,6 +394,7 @@ class SearchVisualizer:
                 np.savez_compressed(tmp / "episode_trace.npz",
                     pose=np.asarray([r["pose"] for r in rows], np.float32),
                     pose_ready=np.asarray([r["pose_ready"] for r in rows], bool),
+                    pose_gap_count=np.asarray([r["pose_gap_count"] for r in rows],np.int16),
                     phase=np.asarray([r["phase"] for r in rows], np.int16),
                     option=np.asarray([r["option"] for r in rows], np.int16),
                     source=np.asarray([r["source"] for r in rows], np.int16),
@@ -471,14 +486,20 @@ class SearchVisualizer:
                 ax.add_collection(PatchCollection(patches, facecolors=colors, edgecolors="none"), autolim=True)
                 ax.autoscale_view()
         poses = np.asarray([r["pose"] for r in snap["rows"]], float)
+        available = np.asarray([r["pose_ready"] for r in snap["rows"]],bool)
         if snap["terminal_pose"] is not None:
             poses = np.concatenate((poses, snap["terminal_pose"][None]), axis=0)
-        ax.plot(poses[:, 0], poses[:, 1], color="#284d7a", linewidth=1.4)
+            available = np.r_[available,snap["summary"]["terminal_tracking_ready"]]
+        drawn = poses.copy()
+        if snap["summary"]["spatial_fix_version"] >= 2:
+            drawn[~available,:2] = np.nan
+        ax.plot(drawn[:, 0], drawn[:, 1], color="#284d7a", linewidth=1.4)
         ax.scatter([0.], [0.], marker="*", s=100, color="#bc5149", zorder=4)
         scale = max(.5, float(np.ptp(poses[:, :2], axis=0).max())*.04)
-        x, z, yaw = poses[-1, :3]
-        ax.arrow(x, z, -math.sin(yaw)*scale, math.cos(yaw)*scale,
-                 width=scale*.12, head_width=scale*.6, color="#1765b0", zorder=5)
+        if available[-1] or snap["summary"]["spatial_fix_version"] < 2:
+            x, z, yaw = poses[-1, :3]
+            ax.arrow(x, z, -math.sin(yaw)*scale, math.cos(yaw)*scale,
+                     width=scale*.12, head_width=scale*.6, color="#1765b0", zorder=5)
         summary = snap["summary"]
         tracking_status = "pose qualified" if summary["terminal_tracking_ready"] else "UNLOCALIZED: translation disabled"
         ax.set_title("B: estimated 2D search memory | %s | %d steps\n%s" %
@@ -488,12 +509,14 @@ class SearchVisualizer:
         handles = [Line2D([], [], marker="s", linestyle="", color=c, label=t) for c, t in
                    (("#ecedef", "unknown"), ("#c0d3dd", "directional observation proxy"),
                     ("#486987", "visited"), ("#203e5a", "repeat visits"),
-                    ("#3cad69", "target-evidence viewpoint"))]
+                    ("#3cad69", "ground-view heatmap cue" if summary["spatial_fix_version"]>=2 else "target-evidence viewpoint"))]
         ax.legend(handles=handles, loc="upper right", fontsize=7)
         fig.subplots_adjust(bottom=.21)
         localization_note = ("Unlocalized translation is NOT integrated: a point at the origin does NOT mean the agent stayed still."
                              if summary["unlocalized_steps"] or not summary["terminal_tracking_ready"] else
                              "Qualified predicted pose; trajectory remains an estimate.")
+        if summary["spatial_fix_version"]>=2 and summary["pose_gap_count"]:
+            localization_note="Pose gap: only the valid estimated prefix is drawn; missing movement is NOT evidence of stillness."
         scope_note = ("Episode visited-cell ledger plus rolling directional-view proxy; no true terrain is shown."
                       if summary["full_episode_ledger_available"] else
                       "Retained rolling map; path outside it does not imply retained coverage.")
@@ -530,12 +553,12 @@ class SearchVisualizer:
             if b-a >= max(1, len(rows)//60):
                 axes[1].text((a+b-1)/2, .45, str(options[a]), ha="center", va="center", fontsize=6)
         axes[2].imshow(np.asarray([r["source"] for r in rows])[None], aspect="auto", interpolation="nearest",
-                       cmap=ListedColormap(["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4"]),
-                       vmin=-1, vmax=5, extent=[-.5, len(rows)-.5, 0, 1])
+                       cmap=ListedColormap(["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba"]),
+                       vmin=-1, vmax=7, extent=[-.5, len(rows)-.5, 0, 1])
         axes[2].set_yticks([]); axes[2].set_ylabel("Source")
-        source_colors = ["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4"]
-        axes[2].legend(handles=[Patch(color=c, label=SOURCES[i]) for i, c in zip(range(-1, 6), source_colors)],
-                       loc="upper center", bbox_to_anchor=(.5, 1.0), ncol=7, fontsize=6)
+        source_colors = ["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba"]
+        axes[2].legend(handles=[Patch(color=c, label=SOURCES[i]) for i, c in zip(range(-1, 8), source_colors)],
+                       loc="upper center", bbox_to_anchor=(.5, 1.0), ncol=5, fontsize=6)
         axes[3].plot(x, [r["visible"] for r in rows], label="current target probability", color="#46836e")
         values = [np.nan if r["value"] is None else r["value"] for r in rows]
         axes[3].plot(x, values, label="selected C value (not measured success rate)", color="#536891", alpha=.8)
@@ -552,17 +575,22 @@ class SearchVisualizer:
         axes[3].legend(fontsize=6, loc="upper left", ncol=2)
         names = self._names(12)
         legend = "Option IDs: " + "; ".join("%d %s" % (i, name) for i, name in enumerate(names))
+        if int(_get(self.config,"vnext_spatial_fix_version",0))>=2:
+            legend += "; APPROACH phase: 6=align_up, 7=align_down (not scan/clear)"
         fig.text(.04, .015, textwrap.fill(legend, width=160), fontsize=7)
         axes[3].grid(alpha=.2); fig.tight_layout(rect=[0, .08, 1, 1])
         self._save(fig, path)
 
-    def _names(self, count):
+    def _names(self, count, phase=None):
         try:
             from apm.control import option_names
             names = tuple(option_names(True))
         except ImportError:
             names = ("actor", "left", "right", "forward", "left_forward", "right_forward",
                      "scan", "clear_obstacle", "interact", "settle", "back", "recovery_turn")
+        names=list(names)
+        if int(_get(self.config,"vnext_spatial_fix_version",0))>=2 and phase==1:
+            names[6:8]=["align_up","align_down"]
         return [names[i] if i < len(names) else "option_%d" % i for i in range(count)]
 
     def _images(self, fig, event):
@@ -585,7 +613,7 @@ class SearchVisualizer:
         fig = self._figure((13, 8)); self._images(fig, event)
         ax = fig.add_subplot(2, 1, 2); ax.axis("off")
         count = max(len(event["mask"]), len(event["q"]))
-        names = self._names(count); selected = event["row"]["option"]
+        names = self._names(count,event["row"]["phase"]); selected = event["row"]["option"]
         data = []
         for i, name in enumerate(names):
             predicted = event["has_prediction"] and i < len(event["prediction"])
@@ -615,7 +643,7 @@ class SearchVisualizer:
         legal = np.flatnonzero(event["mask"])
         selected = event["row"]["option"]
         order = ([selected] if selected in legal else []) + [i for i in legal if i != selected]
-        names = self._names(len(event["mask"]))
+        names = self._names(len(event["mask"]),event["row"]["phase"])
         for ax, option in zip(axes[1:], order[:3]):
             p = event["prediction"][option, [0, 2, 3, 5]]
             ax.barh(["new", "target", "revisit", "progress"], p,

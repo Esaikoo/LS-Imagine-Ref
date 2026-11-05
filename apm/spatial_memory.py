@@ -79,6 +79,7 @@ class SpatialMapMemory(nn.Module):
     def __init__(self, feature_dim, config):
         super().__init__()
         self.config = config
+        self.fix_version = int(getattr(config, "vnext_spatial_fix_version", 1))
         self.dim = int(cfg(config, "vnext_memory_dim"))
         self.size = int(cfg(config, "vnext_map_size"))
         self.resolution = float(cfg(config, "vnext_map_resolution"))
@@ -96,7 +97,7 @@ class SpatialMapMemory(nn.Module):
             min_calibration=int(cfg(config, "vnext_pose_min_calibration")),
             min_moving=int(cfg(config, "vnext_pose_min_moving")),
             calibration_ratio=float(cfg(config, "vnext_pose_calibration_ratio")),
-            cache_size=int(cfg(config, "vnext_pose_cache_size")))
+            cache_size=int(cfg(config, "vnext_pose_cache_size")), fix_version=min(self.fix_version, 1))
         self.encoder = MapEncoder(self.dim)
         self.event_head = nn.Linear(self.dim, 3)  # current evidence, new view, real progress
         # Legacy accounting calls remain harmless for the spatial implementation.
@@ -117,7 +118,41 @@ class SpatialMapMemory(nn.Module):
             ledger_used=torch.zeros(batch, dtype=torch.long, device=device),
             previous_cell=torch.full((batch, 2), -100000, device=device, dtype=torch.long),
             dwell=torch.zeros(batch, device=device), motion_ema=torch.zeros(batch, device=device),
-            tick=torch.zeros(batch, device=device, dtype=torch.long))
+            tick=torch.zeros(batch, device=device, dtype=torch.long),
+            camera_pitch=torch.zeros(batch, device=device),
+            pitch_known=torch.zeros(batch, device=device, dtype=torch.bool),
+            trajectory_started=torch.zeros(batch, device=device, dtype=torch.bool),
+            pose_gap_count=torch.zeros(batch, device=device, dtype=torch.long),
+            first_gap_step=torch.full((batch,), -1, device=device, dtype=torch.long))
+
+    @staticmethod
+    def ground_evidence(image, heatmap, pitch, pitch_known):
+        """Return qualified ground-view/cue proxies, never target truth.
+
+        A horizontal/descending textured view may support a short directional
+        observation proxy. A cue additionally needs a strong, spatially
+        contrasting lower-view heatmap; a uniform or weak sky heatmap cannot
+        paint target viewpoints. No rays, depth or simulator pose are read.
+        """
+        pixels = normalized_rgb(image)
+        batch = len(pixels)
+        heat = torch.as_tensor(heatmap, device=pixels.device)
+        heat = heat.float()/255. if heat.dtype == torch.uint8 else heat.float()
+        if heat.shape == (batch, 64, 64, 1):
+            heat = heat[..., 0]
+        if heat.shape != (batch, 64, 64):
+            raise ValueError("Ground-view evidence requires [batch,64,64] heatmaps")
+        finite = torch.isfinite(pixels).flatten(1).all(-1) & torch.isfinite(heat).flatten(1).all(-1)
+        pixels = pixels.nan_to_num().clamp(0, 1)
+        heat = heat.nan_to_num().clamp(0, 1)
+        lower = pixels[:, 32:]
+        texture = lower.reshape(batch, -1, 3).std(1, unbiased=False).mean(-1) > .025
+        ground = pitch_known & finite & texture & (pitch >= -5.) & (pitch <= 45.)
+        lower_heat = heat[:, 32:].reshape(batch, -1)
+        peak = lower_heat.topk(32, dim=-1).values.mean(-1)
+        contrast = peak-heat.reshape(batch, -1).median(-1).values
+        cue_valid = ground & (peak >= .65) & (contrast >= .15)
+        return ground, torch.where(cue_valid, peak, torch.zeros_like(peak)), cue_valid
 
     @staticmethod
     def integrate(pose, delta, sigma):
@@ -199,11 +234,12 @@ class SpatialMapMemory(nn.Module):
         return torch.stack(patches).clone()
 
     @torch.no_grad()
-    def online(self, feat, image, heatmap, state=None, is_first=None, previous_control=None, reward=None):
+    def online(self, feat, image, heatmap, state=None, is_first=None, previous_control=None, reward=None,
+               camera_pitch=None):
         device, batch = feat.device, len(feat)
         fresh = self.initial(batch, device)
         missing_state = state is None
-        state = fresh if missing_state else {k: v.detach().clone() for k, v in state.items()}
+        state = fresh if missing_state else {k: state.get(k, v).detach().clone() for k, v in fresh.items()}
         first = torch.zeros(batch, device=device, dtype=torch.bool) if is_first is None else is_first.reshape(batch).bool()
         for key in state:
             state[key] = torch.where(first.reshape(batch, *([1]*(state[key].ndim-1))), fresh[key], state[key])
@@ -212,36 +248,108 @@ class SpatialMapMemory(nn.Module):
             # unknown prefix is not an episode-origin pose and cannot be filled
             # in with zeros simply because the network has since qualified.
             state["tracking_ready"] &= first
+        if self.fix_version >= 2:
+            if missing_state:
+                # An omitted reset flag cannot certify the episode origin.
+                state["tracking_ready"] &= first
+            state["trajectory_started"] |= first & state["tracking_ready"]
+        was_tracking = state["tracking_ready"].clone()
         # Qualification may revoke tracking, but can only enable it at reset.
         state["tracking_ready"] &= self.pose.ready
+        qualification_lost = was_tracking & ~state["tracking_ready"]
         current = normalized_rgb(torch.as_tensor(image, device=device))
         control = torch.zeros(batch, 9, device=device) if previous_control is None else previous_control.to(device).float()
+        if control.shape != (batch, 9) or not bool(torch.isfinite(control).all()):
+            raise ValueError("Spatial memory needs finite [batch,9] own controls")
         valid = state["has_previous"] & ~first
+        if self.fix_version >= 2:
+            if camera_pitch is not None:
+                pitch = torch.as_tensor(camera_pitch, device=device).float()
+                if pitch.shape not in ((batch,), (batch, 1)):
+                    raise ValueError("Spatial camera pitch must match the batch")
+                pitch = pitch.reshape(batch)
+                state["pitch_known"] = torch.isfinite(pitch) & (pitch.abs() <= 90.)
+                state["camera_pitch"] = pitch.nan_to_num().clamp(-90., 90.)
+            else:
+                state["pitch_known"] |= first
+                if previous_control is None:
+                    state["pitch_known"] &= ~valid
+                state["camera_pitch"] = torch.where(first, torch.zeros_like(state["camera_pitch"]),
+                    state["camera_pitch"]+control[:, 7]).clamp(-90., 90.)
         predicted = self.pose(state["previous_image"], current, control)
         delta, sigma = predicted["delta"].clone(), predicted["sigma"].clone()
+        if not bool(torch.isfinite(delta).all() & torch.isfinite(sigma).all()):
+            raise FloatingPointError("PoseNet returned nonfinite online predictions")
         reliable = (sigma[:, :2].mean(-1) <= float(cfg(self.config, "vnext_pose_max_sigma"))) & state["tracking_ready"]
         # Unknown translation stays unknown; commands do not imply movement.
-        delta[:, :2] *= reliable[:, None]
+        raw_motion = torch.linalg.vector_norm(delta[:, :2], dim=-1)
+        accepted = reliable & valid
+        trusted_pair = accepted.clone()
+        motion_unknown = torch.zeros_like(valid)
+        rejected_motion = torch.zeros_like(raw_motion)
+        if self.fix_version:
+            supported, _, motion_radius = self.pose.translation_support(predicted, state["previous_image"], current)
+            accepted &= supported
+            # A near-zero mean is not a confident static observation unless its
+            # interval is also small. Rejected means remain uncertainty, never
+            # effective map displacement or control progress.
+            motion_probability = predicted.get("motion_probability", torch.ones_like(raw_motion))
+            trusted_pair &= supported | ((motion_probability <= .2) & (sigma[:, :2].mean(-1) <= .1))
+            if self.fix_version >= 2:
+                known_control = previous_control is not None
+                confident_static = (motion_probability <= .2) & (sigma[:, :2].mean(-1) <= .1) & (raw_motion <= .03)
+                pair_motion_known = (supported | confident_static) & known_control
+                motion_unknown = valid & ~pair_motion_known
+                # Count loss of a previously continuous trajectory once, not
+                # every unknown warm-up pair before localization ever began.
+                state["pose_gap_count"] += ((motion_unknown & was_tracking) | qualification_lost).long()
+                state["tracking_ready"] &= ~motion_unknown
+                newly_lost = was_tracking & ~state["tracking_ready"]
+                state["first_gap_step"] = torch.where(newly_lost & (state["first_gap_step"] < 0),
+                    state["tick"], state["first_gap_step"])
+                accepted &= state["tracking_ready"]
+                trusted_pair &= state["tracking_ready"] & pair_motion_known
+            rejected_motion = torch.where(valid & ~accepted, raw_motion, torch.zeros_like(raw_motion))
+            sigma[:, :2] = (sigma[:, :2].square()+
+                torch.where(accepted[:, None], torch.zeros_like(delta[:, :2]), delta[:, :2]).square()).sqrt()
+            delta[:, :2] = torch.where(accepted[:, None], delta[:, :2], torch.zeros_like(delta[:, :2]))
+        else:
+            delta[:, :2] *= reliable[:, None]
         # Known camera commands keep directional coverage usable during warmup.
         delta[:, 2] = torch.where(reliable, delta[:, 2], control[:, 8]*math.pi/180.)
         delta *= valid[:, None]
         sigma = torch.where(valid[:, None], sigma, torch.zeros_like(sigma))
         state["pose"] = self.integrate(state["pose"], delta, sigma)
+        map_write = state["tracking_ready"] if self.fix_version >= 2 else torch.ones_like(valid)
         cells = self.recenter(state)
         absolute_cell = centered_cell(state["pose"][:, :2], self.resolution)
         same = (absolute_cell == state["previous_cell"]).all(-1) & valid
+        if self.fix_version >= 2:
+            same &= map_write
         state["dwell"] = torch.where(same, state["dwell"]+1, torch.zeros_like(state["dwell"]))
         displacement = torch.linalg.vector_norm(delta[:, :2], dim=-1)
         state["motion_ema"].lerp_(displacement, .1)
         h = torch.as_tensor(heatmap, device=device)
         h = h.float()/255. if h.dtype == torch.uint8 else h.float()
         cue = h.reshape(batch, -1).topk(min(32, h[0].numel()), dim=-1).values.mean(-1).clamp(0, 1)
+        raw_cue = cue.nan_to_num().clone()
+        ground_view, cue_valid = torch.ones_like(valid), torch.ones_like(valid)
+        if self.fix_version >= 2:
+            ground_view, cue, cue_valid = self.ground_evidence(current, heatmap,
+                state["camera_pitch"], state["pitch_known"])
+            ground_view &= map_write
+            cue_valid &= map_write
+            cue = torch.where(cue_valid, cue, torch.zeros_like(cue))
         state["grid"][:, 2] *= float(cfg(self.config, "vnext_map_target_decay"))
         state["ledger_values"][..., 2] *= float(cfg(self.config, "vnext_map_target_decay"))
         visited_before, repeated = [], []
         radius = int(cfg(self.config, "vnext_map_view_radius"))
         for b in range(batch):
             x, z = int(cells[b, 0]), int(cells[b, 1])
+            if not bool(map_write[b]):
+                visited_before.append(torch.zeros((), device=device))
+                repeated.append(torch.zeros((), device=device, dtype=torch.bool))
+                continue
             entry = self.ledger_entry(state, b, absolute_cell[b])
             historic = state["ledger_values"][b, entry]
             state["grid"][b, 0, z, x] = historic[0]
@@ -250,17 +358,17 @@ class SpatialMapMemory(nn.Module):
             state["directions"][b, z, x] = state["ledger_directions"][b, entry]
             angle = state["pose"][b, 2]
             direction = int(heading_sector(angle))
-            old_view = state["directions"][b, z, x, direction] > 0
+            old_view = (state["directions"][b, z, x, direction] > 0) & ground_view[b]
             visited_before.append(state["grid"][b, 0, z, x].clone())
             repeated.append(old_view)
             if not bool(same[b]):
                 state["grid"][b, 0, z, x] += 1
             if bool(old_view):
                 state["grid"][b, 3, z, x] += 1
-            state["directions"][b, z, x, direction] += 1
-            state["grid"][b, 1, z, x] += float(not bool(old_view))
+            state["directions"][b, z, x, direction] += float(ground_view[b])
+            state["grid"][b, 1, z, x] += float(bool(ground_view[b]) and not bool(old_view))
             # Short directional view proxy only; not a raycast through obstacles.
-            if not bool(old_view):
+            if bool(ground_view[b]) and not bool(old_view):
                 for offset in (-math.pi/8, 0., math.pi/8):
                     for distance in range(1, radius+1):
                         xx = x+int(round(-math.sin(float(angle)+offset)*distance))
@@ -282,6 +390,8 @@ class SpatialMapMemory(nn.Module):
         state["grid"][:, 5:6] = adjacent*(1.-known)
         patch = self.patch(state, cells)
         context = self.encoder(patch, state["pose"])
+        if self.fix_version >= 2:
+            context *= map_write[:, None]
         rows = torch.arange(batch, device=device)
         directions = (state["directions"][rows, cells[:, 1], cells[:, 0]] > 0).float()
         visits = state["grid"][rows, 0, cells[:, 1], cells[:, 0]]
@@ -289,6 +399,8 @@ class SpatialMapMemory(nn.Module):
         observed = known.sum((-1, -2, -3)).float()
         repeated = torch.stack(repeated).float()
         confidence = sigma[:, :2].mean(-1).neg().exp()*state["tracking_ready"].float()
+        if self.fix_version:
+            confidence *= trusted_pair.float()
         u = state["pose"][:, 3]
         summary = torch.stack((state["tracking_ready"].float(),
             (state["motion_ema"]/.5).clamp(0, 1), (state["dwell"]/50.).clamp(0, 1),
@@ -299,19 +411,38 @@ class SpatialMapMemory(nn.Module):
         state["has_previous"][:] = True
         state["previous_cell"] = absolute_cell.clone()
         state["tick"] += 1
-        return context, state, dict(log_spatial_patch=patch, log_spatial_pose=state["pose"].clone(),
+        info = dict(log_spatial_patch=patch, log_spatial_pose=state["pose"].clone(),
             log_spatial_version=torch.full_like(u, SPATIAL_VERSION), log_spatial_summary=summary,
-            log_spatial_directions=directions, log_spatial_novelty=1.-repeated,
+            log_spatial_directions=directions, log_spatial_novelty=(1.-repeated)*ground_view.float(),
             log_spatial_revisit=repeated, log_spatial_known_cells=observed,
             log_spatial_visited_cells=visited)
+        if self.fix_version:
+            info.update(log_spatial_raw_motion=raw_motion*valid.float(),
+                log_spatial_rejected_motion=rejected_motion,
+                log_spatial_motion_accepted=accepted.float(),
+                log_spatial_pair_valid=valid.float(),
+                log_spatial_motion_probability=motion_probability*valid.float())
+        if self.fix_version >= 2:
+            info.update(log_spatial_trajectory_valid=state["tracking_ready"].float(),
+                log_spatial_map_write=map_write.float(), log_spatial_ground_view=ground_view.float(),
+                log_spatial_cue_valid=cue_valid.float(), log_spatial_raw_cue=raw_cue,
+                log_spatial_motion_unknown=motion_unknown.float(),
+                log_spatial_pose_gap_count=state["pose_gap_count"].float(),
+                log_spatial_first_gap_step=state["first_gap_step"].float(),
+                log_spatial_camera_pitch=state["camera_pitch"].clone(),
+                log_spatial_pitch_known=state["pitch_known"].float())
+        return context, state, info
 
     def batch(self, features, data):
         lead, device = features.shape[:-1], features.device
         patch = torch.as_tensor(data.get("vnext_spatial_patch", np.zeros((*lead, self.patch_size, self.patch_size, 6), np.uint8)), device=device)
         pose = torch.as_tensor(data.get("vnext_spatial_pose", np.zeros((*lead, 4), np.float32)), device=device).float()
         valid = torch.as_tensor(data.get("vnext_spatial_valid", np.zeros(lead)), device=device).bool()
+        snapshot_valid = valid.clone()
+        if self.fix_version >= 2:
+            valid &= torch.as_tensor(data.get("vnext_spatial_trajectory_valid", np.zeros(lead)), device=device).bool()
         context = self.encoder(patch, pose)*valid[..., None]
-        return context, dict(valid=valid, patch=patch, pose=pose)
+        return context, dict(valid=valid, snapshot_valid=snapshot_valid, patch=patch, pose=pose)
 
     def loss(self, features, data, context, details, train_mask):
         device = features.device
@@ -350,10 +481,21 @@ class SpatialMapMemory(nn.Module):
         ledger = {"cells": state["ledger_cells"][0, :used].detach().cpu().numpy().copy(),
                   "values": state["ledger_values"][0, :used].detach().cpu().numpy().copy(),
                   "directions": state["ledger_directions"][0, :used].detach().cpu().numpy().copy()}
-        return dict(grid=state["grid"][0].permute(1, 2, 0).detach().cpu().numpy().copy(),
+        result = dict(grid=state["grid"][0].permute(1, 2, 0).detach().cpu().numpy().copy(),
             pose=state["pose"][0].detach().cpu().numpy().copy(),
             origin=state["origin"][0].detach().cpu().numpy().copy(), resolution=self.resolution,
             channels=MAP_CHANNELS, predicted=True, observation_type="directional-view proxy",
             target_type="cue-observation viewpoint", tracking_ready=bool(state["tracking_ready"][0]),
             localization=("estimated" if bool(state["tracking_ready"][0]) else "unknown: pose not qualified at episode start"),
             ledger=ledger, ledger_capacity=self.ledger_capacity)
+        if self.fix_version >= 2:
+            started = bool(state["trajectory_started"][0])
+            result.update(trajectory_valid=bool(state["tracking_ready"][0]),
+                trajectory_started=started, pose_gap_count=int(state["pose_gap_count"][0]),
+                first_gap_step=int(state["first_gap_step"][0]),
+                camera_pitch=float(state["camera_pitch"][0]), pitch_known=bool(state["pitch_known"][0]),
+                map_write_policy="qualified continuous origin pose only; ground-view proxies require known pitch",
+                localization=("estimated continuous origin pose" if bool(state["tracking_ready"][0]) else
+                              "unknown after motion/qualification gap; historical prefix retained" if started else
+                              "unknown: no qualified episode-origin pose"))
+        return result

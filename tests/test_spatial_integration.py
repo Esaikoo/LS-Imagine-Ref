@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT/"tests"))
 from test_search_a import make_agent, replay_batch
 from test_search_vnext_integration import config as base_config
 from apm.evidence import VNEXT_LABEL_KEYS, SPATIAL_LABEL_SHAPES
-from apm.outcome import _hash_int, check_vnext_checkpoint
+from apm.outcome import _hash_int, check_vnext_checkpoint, restore_vnext_config, SearchVNext
 from apm.replay import sample_spatial_episodes
 from expr import make_dataset
 from training_state import save_training_checkpoint, prepare_resume, restore_training_state
@@ -26,6 +26,7 @@ torch.set_num_threads(2)
 
 def config(**updates):
     values = dict(vnext_spatial_enabled=True, vnext_map_size=35,
+        vnext_spatial_fix_version=1,
         vnext_map_patch=21, vnext_pose_hidden=32, vnext_pose_min_samples=1,
         vnext_visual_enabled=False, batch_size=2, batch_length=12,
         episode_max_steps=64, episode_max_steps_override=64)
@@ -74,6 +75,154 @@ def collected_episode(agent, length=40):
 
 
 class SpatialIntegrationTests(unittest.TestCase):
+    def test_revision_two_unlocalized_map_does_not_disable_A_or_pose_learning(self):
+        cfg=config(vnext_spatial_fix_version=2,batch_size=2,batch_length=12)
+        agent=make_agent(cfg)
+        ep=collected_episode(agent,28)
+        self.assertFalse(ep["log_spatial_trajectory_valid"].any())
+        data=next(make_dataset({"spatial":ep},cfg))
+        self.assertGreater(float(data["vnext_spatial_valid"].sum()),0)
+        self.assertEqual(float(data["vnext_spatial_trajectory_valid"].sum()),0)
+        feature_dim=cfg.dyn_deter+cfg.dyn_stoch*cfg.dyn_discrete
+        features=torch.randn(2,12,feature_dim,requires_grad=True)
+        with torch.no_grad():
+            memory=agent._vnext.memory_batch(features,data)
+            self.assertFalse(memory.any())
+        before=agent._vnext.a.events[0].weight.detach().clone()
+        metrics=agent._vnext.train_step(features,data)
+        self.assertGreater(float(metrics["A/current_valid_labels"]),0)
+        self.assertGreater(float(metrics["A/future_valid_labels"]),0)
+        self.assertGreater(float(metrics["A/future_grad_norm"]),0)
+        self.assertGreater(float(metrics["B/pose_samples"]),0)
+        self.assertFalse(torch.equal(before,agent._vnext.a.events[0].weight))
+        self.assertIsNone(features.grad)
+        # Maps are outgoing decisions: validity must follow row i+1, not i.
+        ep["log_spatial_trajectory_valid"][:]=np.arange(len(ep["reward"]))%2
+        sample=next(sample_spatial_episodes({"spatial":ep},20,seed=3))
+        for row,index in enumerate(sample["vnext_observation_index"]):
+            expected=ep["log_spatial_trajectory_valid"][index+1] if index+1<len(ep["reward"]) else 0
+            self.assertEqual(sample["vnext_spatial_trajectory_valid"][row],expected)
+
+    def test_production_sampler_without_legacy_validity_trains_future_heads(self):
+        cfg = config(batch_size=1,batch_length=32,vnext_aux_every=1)
+        agent = make_agent(cfg)
+        ep = collected_episode(agent,40)
+        # This is the schema that the actual 400k run collected: controls are
+        # present, but no explicit validity field was written by the wrapper.
+        del ep["log_actuator_valid"]
+        before_control = ep["log_applied_control"].copy()
+        data = next(make_dataset({"spatial":ep},cfg))
+        self.assertGreater(float(data["log_actuator_valid"].sum()),0)
+        a = agent._vnext.a
+        before_events = a.events[0].weight.detach().clone()
+        before_future = a.future[0].weight.detach().clone()
+        feature_dim = cfg.dyn_deter+cfg.dyn_stoch*cfg.dyn_discrete
+        features = torch.randn(1,32,feature_dim,requires_grad=True)
+        metrics = agent._vnext.train_step(features,data)
+        for horizon in (1,2,3,8):
+            self.assertGreater(float(metrics["A/H%d/train_windows"%horizon]),0)
+            self.assertGreater(float(metrics["A/H%d/label_count"%horizon]),0)
+            self.assertGreater(float(metrics["A/H%d/prediction_loss"%horizon]),0)
+        self.assertGreater(float(metrics["A/future_grad_norm"]),0)
+        self.assertGreater(float(metrics["A/future_prediction_loss"]),0)
+        self.assertFalse(torch.equal(before_events,a.events[0].weight))
+        self.assertFalse(torch.equal(before_future,a.future[0].weight))
+        self.assertGreater(float(a.support_counts.sum()),0)
+        self.assertIsNone(features.grad)
+        self.assertNotIn("log_actuator_valid",ep)
+        np.testing.assert_array_equal(ep["log_applied_control"],before_control)
+
+    def test_actual_control_provenance_excludes_unknown_error_and_boundary_rows(self):
+        agent = make_agent(config())
+        ep = collected_episode(agent,12)
+        del ep["log_actuator_valid"]
+        ep["log_applied_control"] = list(ep["log_applied_control"])
+        ep["log_applied_control"][2] = None
+        ep["log_applied_control"][3] = np.full(9,np.nan,np.float32)
+        ep["log_applied_control"][4] = np.zeros(9,np.float32) # actual no-op
+        ep["log_env_error"] = np.zeros(13,np.float32)
+        ep["log_env_error"][5] = 1
+        ep["is_first"][7] = True
+        ep["is_last"][8] = True
+        ep["is_terminal"][10] = True
+        data = next(sample_spatial_episodes({"spatial":ep},64,seed=8))
+        expected = np.array([0,1,0,0,1,0,0,0,1,0,1,0,1],np.float32)
+        np.testing.assert_array_equal(data["log_actuator_valid"],expected[data["vnext_observation_index"]])
+        self.assertTrue(np.isfinite(data["log_applied_control"]).all())
+        for row,index in enumerate(data["vnext_observation_index"]):
+            self.assertEqual(data["vnext_pose_prev_valid"][row],expected[index])
+
+    def test_explicit_control_invalid_and_missing_actual_control_are_never_inferred(self):
+        agent = make_agent(config())
+        ep = collected_episode(agent,12)
+        explicit = copy.deepcopy(ep)
+        explicit["log_actuator_valid"] = [np.float32(1)]*13
+        explicit["log_actuator_valid"][3] = None
+        explicit["log_actuator_valid"][4] = np.nan
+        explicit["log_actuator_valid"][5] = 0
+        stream = sample_spatial_episodes({"explicit":explicit},64,seed=2)
+        data = next(stream)
+        indices = data["vnext_observation_index"]
+        self.assertFalse(data["log_actuator_valid"][np.isin(indices,[0,3,4,5])].any())
+        self.assertTrue(data["log_actuator_valid"][~np.isin(indices,[0,3,4,5])].all())
+        del ep["log_applied_control"]
+        del ep["log_actuator_valid"]
+        # Policy intent is not an actual environment control observation.
+        self.assertIn("log_vnext_applied",ep)
+        data = next(sample_spatial_episodes({"missing":ep},32,seed=0))
+        self.assertFalse(data["log_actuator_valid"].any())
+        self.assertFalse(data["vnext_pose_prev_valid"].any())
+
+    def test_nonfinite_batched_controls_do_not_poison_masked_future_loss(self):
+        cfg = config(batch_size=1,batch_length=12)
+        agent = make_agent(cfg)
+        data = next(make_dataset({"spatial":collected_episode(agent,20)},cfg))
+        data["log_applied_control"][:] = np.nan
+        data["log_actuator_valid"][:] = np.nan
+        data["log_env_error"] = np.full((1,12),np.nan,np.float32)
+        feature_dim = cfg.dyn_deter+cfg.dyn_stoch*cfg.dyn_discrete
+        metrics = agent._vnext.train_step(torch.randn(1,12,feature_dim),data)
+        self.assertEqual(float(metrics["A/future_train_windows"]),0)
+        self.assertEqual(float(metrics["A/future_grad_norm"]),0)
+        self.assertTrue(all(np.isfinite(float(value)) for value in metrics.values()))
+
+    def test_missing_map_holdout_cannot_certify_map_conditioned_current_head(self):
+        cfg = config(batch_size=1,batch_length=12)
+        agent = make_agent(cfg)
+        data = next(make_dataset({"spatial":collected_episode(agent,20)},cfg))
+        data["vnext_calibration"][:] = 1
+        data["vnext_spatial_valid"][:] = 0
+        feature_dim = cfg.dyn_deter+cfg.dyn_stoch*cfg.dyn_discrete
+        agent._vnext.train_step(torch.randn(1,12,feature_dim),data)
+        self.assertFalse(agent._vnext.a.current_cal_counts.any())
+        self.assertFalse(agent._vnext.a.cal_counts.any())
+        self.assertFalse(agent._vnext.a.current_counts.any())
+
+    def test_spatial_fix_revision_is_explicit_and_legacy_restore_cannot_inherit_new_default(self):
+        agent = make_agent(config(vnext_spatial_fix_version=0))
+        checkpoint = dict(agent_state_dict=agent.state_dict(),search_vnext_version=2,
+            vnext_memory_version=2,pose_version=1,spatial_map_version=2,
+            actuator_version=1,search_a_label_version=3,config={})
+        check_vnext_checkpoint(checkpoint,True)
+        restored = restore_vnext_config({"vnext_spatial_fix_version":1},checkpoint)
+        self.assertEqual(restored["vnext_spatial_fix_version"],0)
+        checkpoint["spatial_fix_version"] = 1
+        with self.assertRaisesRegex(ValueError,"revision"):
+            check_vnext_checkpoint(checkpoint,True)
+        checkpoint["config"]["vnext_spatial_fix_version"] = 1
+        check_vnext_checkpoint(checkpoint,True)
+        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],1)
+        checkpoint["spatial_fix_version"] = 2
+        checkpoint["config"]["vnext_spatial_fix_version"] = 2
+        check_vnext_checkpoint(checkpoint,True)
+        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],2)
+        checkpoint["spatial_fix_version"] = 3
+        checkpoint["config"]["vnext_spatial_fix_version"] = 3
+        with self.assertRaisesRegex(ValueError,"revision"):
+            check_vnext_checkpoint(checkpoint,True)
+        with self.assertRaisesRegex(ValueError,"revision"):
+            SearchVNext(24,config(vnext_spatial_fix_version=9))
+
     def test_clearance_endpoint_obstruction_uses_real_movement_label(self):
         cfg = config(batch_size=1,batch_length=4)
         agent = make_agent(cfg)
@@ -207,6 +356,7 @@ class SpatialIntegrationTests(unittest.TestCase):
             self.assertEqual(checkpoint["vnext_memory_version"], 2)
             self.assertEqual(checkpoint["pose_version"], 1)
             self.assertEqual(checkpoint["spatial_map_version"], 2)
+            self.assertEqual(checkpoint["spatial_fix_version"],1)
             resume_cfg = copy.deepcopy(cfg)
             resume_cfg.resume_from = str(path)
             resume_cfg.logdir = str(Path(directory)/"resume")

@@ -310,6 +310,13 @@ def search_episode_diagnostics(episode):
         result["vnext_search_rate"]=float((override & (phase==0)).sum())/count
         result["vnext_interaction_rate"]=float((override & (choice==8)).sum())/count
         result["vnext_settle_rate"]=float((override & (choice==9)).sum())/count
+        if "log_vnext_source" in episode:
+            sources=np.asarray(episode["log_vnext_source"])[1:]
+            result["vnext_learned_rate"]=float((sources==1).sum())/count
+            result["vnext_recovery_probe_rate"]=float((sources==6).sum())/count
+            result["vnext_alignment_probe_rate"]=float((sources==7).sum())/count
+        if "log_vnext_recovery_probe" in episode:
+            result["vnext_clearance_rate"]=float((override & (choice==7) & (phase==3)).sum())/count
         proposal=np.asarray(episode["log_vnext_actor_action"])[1:]
         result["vnext_actor_attack_override_count"]=float(((proposal==1)&override).sum())
         if "log_applied_control" in episode:

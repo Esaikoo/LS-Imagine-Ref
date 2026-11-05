@@ -163,8 +163,11 @@ class LS_Imagine(nn.Module):
             control = state[3]["previous_control"][index:index+1]
             image = torch.as_tensor(terminal_obs["image"],device=feat.device)[None]
             heatmap = torch.as_tensor(terminal_obs["heatmap"],device=feat.device)[None]
+            extra = {}
+            if int(getattr(self._config,"vnext_spatial_fix_version",0)) >= 2:
+                extra["camera_pitch"] = state[3]["actuator"][index:index+1,2]
             _,memory,_ = self._vnext.b.online(feat,image,heatmap,memory,
-                previous_control=control,reward=terminal_obs.get("obs_reward",0.))
+                previous_control=control,reward=terminal_obs.get("obs_reward",0.),**extra)
         return self._vnext.b.visualization_state(memory)
 
     def _policy(self, obs, state, training):
@@ -291,10 +294,18 @@ class LS_Imagine(nn.Module):
             control_state["age"] = torch.as_tensor(obs["vnext_episode_step"],device=feature.device).long()
         previous_control = self._vnext_control.previous_control(
             control_state, clean["is_first"], feature.device)
+        spatial_inputs = {}
+        if self._vnext.spatial and int(getattr(self._config,"vnext_spatial_fix_version",0)) >= 2:
+            # Legal proprioception from the shared command actuator, including
+            # mid-prefill bootstrap; no simulator orientation enters policy.
+            pitch = (feature.new_zeros(len(feature)) if control_state is None
+                     else control_state["actuator"][:,2].detach().clone())
+            first = clean["is_first"].reshape(len(feature)).bool()
+            spatial_inputs["camera_pitch"] = torch.where(first,torch.zeros_like(pitch),pitch)
         current, memory, memory_state, memory_info = self._vnext.online(
             feature, clean["image"], clean["heatmap"], memory_state,
             clean["is_first"], previous_control=previous_control,
-            reward=clean.get("obs_reward"))
+            reward=clean.get("obs_reward"),**spatial_inputs)
         if self._vnext.spatial:
             enabled = bool(self._config.vnext_memory_enabled)
             clean["vnext_spatial_summary"] = (memory_info["log_spatial_summary"] if enabled

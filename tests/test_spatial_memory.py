@@ -187,7 +187,9 @@ class SpatialMemoryTests(unittest.TestCase):
         self.assertEqual(float(state["directions"].abs().sum()), 0.)
 
     def test_episode_ledger_recognizes_return_after_local_window_was_discarded(self):
-        model = SpatialMapMemory(24, config(vnext_map_resolution=1.,
+        # Exercise ledger mechanics with exact mocked odometry, independently of
+        # the new visual-pair/motion classification guard tested below.
+        model = SpatialMapMemory(24, config(vnext_map_resolution=1., vnext_spatial_fix_version=0,
             vnext_pose_min_calibration=4, vnext_pose_min_moving=2, vnext_pose_cache_size=64))
         target = torch.zeros(8, 3); target[[0, 1, 4, 5], 0] = .2
         train = torch.arange(8) < 4
@@ -311,6 +313,310 @@ class SpatialMemoryTests(unittest.TestCase):
         torch.testing.assert_close(s1["pose"], s2["pose"])
         with self.assertRaises(TypeError):
             model.online(f, image, heat, search_pose_delta=torch.ones(1, 3))
+
+    def qualified_memory(self, **updates):
+        values=dict(vnext_pose_min_calibration=4,vnext_pose_min_moving=2,vnext_pose_cache_size=64)
+        values.update(updates)
+        model=SpatialMapMemory(24,config(**values))
+        target=torch.zeros(8,3);target[[0,1,4,5],0]=.2
+        train=torch.arange(8)<4
+        model.pose.record_predictions(target,target,train,~train,torch.arange(8))
+        self.assertTrue(model.pose.ready)
+        return model
+
+    def test_same_frame_command_shortcut_cannot_accumulate_fake_visited_cells(self):
+        model=self.qualified_memory()
+        f,image,heat,control=inputs();control[:,1]=1.
+        _,state,_=model.online(f,image,heat,is_first=torch.ones(1).bool())
+        def fake(*_):
+            return dict(delta=torch.tensor([[0.,.12,0.]]),sigma=torch.full((1,3),.01),
+                        motion_probability=torch.tensor([.99]))
+        with mock.patch.object(model.pose,'forward',side_effect=fake):
+            for _ in range(40):
+                _,state,info=model.online(f,image,heat,state,previous_control=control)
+        self.assertEqual(float(state['pose'][0,:2].abs().sum()),0.)
+        self.assertEqual(int(state['ledger_used'][0]),1)
+        self.assertEqual(float(info['log_spatial_summary'][0,7]),0.)
+        self.assertEqual(float(info['log_spatial_summary'][0,11]),0.)
+        self.assertEqual(float(info['log_spatial_motion_accepted'][0]),0.)
+        self.assertGreater(float(info['log_spatial_rejected_motion'][0]),.1)
+        self.assertGreater(float(state['pose'][0,3]),0.)
+
+    def test_uncertain_or_static_classifier_never_certifies_translation(self):
+        model=self.qualified_memory()
+        before=torch.zeros(3,64,64,3);after=torch.ones_like(before)
+        prediction=dict(delta=torch.tensor([[0.,.15,0.],[0.,.15,0.],[0.,.02,0.]]),
+            sigma=torch.tensor([[.01,.01,.01],[.2,.2,.01],[.01,.01,.01]]),
+            motion_probability=torch.tensor([.1,.99,.99]))
+        accepted,_,_=model.pose.translation_support(prediction,before,after)
+        self.assertFalse(bool(accepted.any()))
+        model.pose.cal_identity[:8]=torch.arange(8)
+        model.pose.cal_baseline[:8]=0
+        model.pose.cal_error[:8]=.18
+        prediction['motion_probability'][:]=.99
+        prediction['sigma'][:]=.01
+        accepted,_,bound=model.pose.translation_support(prediction,before,after)
+        self.assertEqual(accepted.tolist(),[True,True,False])
+        self.assertAlmostEqual(float(model.pose.static_error_bound()),.18,places=5)
+        torch.testing.assert_close(bound,torch.full_like(bound,.03))
+        # Gated calibration is only a qualification statistic; it cannot tune
+        # this same frame pair's online gate up/down on every resampling.
+        model.pose.cal_error.zero_()
+        again,_,_=model.pose.translation_support(prediction,before,after)
+        torch.testing.assert_close(accepted,again)
+
+    def test_static_tail_rejects_rare_large_false_steps_hidden_by_small_mean(self):
+        model=PoseNet(hidden=16,min_samples=4,min_calibration=4,min_moving=2,cache_size=128)
+        target=torch.zeros(40,3);target[[0,1,2,3,20,21,22,23],0]=.2
+        estimate=target.clone();estimate[[24,25],0]=.1
+        train=torch.arange(40)<20
+        model.record_predictions(estimate,target,train,~train,torch.arange(40))
+        self.assertLess(float(model.calibration_static_error),.03)
+        self.assertGreater(float(model.static_error_bound()),.05)
+        self.assertEqual(float(model.calibration_moving_error),0.)
+        self.assertFalse(model.ready)
+
+    def test_supported_translation_can_move_map_while_camera_turns(self):
+        model=self.qualified_memory()
+        f,image,heat,control=inputs()
+        _,state,_=model.online(f,image,heat,is_first=torch.ones(1).bool())
+        control[:,1]=1.;control[:,8]=10.
+        def measured(*_):
+            return dict(delta=torch.tensor([[0.,.2,math.radians(10)]]),sigma=torch.full((1,3),.01),
+                        motion_probability=torch.tensor([.99]))
+        with mock.patch.object(model.pose,'forward',side_effect=measured):
+            _,state,info=model.online(f,image+1.,heat,state,previous_control=control)
+        self.assertAlmostEqual(float(state['pose'][0,1]),.2,places=5)
+        self.assertEqual(float(info['log_spatial_motion_accepted'][0]),1.)
+        self.assertGreater(float(info['log_spatial_summary'][0,11]),.9)
+        self.assertAlmostEqual(float(state['pose'][0,2]),math.radians(10),places=5)
+
+    def test_always_static_classifier_cannot_qualify_from_unused_good_raw_means(self):
+        model=PoseNet(hidden=16,min_samples=4,min_calibration=4,min_moving=2,cache_size=64)
+        target=torch.zeros(8,3);target[[0,1,4,5],0]=.2
+        train=torch.arange(8)<4
+        prediction=dict(delta=target.clone(),log_std=torch.full_like(target,-5.),
+                        sigma=torch.full_like(target,.007),motion_logit=torch.full((8,),-10.),
+                        motion_probability=torch.full((8,),.0001))
+        before=torch.zeros(8,64,64,3);after=torch.ones_like(before)
+        with mock.patch.object(model,'forward',return_value=prediction):
+            _,metrics,_=model.supervised_loss(before,after,torch.zeros(8,9),target,train,
+                calibration_mask=~train,frame_ids=torch.arange(8))
+        self.assertEqual(float(metrics['B/pose_position_error']),0.)
+        self.assertAlmostEqual(float(model.calibration_moving_error),.2,places=5)
+        self.assertFalse(model.ready)
+
+    def test_motion_head_and_raw_translation_train_even_before_online_gate_opens(self):
+        torch.manual_seed(314)
+        model=PoseNet(hidden=16)
+        image=torch.zeros(4,64,64,3);after=image.clone();after[2:]=1.
+        target=torch.zeros(4,3);target[2:,1]=.2
+        control=torch.zeros(4,9);control[:,1]=1.
+        loss,metrics,prediction=model.supervised_loss(image,after,control,target,torch.ones(4).bool(),record=False)
+        self.assertFalse(bool(model.translation_support(prediction,image,after)[0].any()))
+        loss.backward()
+        grad=model.fusion[-1].weight.grad
+        self.assertGreater(float(grad[:2].abs().sum()),0.)
+        self.assertGreater(float(grad[2].abs().sum()),0.)
+        self.assertEqual(float(metrics['B/pose_static_samples']),2.)
+        self.assertEqual(float(metrics['B/pose_motion_train_samples']),2.)
+
+    def test_static_regression_and_classification_improve_with_real_optimizer_steps(self):
+        torch.manual_seed(77)
+        model=PoseNet(hidden=16)
+        with torch.no_grad():
+            model.fusion[-1].bias[1]=math.atanh(.12/model.max_translation)
+            model.fusion[-1].bias[2]=2.
+        image=torch.zeros(4,64,64,3);control=torch.zeros(4,9);control[:,1]=1.
+        target=torch.zeros(4,3);valid=torch.ones(4).bool()
+        optimizer=torch.optim.Adam(model.parameters(),lr=.005)
+        before=model(image,image,control)
+        for _ in range(60):
+            loss,_,_=model.supervised_loss(image,image,control,target,valid,record=False)
+            optimizer.zero_grad();loss.backward();optimizer.step()
+        after=model(image,image,control)
+        self.assertLess(float(after['delta'][:,:2].norm(dim=-1).mean()),.03)
+        self.assertLess(float(after['motion_probability'].mean()),.2)
+        self.assertLess(float(after['delta'][:,:2].norm(dim=-1).mean()),float(before['delta'][:,:2].norm(dim=-1).mean()))
+
+    def test_revision_zero_keeps_checkpoint_shape_and_original_motion_semantics(self):
+        old=PoseNet(hidden=16,fix_version=0);new=PoseNet(hidden=16,fix_version=1)
+        self.assertEqual({k:tuple(v.shape) for k,v in old.state_dict().items()},
+                         {k:tuple(v.shape) for k,v in new.state_dict().items()})
+        image=torch.zeros(1,64,64,3);control=torch.zeros(1,9)
+        self.assertNotIn('motion_probability',old(image,image,control))
+        self.assertIn('motion_probability',new(image,image,control))
+        self.assertAlmostEqual(float(new(image,image,control)['delta'][0,2]),0.,places=7)
+        model=self.qualified_memory(vnext_spatial_fix_version=0)
+        f,image,heat,control=inputs()
+        _,state,_=model.online(f,image,heat,is_first=torch.ones(1).bool())
+        with mock.patch.object(model.pose,'forward',return_value=dict(delta=torch.tensor([[0.,.12,0.]]),sigma=torch.full((1,3),.01))):
+            _,state,info=model.online(f,image,heat,state,previous_control=control)
+        self.assertAlmostEqual(float(state['pose'][0,1]),.12,places=5)
+        self.assertNotIn('log_spatial_motion_probability',info)
+
+    @staticmethod
+    def ground_frame():
+        y, x = torch.meshgrid(torch.arange(64), torch.arange(64), indexing="ij")
+        tile = ((x//8+y//8)%2).float()*.6+.1
+        return torch.stack((tile, tile*.8, tile*.4), -1)[None]
+
+    @staticmethod
+    def pose_prediction(probability=.01, movement=0.):
+        return dict(delta=torch.tensor([[0., movement, 0.]]), sigma=torch.full((1,3), .01),
+                    motion_probability=torch.tensor([probability]))
+
+    def test_revision_two_unknown_motion_breaks_origin_trajectory_until_reset(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=2)
+        f,_,heat,control=inputs();image=self.ground_frame();control[:,1]=1
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            _,state,start=model.online(f,image,heat,is_first=torch.ones(1).bool())
+        ledger=state['ledger_values'].clone();grid=state['grid'].clone()
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction(.5,.12)):
+            context,state,info=model.online(f,image+0.1,heat,state,previous_control=control)
+        self.assertFalse(bool(state['tracking_ready'][0]))
+        self.assertEqual(float(info['log_spatial_trajectory_valid'][0]),0.)
+        self.assertEqual(float(info['log_spatial_motion_unknown'][0]),1.)
+        self.assertEqual(float(info['log_spatial_map_write'][0]),0.)
+        self.assertEqual(float(info['log_spatial_novelty'][0]),0.)
+        self.assertEqual(float(info['log_spatial_revisit'][0]),0.)
+        self.assertEqual(int(state['pose_gap_count'][0]),1)
+        self.assertEqual(int(state['first_gap_step'][0]),1)
+        self.assertFalse(bool(context.any()))
+        torch.testing.assert_close(state['ledger_values'],ledger)
+        torch.testing.assert_close(state['grid'],grid)
+        # A later individually good pair cannot supply the missed displacement.
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction(.99,.2)):
+            context,state,again=model.online(f,image,heat,state,previous_control=control)
+        self.assertEqual(float(state['pose'][0,:2].abs().sum()),0.)
+        self.assertFalse(bool(state['tracking_ready'][0]))
+        self.assertEqual(float(again['log_spatial_map_write'][0]),0.)
+        self.assertFalse(bool(context.any()))
+        snapshot=model.visualization_state(state)
+        self.assertFalse(snapshot['trajectory_valid'])
+        self.assertIn('gap',snapshot['localization'])
+
+    def test_revision_two_confident_static_retains_continuous_location(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=2)
+        f,_,heat,control=inputs();image=self.ground_frame()
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction(.01,.01)):
+            _,state,_=model.online(f,image,heat,is_first=torch.ones(1).bool())
+            for _ in range(4):
+                _,state,info=model.online(f,image,heat,state,previous_control=control)
+        self.assertTrue(bool(state['tracking_ready'][0]))
+        self.assertEqual(int(state['pose_gap_count'][0]),0)
+        self.assertEqual(int(state['ledger_used'][0]),1)
+        self.assertEqual(float(info['log_spatial_motion_unknown'][0]),0.)
+        self.assertEqual(float(info['log_spatial_summary'][0,0]),1.)
+        self.assertEqual(float(state['pose'][0,:2].abs().sum()),0.)
+
+    def test_revision_two_no_unknown_origin_or_camera_prefix_is_invented(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=2)
+        f,_,heat,control=inputs();image=self.ground_frame()
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            context,state,info=model.online(f,image,heat,is_first=torch.zeros(1).bool())
+            self.assertFalse(bool(context.any()))
+            self.assertFalse(bool(state['pitch_known'][0]))
+            self.assertEqual(int(state['ledger_used'][0]),0)
+            _,state,info=model.online(f,image,heat,state,previous_control=control,camera_pitch=torch.tensor([20.]))
+        self.assertTrue(bool(state['pitch_known'][0]))
+        self.assertFalse(bool(state['tracking_ready'][0]))
+        self.assertEqual(float(info['log_spatial_map_write'][0]),0.)
+
+    def test_revision_two_sky_cannot_consume_ground_direction_or_write_target_cue(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=2)
+        f,_,heat,control=inputs();image=self.ground_frame()
+        heat[:,40:48,20:28]=.95
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            _,state,sky=model.online(f,image,heat,is_first=torch.ones(1).bool(),camera_pitch=torch.tensor([-70.]))
+            self.assertFalse(bool(state['directions'].any()))
+            self.assertFalse(bool(state['grid'][:,1:3].any()))
+            self.assertEqual(float(sky['log_spatial_ground_view'][0]),0.)
+            self.assertEqual(float(sky['log_spatial_novelty'][0]),0.)
+            _,state,ground=model.online(f,image,heat,state,previous_control=control,camera_pitch=torch.tensor([10.]))
+        self.assertEqual(float(ground['log_spatial_ground_view'][0]),1.)
+        self.assertEqual(float(ground['log_spatial_novelty'][0]),1.)
+        self.assertEqual(float(ground['log_spatial_cue_valid'][0]),1.)
+        self.assertGreater(float(state['grid'][:,2].max()),.9)
+        self.assertEqual(float(ground['log_spatial_directions'].sum()),1.)
+
+    def test_revision_two_weak_uniform_or_upper_heatmap_is_not_target_evidence(self):
+        image=self.ground_frame();pitch=torch.zeros(1);known=torch.ones(1).bool()
+        for kind in ['weak','uniform','upper','nonfinite']:
+            heat=torch.zeros(1,64,64)
+            if kind=='weak':heat[:,40:48,20:28]=.33
+            if kind=='uniform':heat[:]=.99
+            if kind=='upper':heat[:,:16]=.99
+            if kind=='nonfinite':heat[:,40:48]=float('nan')
+            ground,cue,valid=SpatialMapMemory.ground_evidence(image,heat,pitch,known)
+            self.assertFalse(bool(valid.any()),kind)
+            self.assertFalse(bool(cue.any()),kind)
+        heat=torch.zeros(1,64,64);heat[:,40:48,20:28]=.95
+        ground,cue,valid=SpatialMapMemory.ground_evidence(image,heat,pitch,known)
+        self.assertTrue(bool(ground.all()) and bool(valid.all()))
+        sky=torch.zeros(1,64,64,3);sky[...,2]=1
+        self.assertFalse(bool(SpatialMapMemory.ground_evidence(sky,heat,pitch,known)[0].any()))
+
+    def test_revision_two_pitch_follows_own_controls_and_resets_per_row(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=2)
+        f,_,heat,control=inputs(2);image=self.ground_frame().expand(2,-1,-1,-1)
+        pred=dict(delta=torch.zeros(2,3),sigma=torch.full((2,3),.01),motion_probability=torch.full((2,),.01))
+        with mock.patch.object(model.pose,'forward',return_value=pred):
+            _,state,_=model.online(f,image,heat,is_first=torch.ones(2).bool())
+            control[:,7]=torch.tensor([-10.,20.])
+            _,state,info=model.online(f,image,heat,state,previous_control=control)
+            self.assertEqual(state['camera_pitch'].tolist(),[-10.,20.])
+            state['pose_gap_count'][0]=4;state['tracking_ready'][0]=False
+            control.zero_()
+            _,state,info=model.online(f,image,heat,state,is_first=torch.tensor([True,False]),previous_control=control)
+        self.assertEqual(state['camera_pitch'].tolist(),[0.,20.])
+        self.assertEqual(state['pose_gap_count'].tolist(),[0,0])
+        self.assertTrue(bool(state['tracking_ready'].all()))
+
+    def test_revision_two_revoked_qualification_does_not_reanchor_mid_episode(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=2)
+        f,_,heat,control=inputs();image=self.ground_frame()
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            _,state,_=model.online(f,image,heat,is_first=torch.ones(1).bool())
+            with mock.patch.object(PoseNet,'ready',new_callable=mock.PropertyMock,return_value=False):
+                _,state,info=model.online(f,image,heat,state,previous_control=control)
+            self.assertEqual(float(info['log_spatial_trajectory_valid'][0]),0.)
+            self.assertEqual(int(state['pose_gap_count'][0]),1)
+            _,state,info=model.online(f,image,heat,state,previous_control=control)
+        self.assertFalse(bool(state['tracking_ready'][0]))
+        self.assertEqual(float(info['log_spatial_map_write'][0]),0.)
+
+    def test_revision_two_invalid_trajectory_context_does_not_block_pose_training(self):
+        model=SpatialMapMemory(24,config(vnext_spatial_fix_version=2))
+        shape=(1,4);image=torch.randint(255,(*shape,64,64,3),dtype=torch.uint8)
+        data=dict(image=image,vnext_spatial_patch=torch.zeros(*shape,21,21,6,dtype=torch.uint8),
+            vnext_spatial_pose=torch.zeros(*shape,4),vnext_spatial_valid=torch.ones(shape),
+            vnext_spatial_trajectory_valid=torch.zeros(shape),
+            vnext_pose_prev_image=torch.zeros_like(image),vnext_pose_control=torch.zeros(*shape,9),
+            vnext_pose_prev_valid=torch.ones(shape),search_pose_delta=torch.full((*shape,3),.05),
+            search_pose_valid=torch.ones(shape),search_label_version=torch.full(shape,3))
+        for name in ('visible','new','progress'):
+            data['search_'+name]=torch.ones(shape);data['search_'+name+'_valid']=torch.ones(shape)
+        features=torch.randn(*shape,24,requires_grad=True)
+        context,details=model.batch(features,data)
+        self.assertFalse(bool(context.any()))
+        self.assertTrue(bool(details['snapshot_valid'].all()))
+        self.assertFalse(bool(details['valid'].any()))
+        loss,metrics,_=model.loss(features,data,context,details,torch.ones(shape).bool())
+        loss.backward()
+        self.assertEqual(float(metrics['B/map_loss']),0.)
+        self.assertEqual(float(metrics['B/pose_samples']),4.)
+        self.assertTrue(any(p.grad is not None and bool(p.grad.abs().sum()>0) for p in model.pose.parameters()))
+        self.assertIsNone(features.grad)
+
+    def test_revision_one_keeps_historical_map_and_cue_semantics(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=1)
+        f,image,heat,control=inputs();heat[:]=1.
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            _,state,info=model.online(f,image,heat,is_first=torch.ones(1).bool(),camera_pitch=torch.tensor([-70.]))
+        self.assertGreater(float(state['grid'][:,2].max()),.9)
+        self.assertGreater(float(state['grid'][:,1].sum()),0.)
+        self.assertNotIn('log_spatial_trajectory_valid',info)
 
 
 if __name__ == "__main__":

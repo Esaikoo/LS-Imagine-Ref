@@ -115,11 +115,17 @@ if mode == 'vnext':
     assert checkpoint['search_vnext_version'] == 2
     assert checkpoint['spatial_map_version'] == 2
     assert checkpoint['pose_version'] == 1
+    assert checkpoint['spatial_fix_version'] == 2
     assert checkpoint['search_a_label_version'] == 3
     assert not any('_wm.search_a.' in k or '_wm.search_b.' in k for k in checkpoint['agent_state_dict'])
     for key in ('A/prediction_loss','B/total_loss','C/transitions'):
         assert any(key in row for row in rows), key
     assert any(row.get('C/updates',0)>0 for row in rows)
+    # Optimizer calls/finite losses alone missed the historical zero-mask bug.
+    # A real collected replay must actually supervise and update future heads.
+    for key in ('A/future_train_windows', 'A/future_valid_labels',
+                'A/future_prediction_loss', 'A/future_grad_norm'):
+        assert any(row.get(key,0)>0 for row in rows), ('No real future learning',key)
     for path in episodes:
         with np.load(path) as d:
             assert len({len(d[k]) for k in d.files}) == 1
@@ -128,6 +134,10 @@ if mode == 'vnext':
                 np.testing.assert_allclose(d['log_vnext_applied'][active],d['log_applied_control'][active])
             if path.parent.name == 'eval_eps' and 'search_pose_valid' in d:
                 assert not d['search_pose_valid'].any()
+            assert 'log_actuator_valid' in d, path
+            assert not d['log_actuator_valid'][0], path
+            clean=(d['log_env_error'][1:]==0)
+            assert np.all(d['log_actuator_valid'][1:][clean]==1), path
             if 'log_vnext_memory_refs' in d:
                 for t,refs in enumerate(d['log_vnext_memory_refs']):
                     if not d['is_first'][t]:

@@ -64,6 +64,25 @@ def spatial_episode_diagnostics(episode):
     summaries = summaries[1:]
     tracked = selected & np.isfinite(poses).all(-1) & np.isfinite(summaries).all(-1)
     tracked &= summaries[:, 0] > .5  # episode-origin tracking, not network ready
+    trajectory_valid = _rows(episode, "log_spatial_trajectory_valid", length)
+    if trajectory_valid is not None:
+        # Revision 2 latches a motion gap until reset. Checking the explicit
+        # field as well prevents a stale readiness summary claiming continuity.
+        tracked &= np.isfinite(trajectory_valid[1:]) & (trajectory_valid[1:] > .5)
+    for field, metric in (("log_spatial_motion_unknown", "spatial_unknown_motion_rate"),
+                          ("log_spatial_map_write", "spatial_map_write_rate"),
+                          ("log_spatial_ground_view", "spatial_ground_view_rate"),
+                          ("log_spatial_cue_valid", "spatial_cue_write_rate")):
+        values = _rows(episode, field, length)
+        if values is not None:
+            known = selected & np.isfinite(values[1:]) & (values[1:] >= 0) & (values[1:] <= 1)
+            if known.any():
+                result[metric] = float(values[1:][known].mean())
+    gaps = _rows(episode, "log_spatial_pose_gap_count", length)
+    if gaps is not None:
+        known = selected & np.isfinite(gaps[1:]) & (gaps[1:] >= 0)
+        if known.any():
+            result["spatial_pose_gap_count"] = float(gaps[1:][known].max())
     errors = _rows(episode, "log_env_error", length)
     if errors is not None:
         # A transport failure invalidates its resulting observation.

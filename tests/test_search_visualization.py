@@ -58,6 +58,55 @@ def completed(viz, mode, env_id, end, length=5, predicted=True, **kwargs):
 
 
 class VisualizationTests(unittest.TestCase):
+    def test_pose_gap_does_not_create_complete_path_and_align_names_match_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz=SearchVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=2))
+            for i in range(4):
+                obs,out=fixture(i)
+                out["log_vnext_phase"]=1
+                out["log_vnext_choice"]=7
+                out["log_vnext_source"]=7
+                out["log_spatial_trajectory_valid"]=float(i<2)
+                out["log_spatial_pose_gap_count"]=float(i>=2)
+                if i>=2:out["log_spatial_pose"][:2]=100.
+                viz.observe("eval","gap",obs,out,80)
+                viz.feedback("eval","gap",0.,{})
+            state=dict(grid=np.zeros((9,9,6)),pose=[100.,100.,0.,10.],
+                       origin=[-4.,-4.],resolution=1.,tracking_ready=False,gap_count=1)
+            path=viz.episode_end("eval","gap",dict(reward=np.zeros(5)),80,
+                                  eval_index=3,eval_total=3,map_state=state)
+            summary=json.loads((path/"summary.json").read_text())
+            self.assertIsNone(summary["estimated_trajectory_length"])
+            self.assertFalse(summary["trajectory_length_valid"])
+            self.assertEqual(summary["pose_gap_count"],1)
+            self.assertEqual(summary["first_pose_gap_step"],2)
+            self.assertAlmostEqual(summary["integrated_path_length"],np.sqrt(.05),places=6)
+            self.assertEqual(viz._names(12,1)[6:8],["align_up","align_down"])
+            self.assertEqual(viz._names(12,0)[6:8],["scan","clear_obstacle"])
+            self.assertTrue(any(r["source"]=="alignment probe" for r in summary["selected_keyframes_for_C"]))
+            with np.load(path/"episode_trace.npz") as data:
+                np.testing.assert_array_equal(data["pose_ready"],[1,1,0,0])
+                np.testing.assert_array_equal(data["pose_gap_count"],[0,0,1,1])
+
+    def test_bounded_recovery_probe_is_distinct_from_learned_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=1))
+            for i in range(2):
+                obs, output = fixture(i)
+                output["log_vnext_source"] = 6.
+                output["log_vnext_phase"] = 3
+                output["log_vnext_choice"] = 7
+                viz.observe("eval", "probe", obs, output, 50)
+                viz.feedback("eval", "probe", 0., {})
+            path = viz.episode_end("eval", "probe", dict(reward=np.zeros(3)), 50,
+                                   eval_index=3, eval_total=3)
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertEqual(summary["spatial_fix_version"], 1)
+            self.assertTrue(any(row["source"] == "bounded recovery probe"
+                                for row in summary["selected_keyframes_for_C"]))
+            with np.load(path/"episode_trace.npz") as trace:
+                np.testing.assert_array_equal(trace["source"], [6, 6])
+
     def test_reference_runtime_offline_flag_does_not_relax_seed_or_world_checks(self):
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as directory:

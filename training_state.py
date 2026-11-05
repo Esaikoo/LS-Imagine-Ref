@@ -196,6 +196,9 @@ def prepare_resume(config):
             restored[key] = value
     if saved.get("search_vnext_enabled") and "vnext_spatial_enabled" not in saved:
         restored["vnext_spatial_enabled"] = False
+    if saved.get("search_vnext_enabled"):
+        # New defaults must not silently change historical evaluation/control.
+        restored["vnext_spatial_fix_version"] = checkpoint.get("spatial_fix_version", 0)
     for key, metadata in (("search_a_model_version", "search_a_version"),
                           ("search_b_model_version", "search_b_version"),
                           ("search_c_model_version", "search_c_version"),
@@ -432,6 +435,8 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
                               if getattr(config,"search_vnext_enabled",False) else None),
         pose_version=1 if getattr(config,"vnext_spatial_enabled",False) else None,
         spatial_map_version=2 if getattr(config,"vnext_spatial_enabled",False) else None,
+        spatial_fix_version=(int(getattr(config,"vnext_spatial_fix_version",2))
+                             if getattr(config,"vnext_spatial_enabled",False) else None),
         vnext_rng_state=(agent._vnext_control.rng_state()
                          if getattr(agent, "_vnext_control", None) is not None else None),
         search_a_version=config.search_a_model_version if config.search_a_enabled else None,
