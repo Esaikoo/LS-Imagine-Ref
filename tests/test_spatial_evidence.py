@@ -264,6 +264,17 @@ class SpatialDiagnosticsTests(unittest.TestCase):
                 for left, right in zip(data[key][1:], before[key][1:]): np.testing.assert_array_equal(left, right)
             else: np.testing.assert_array_equal(data[key], before[key])
 
+    def test_history_and_local_segment_availability_do_not_claim_global_localization(self):
+        data=episode()
+        data["log_spatial_trajectory_valid"]=np.zeros(4)
+        data["log_spatial_memory_available"]=np.array([0,1,1,1.])
+        data["log_spatial_local_valid"]=np.array([0,0,1,1.])
+        result=spatial_episode_diagnostics(data)
+        self.assertEqual(result["spatial_memory_available_rate"],1.)
+        self.assertAlmostEqual(result["spatial_local_tracking_rate"],2/3)
+        self.assertEqual(result["spatial_trajectory_available"],0)
+        self.assertNotIn("spatial_ate_rmse",result)
+
     def test_no_spatial_trace_produces_no_conditional_metrics(self):
         self.assertEqual(spatial_episode_diagnostics(dict(reward=np.zeros(4))), {})
 

@@ -72,7 +72,10 @@ def spatial_episode_diagnostics(episode):
     for field, metric in (("log_spatial_motion_unknown", "spatial_unknown_motion_rate"),
                           ("log_spatial_map_write", "spatial_map_write_rate"),
                           ("log_spatial_ground_view", "spatial_ground_view_rate"),
-                          ("log_spatial_cue_valid", "spatial_cue_write_rate")):
+                          ("log_spatial_cue_valid", "spatial_cue_write_rate"),
+                          ("log_spatial_memory_available", "spatial_memory_available_rate"),
+                          ("log_spatial_local_valid", "spatial_local_tracking_rate"),
+                          ("log_spatial_visual_revisit", "spatial_visual_view_repeat_rate")):
         values = _rows(episode, field, length)
         if values is not None:
             known = selected & np.isfinite(values[1:]) & (values[1:] >= 0) & (values[1:] <= 1)

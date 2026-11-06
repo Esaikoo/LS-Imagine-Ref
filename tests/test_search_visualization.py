@@ -58,6 +58,45 @@ def completed(viz, mode, env_id, end, length=5, predicted=True, **kwargs):
 
 
 class VisualizationTests(unittest.TestCase):
+    def test_fix3_segment_map_and_history_are_distinct_from_global_trajectory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz=SearchVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=3))
+            for i in range(4):
+                obs,out=fixture(i)
+                out.update(log_spatial_trajectory_valid=0.,log_spatial_pose_gap_count=1.,
+                    log_spatial_segment=float(i>=2),log_spatial_local_valid=1.,
+                    log_spatial_memory_available=1.,log_vnext_source=8. if i<2 else 9.)
+                viz.observe("eval","segmented",obs,out,100)
+                viz.feedback("eval","segmented",0.,{})
+            state=dict(grid=np.zeros((9,9,6)),pose=[.5,.1,0.,.2],origin=[-4.,-4.],
+                resolution=1.,tracking_ready=False,local_tracking_ready=True,active_segment=1,
+                memory_available=True,gap_count=1,
+                history_frames=np.full((2,4,4,4),80,np.uint8),
+                history_meta=np.zeros((2,8)),history_valid=np.ones(2),
+                ledger=dict(cells=np.array([[100,100],[0,0]]),
+                    values=np.array([[8,8,0,0,0,0],[1,1,0,0,0,0]]),
+                    segments=np.array([0,1])))
+            path=viz.episode_end("eval","segmented",dict(reward=np.zeros(5)),100,
+                                eval_index=3,eval_total=3,map_state=state)
+            summary=json.loads((path/"summary.json").read_text())
+            self.assertIsNone(summary["estimated_trajectory_length"])
+            self.assertFalse(summary["trajectory_length_valid"])
+            self.assertTrue(summary["persistent_memory_available"])
+            self.assertEqual(summary["memory_available_fraction"],1.)
+            self.assertEqual(summary["history_slots_retained"],2)
+            self.assertEqual(summary["estimated_visited_cells"],1)
+            self.assertEqual(summary["active_segment"],1)
+            sources={x["source"] for x in summary["selected_keyframes_for_C"]}
+            self.assertIn("bounded search probe",sources)
+            self.assertTrue((path/"B_map.png").exists())
+            with np.load(path/"episode_trace.npz",allow_pickle=False) as data:
+                np.testing.assert_array_equal(data["segment"],[0,0,1,1])
+                np.testing.assert_array_equal(data["local_valid"],[1,1,1,1])
+                np.testing.assert_array_equal(data["memory_available"],[1,1,1,1])
+                np.testing.assert_array_equal(data["ledger_segments"],[0,1])
+                np.testing.assert_array_equal(data["history_frames"],state["history_frames"])
+                self.assertEqual(data["history_frames"].dtype,np.uint8)
+
     def test_pose_gap_does_not_create_complete_path_and_align_names_match_phase(self):
         with tempfile.TemporaryDirectory() as directory:
             viz=SearchVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=2))

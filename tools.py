@@ -315,6 +315,8 @@ def search_episode_diagnostics(episode):
             result["vnext_learned_rate"]=float((sources==1).sum())/count
             result["vnext_recovery_probe_rate"]=float((sources==6).sum())/count
             result["vnext_alignment_probe_rate"]=float((sources==7).sum())/count
+            result["vnext_interaction_probe_rate"]=float((sources==8).sum())/count
+            result["vnext_search_probe_rate"]=float((sources==9).sum())/count
         if "log_vnext_recovery_probe" in episode:
             result["vnext_clearance_rate"]=float((override & (choice==7) & (phase==3)).sum())/count
         proposal=np.asarray(episode["log_vnext_actor_action"])[1:]
@@ -439,6 +441,8 @@ def simulate(
         live = np.flatnonzero(active)
         pending = [envs[i].step(action[i]) for i in live]
         results = {i: future() for i, future in zip(live, pending)}
+        if hasattr(base_agent, "observe_vnext_results"):
+            base_agent.observe_vnext_results(agent_state, results, training=is_training)
         done = np.zeros(len(envs), bool)
         for i, result in results.items():
             obs[i], reward[i], done[i], information[i] = result[:4]

@@ -115,7 +115,9 @@ if mode == 'vnext':
     assert checkpoint['search_vnext_version'] == 2
     assert checkpoint['spatial_map_version'] == 2
     assert checkpoint['pose_version'] == 1
-    assert checkpoint['spatial_fix_version'] == 2
+    assert checkpoint['spatial_fix_version'] == 3
+    assert any(row.get('B/history_valid',0)>0 for row in rows), 'No causal persistent history supervised'
+    assert any(row.get('B/history_loss',0)>0 for row in rows), 'History network did not receive a loss'
     assert checkpoint['search_a_label_version'] == 3
     assert not any('_wm.search_a.' in k or '_wm.search_b.' in k for k in checkpoint['agent_state_dict'])
     for key in ('A/prediction_loss','B/total_loss','C/transitions'):

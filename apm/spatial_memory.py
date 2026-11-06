@@ -73,6 +73,42 @@ class MapEncoder(nn.Module):
         return self.output(torch.cat((encoded, p.reshape(-1, 5)), -1)).reshape(*lead, -1)
 
 
+class ViewHistoryEncoder(nn.Module):
+    """Read a bounded episode-long visual history without assuming positions.
+
+    The RSSM feature only queries history; it is not concatenated to the output.
+    Therefore a missing history cannot masquerade as learned persistent memory.
+    Frames are actual pooled RGB/heatmap observations, not stale learned latents.
+    """
+    def __init__(self, feature_dim, dim):
+        super().__init__()
+        self.frames = nn.Sequential(nn.Linear(64+9, dim), nn.LayerNorm(dim), nn.SiLU(),
+                                    nn.Linear(dim, dim), nn.SiLU())
+        self.query = nn.Linear(feature_dim, dim)
+        self.key = nn.Linear(dim, dim)
+        self.output = nn.Sequential(nn.Linear(dim, dim), nn.LayerNorm(dim), nn.SiLU())
+
+    def forward(self, feature, frames, meta, valid, tick):
+        lead, slots = frames.shape[:-4], frames.shape[-4]
+        frame = frames.float()/255. if frames.dtype == torch.uint8 else frames.float()
+        frame = frame.nan_to_num(nan=0., posinf=0., neginf=0.).clamp(0,1)
+        meta = meta.float().nan_to_num(nan=0., posinf=0., neginf=0.)
+        age = ((tick[..., None]-meta[..., 0]).clamp_min(0)/1000.).clamp(max=10.)
+        recent = ((tick[..., None]-meta[..., 1]).clamp_min(0)/1000.).clamp(max=10.)
+        metadata = torch.stack((age, recent, torch.log1p(meta[..., 2].clamp(0,1.e6))/8.,
+            meta[..., 3].clamp(0,1), meta[..., 4].clamp(0, 1), torch.log1p(meta[..., 5].clamp(0,1.e6))/8.,
+            meta[..., 6].sin(), meta[..., 6].cos(), (meta[..., 7]/70.).clamp(-1,1)), -1)
+        encoded = self.frames(torch.cat((frame.reshape(*lead, slots, 64), metadata), -1))
+        query = F.normalize(self.query(feature.detach().float()), dim=-1)
+        keys = F.normalize(self.key(encoded), dim=-1)
+        weights = (keys*query[..., None, :]).sum(-1)*8.
+        valid = valid.bool()
+        weights = weights.masked_fill(~valid, -1.e4).softmax(-1)*valid.float()
+        weights = weights/weights.sum(-1, keepdim=True).clamp_min(1.e-6)
+        context = self.output((encoded*weights[..., None]).sum(-2))
+        return context*valid.any(-1, keepdim=True).float()
+
+
 class SpatialMapMemory(nn.Module):
     version = SPATIAL_VERSION
 
@@ -100,12 +136,23 @@ class SpatialMapMemory(nn.Module):
             cache_size=int(cfg(config, "vnext_pose_cache_size")), fix_version=min(self.fix_version, 1))
         self.encoder = MapEncoder(self.dim)
         self.event_head = nn.Linear(self.dim, 3)  # current evidence, new view, real progress
+        if self.fix_version >= 3:
+            self.history_slots = int(getattr(config, "vnext_slots", 16))
+            self.segment_resume_pairs = int(getattr(config, "vnext_segment_resume_pairs", 3))
+            if self.history_slots < 2 or self.segment_resume_pairs < 1:
+                raise ValueError("Persistent history needs >=2 slots and positive segment confirmation")
+            if int(getattr(config, "vnext_memory_save_every", 8)) < 1:
+                raise ValueError("Persistent history save interval must be positive")
+            self.history_encoder = ViewHistoryEncoder(feature_dim, self.dim)
+            self.history_head = nn.Linear(self.dim, 3)
+            self.fusion = nn.Sequential(nn.Linear(2*self.dim+3, self.dim),
+                                        nn.LayerNorm(self.dim), nn.SiLU())
         # Legacy accounting calls remain harmless for the spatial implementation.
         self.register_buffer("place_positive", torch.zeros(()))
         self.register_buffer("place_negative", torch.zeros(()))
 
     def initial(self, batch, device):
-        return dict(grid=torch.zeros(batch, 6, self.size, self.size, device=device),
+        state = dict(grid=torch.zeros(batch, 6, self.size, self.size, device=device),
             directions=torch.zeros(batch, self.size, self.size, DIRECTION_BINS, device=device),
             pose=torch.zeros(batch, POSE_DIM, device=device),
             origin=torch.full((batch, 2), -(self.size//2)*self.resolution, device=device),
@@ -124,6 +171,100 @@ class SpatialMapMemory(nn.Module):
             trajectory_started=torch.zeros(batch, device=device, dtype=torch.bool),
             pose_gap_count=torch.zeros(batch, device=device, dtype=torch.long),
             first_gap_step=torch.full((batch,), -1, device=device, dtype=torch.long))
+        if self.fix_version >= 3:
+            state.update(segment=torch.zeros(batch, device=device, dtype=torch.long),
+                ledger_segment=torch.zeros(batch, self.ledger_capacity, device=device, dtype=torch.long),
+                trusted_run=torch.zeros(batch, device=device, dtype=torch.long),
+                global_continuity=state["tracking_ready"].clone(),
+                history_frames=torch.zeros(batch, self.history_slots, 4, 4, 4, device=device, dtype=torch.uint8),
+                history_meta=torch.zeros(batch, self.history_slots, 8, device=device),
+                history_valid=torch.zeros(batch, self.history_slots, device=device, dtype=torch.bool),
+                history_yaw=torch.zeros(batch, device=device))
+        return state
+
+    @torch.no_grad()
+    def update_history(self, state, image, heatmap, control, reward, first):
+        """Maintain true observed viewpoints across map segments and uncertainty.
+
+        Metadata: created tick, last tick, visits, max ground cue, actual progress
+        count, own interaction attempts, own yaw radians, own camera pitch degrees.
+        A visual match is only a similar view, never proof of spatial revisiting.
+        """
+        batch = len(image)
+        rgb = normalized_rgb(image)
+        heat = torch.as_tensor(heatmap, device=rgb.device)
+        heat = heat.float()/255. if heat.dtype == torch.uint8 else heat.float()
+        if heat.ndim == 3:
+            heat = heat[..., None]
+        if heat.shape != (batch, 64, 64, 1):
+            raise ValueError("View history needs [batch,64,64,1] heatmap observations")
+        frame = torch.cat((rgb, heat), -1).nan_to_num().clamp(0, 1)
+        pooled = (F.adaptive_avg_pool2d(frame.permute(0, 3, 1, 2), (4, 4))
+                  .permute(0, 2, 3, 1)*255.).round().to(torch.uint8)
+        state["history_yaw"] = wrap_angle(state["history_yaw"]+
+            torch.where(first, torch.zeros_like(control[:, 8]), control[:, 8])*math.pi/180.)
+        _, cue, _ = self.ground_evidence(rgb, heat, state["camera_pitch"], state["pitch_known"])
+        attempted = ((control[:, 0]>0)|(control[:, 6]>0)) & ~first
+        progress = torch.zeros(batch, device=rgb.device, dtype=torch.bool)
+        if reward is not None:
+            progress = (torch.as_tensor(reward, device=rgb.device).reshape(batch, -1).sum(-1)>0) & ~first
+        repeated = torch.zeros(batch, device=rgb.device, dtype=torch.bool)
+        for b in range(batch):
+            valid = state["history_valid"][b]
+            distance = (state["history_frames"][b].float()-pooled[b].float()).abs().mean((-1,-2,-3))/255.
+            yaw_distance = wrap_angle(state["history_meta"][b, :, 6]-state["history_yaw"][b]).abs()
+            pitch_distance = (state["history_meta"][b, :, 7]-state["camera_pitch"][b]).abs()
+            matches = valid & (distance<.04) & (yaw_distance<math.pi/12) & (pitch_distance<15.)
+            repeated[b] = matches.any()
+            if bool(matches.any()):
+                slot = int(distance.masked_fill(~matches, 1.e4).argmin())
+            else:
+                # Save novelty/key outcomes immediately, plus bounded periodic
+                # observations. Protect the first viewpoint for the episode.
+                novel = not bool(valid.any()) or float(distance.masked_fill(~valid, 1.e4).min())>.08
+                periodic = int(state["tick"][b]) % int(getattr(self.config, "vnext_memory_save_every", 8)) == 0
+                if not (novel or periodic or bool(attempted[b]|progress[b])):
+                    continue
+                if not bool(valid.all()):
+                    slot = int((~valid).long().argmax())
+                else:
+                    meta = state["history_meta"][b]
+                    retention = 2*meta[:, 4].clamp(0,1)+meta[:, 3]-.001*(state["tick"][b]-meta[:, 1])
+                    retention[0] += 10000.
+                    slot = int(retention.argmin())
+                state["history_meta"][b, slot].zero_()
+                state["history_meta"][b, slot, 0] = state["tick"][b]
+            meta = state["history_meta"][b, slot]
+            meta[1] = state["tick"][b]
+            meta[2] += 1
+            meta[3] = torch.maximum(meta[3], cue[b])
+            meta[4] += progress[b].float()
+            meta[5] += attempted[b].float()
+            meta[6] = state["history_yaw"][b]
+            meta[7] = state["camera_pitch"][b]
+            state["history_frames"][b, slot] = pooled[b]
+            state["history_valid"][b, slot] = True
+        return repeated
+
+    def fuse(self, map_context, history_context, local_valid, trajectory_valid, uncertainty, available):
+        quality = torch.stack((local_valid.float(), trajectory_valid.float(),
+            uncertainty.float()/(1.+uncertainty.float())), -1)
+        return self.fusion(torch.cat((map_context, history_context, quality), -1))*available[..., None]
+
+    @torch.no_grad()
+    def start_local_segment(self, state, restart):
+        """Start at the current view, without assigning unknown inter-segment pose."""
+        for b in restart.nonzero().flatten().tolist():
+            state["segment"][b] += 1
+            state["grid"][b].zero_()
+            state["directions"][b].zero_()
+            state["pose"][b, :2] = 0
+            state["pose"][b, 3] = 0
+            state["origin"][b] = -(self.size//2)*self.resolution
+            state["previous_cell"][b] = -100000
+            state["dwell"][b] = 0
+            state["motion_ema"][b] = 0
+            state["tracking_ready"][b] = True
 
     @staticmethod
     def ground_evidence(image, heatmap, pitch, pitch_known):
@@ -198,6 +339,8 @@ class SpatialMapMemory(nn.Module):
         # Both origin and ledger coordinates use centered integer cells.
         cells = state["ledger_cells"][b, :used]-centered_cell(state["origin"][b], self.resolution)
         inside = ((cells >= 0) & (cells < self.size)).all(-1)
+        if self.fix_version >= 3:
+            inside &= state["ledger_segment"][b, :used] == state["segment"][b]
         cells = cells[inside]
         if not len(cells):
             return
@@ -215,6 +358,8 @@ class SpatialMapMemory(nn.Module):
         used = int(state["ledger_used"][b])
         if used:
             match = (state["ledger_cells"][b, :used] == absolute_cell).all(-1)
+            if self.fix_version >= 3:
+                match &= state["ledger_segment"][b, :used] == state["segment"][b]
             if bool(match.any()):
                 return int(match.long().argmax())
         if used >= self.ledger_capacity:
@@ -222,6 +367,8 @@ class SpatialMapMemory(nn.Module):
             # than a reason to quietly erase the oldest visit history.
             raise RuntimeError("Spatial episode visit ledger exhausted; check episode step budget/reset")
         state["ledger_cells"][b, used] = absolute_cell
+        if self.fix_version >= 3:
+            state["ledger_segment"][b, used] = state["segment"][b]
         state["ledger_used"][b] += 1
         return used
 
@@ -253,6 +400,12 @@ class SpatialMapMemory(nn.Module):
                 # An omitted reset flag cannot certify the episode origin.
                 state["tracking_ready"] &= first
             state["trajectory_started"] |= first & state["tracking_ready"]
+        if self.fix_version >= 3:
+            # A segment can recover later, but global episode-origin continuity
+            # is never silently regained after an unknown prefix or motion gap.
+            state["global_continuity"] &= ~first | state["tracking_ready"]
+            if missing_state:
+                state["global_continuity"] &= first
         was_tracking = state["tracking_ready"].clone()
         # Qualification may revoke tracking, but can only enable it at reset.
         state["tracking_ready"] &= self.pose.ready
@@ -300,15 +453,26 @@ class SpatialMapMemory(nn.Module):
                 confident_static = (motion_probability <= .2) & (sigma[:, :2].mean(-1) <= .1) & (raw_motion <= .03)
                 pair_motion_known = (supported | confident_static) & known_control
                 motion_unknown = valid & ~pair_motion_known
-                # Count loss of a previously continuous trajectory once, not
-                # every unknown warm-up pair before localization ever began.
-                state["pose_gap_count"] += ((motion_unknown & was_tracking) | qualification_lost).long()
+                # Count loss of a previously continuous segment once, not every
+                # unknown warm-up pair before localization ever began.
+                lost = (motion_unknown & was_tracking) | qualification_lost
+                state["pose_gap_count"] += lost.long()
                 state["tracking_ready"] &= ~motion_unknown
                 newly_lost = was_tracking & ~state["tracking_ready"]
                 state["first_gap_step"] = torch.where(newly_lost & (state["first_gap_step"] < 0),
                     state["tick"], state["first_gap_step"])
-                accepted &= state["tracking_ready"]
-                trusted_pair &= state["tracking_ready"] & pair_motion_known
+                if self.fix_version >= 3:
+                    state["global_continuity"] &= ~lost
+                    confirmed = valid & pair_motion_known & bool(self.pose.ready)
+                    state["trusted_run"] = torch.where(confirmed, state["trusted_run"]+1,
+                                                       torch.zeros_like(state["trusted_run"]))
+                    restart = (~state["tracking_ready"]) & confirmed & (state["trusted_run"]>=self.segment_resume_pairs)
+                    self.start_local_segment(state, restart)
+                    accepted = valid & supported & was_tracking & state["tracking_ready"] & ~restart
+                    trusted_pair = valid & pair_motion_known & state["tracking_ready"] & ~restart
+                else:
+                    accepted &= state["tracking_ready"]
+                    trusted_pair &= state["tracking_ready"] & pair_motion_known
             rejected_motion = torch.where(valid & ~accepted, raw_motion, torch.zeros_like(raw_motion))
             sigma[:, :2] = (sigma[:, :2].square()+
                 torch.where(accepted[:, None], torch.zeros_like(delta[:, :2]), delta[:, :2]).square()).sqrt()
@@ -319,6 +483,10 @@ class SpatialMapMemory(nn.Module):
         delta[:, 2] = torch.where(reliable, delta[:, 2], control[:, 8]*math.pi/180.)
         delta *= valid[:, None]
         sigma = torch.where(valid[:, None], sigma, torch.zeros_like(sigma))
+        if self.fix_version >= 3:
+            # The current view defines a recovered segment's new zero origin.
+            # Do not add the last bootstrap pair or its uncertainty twice.
+            sigma = torch.where(restart[:, None], torch.zeros_like(sigma), sigma)
         state["pose"] = self.integrate(state["pose"], delta, sigma)
         map_write = state["tracking_ready"] if self.fix_version >= 2 else torch.ones_like(valid)
         cells = self.recenter(state)
@@ -392,10 +560,20 @@ class SpatialMapMemory(nn.Module):
         context = self.encoder(patch, state["pose"])
         if self.fix_version >= 2:
             context *= map_write[:, None]
+        history_repeated = torch.zeros_like(valid)
+        if self.fix_version >= 3:
+            history_repeated = self.update_history(state, current, heatmap, control, reward, first)
+            history_context = self.history_encoder(feat, state["history_frames"], state["history_meta"],
+                state["history_valid"], state["tick"].float())
+            context = self.fuse(context, history_context, map_write, state["global_continuity"],
+                state["pose"][:, 3], state["history_valid"].any(-1).float())
         rows = torch.arange(batch, device=device)
         directions = (state["directions"][rows, cells[:, 1], cells[:, 0]] > 0).float()
         visits = state["grid"][rows, 0, cells[:, 1], cells[:, 0]]
         visited = state["ledger_used"].float()
+        if self.fix_version >= 3:
+            used = torch.arange(self.ledger_capacity, device=device)[None] < state["ledger_used"][:, None]
+            visited = (used & (state["ledger_segment"]==state["segment"][:, None])).sum(-1).float()
         observed = known.sum((-1, -2, -3)).float()
         repeated = torch.stack(repeated).float()
         confidence = sigma[:, :2].mean(-1).neg().exp()*state["tracking_ready"].float()
@@ -423,7 +601,8 @@ class SpatialMapMemory(nn.Module):
                 log_spatial_pair_valid=valid.float(),
                 log_spatial_motion_probability=motion_probability*valid.float())
         if self.fix_version >= 2:
-            info.update(log_spatial_trajectory_valid=state["tracking_ready"].float(),
+            trajectory_valid = state["global_continuity"] if self.fix_version >= 3 else state["tracking_ready"]
+            info.update(log_spatial_trajectory_valid=trajectory_valid.float(),
                 log_spatial_map_write=map_write.float(), log_spatial_ground_view=ground_view.float(),
                 log_spatial_cue_valid=cue_valid.float(), log_spatial_raw_cue=raw_cue,
                 log_spatial_motion_unknown=motion_unknown.float(),
@@ -431,6 +610,15 @@ class SpatialMapMemory(nn.Module):
                 log_spatial_first_gap_step=state["first_gap_step"].float(),
                 log_spatial_camera_pitch=state["camera_pitch"].clone(),
                 log_spatial_pitch_known=state["pitch_known"].float())
+        if self.fix_version >= 3:
+            info.update(log_spatial_history_frames=state["history_frames"].clone(),
+                log_spatial_history_meta=state["history_meta"].clone(),
+                log_spatial_history_valid=state["history_valid"].float(),
+                log_spatial_history_tick=(state["tick"]-1).float(),
+                log_spatial_segment=state["segment"].float(),
+                log_spatial_local_valid=state["tracking_ready"].float(),
+                log_spatial_memory_available=state["history_valid"].any(-1).float(),
+                log_spatial_visual_revisit=history_repeated.float())
         return context, state, info
 
     def batch(self, features, data):
@@ -439,6 +627,35 @@ class SpatialMapMemory(nn.Module):
         pose = torch.as_tensor(data.get("vnext_spatial_pose", np.zeros((*lead, 4), np.float32)), device=device).float()
         valid = torch.as_tensor(data.get("vnext_spatial_valid", np.zeros(lead)), device=device).bool()
         snapshot_valid = valid.clone()
+        if self.fix_version >= 3:
+            local_valid = torch.as_tensor(data.get("vnext_spatial_local_valid", np.zeros(lead)), device=device).bool() & snapshot_valid
+            trajectory_valid = torch.as_tensor(data.get("vnext_spatial_trajectory_valid", np.zeros(lead)), device=device).bool() & snapshot_valid
+            shape = (*lead, self.history_slots)
+            frames = torch.as_tensor(data.get("vnext_spatial_history_frames", np.zeros((*shape,4,4,4), np.uint8)), device=device)
+            meta = torch.as_tensor(data.get("vnext_spatial_history_meta", np.zeros((*shape,8), np.float32)), device=device).float()
+            history_valid = torch.as_tensor(data.get("vnext_spatial_history_valid", np.zeros(shape)), device=device).bool()
+            tick = torch.as_tensor(data.get("vnext_spatial_history_tick", np.zeros(lead)), device=device).float()
+            present = torch.as_tensor(data.get("vnext_spatial_history_snapshot_valid", np.zeros(lead)), device=device).bool()
+            if frames.shape != (*shape,4,4,4) or meta.shape != (*shape,8) or history_valid.shape != shape or tick.shape != lead:
+                raise ValueError("Persistent view history Replay shapes differ from configured slots")
+            present &= snapshot_valid & history_valid.any(-1)
+            finite = torch.isfinite(meta).flatten(-2).all(-1) & torch.isfinite(tick)
+            finite &= torch.isfinite(frames).flatten(-4).all(-1)
+            causal = (~history_valid) | ((meta[...,0]>=0) &
+                (meta[...,1]>=meta[...,0]) & (meta[...,1]<=tick[...,None]))
+            present &= finite & causal.all(-1)
+            history_valid &= present[...,None]
+            history_context = self.history_encoder(features, frames, meta.nan_to_num(), history_valid, tick.nan_to_num())
+            map_finite = torch.isfinite(pose).all(-1) & torch.isfinite(patch).flatten(-3).all(-1)
+            local_valid &= map_finite & (pose[...,3]>=0)
+            pose = pose.nan_to_num(nan=0., posinf=0., neginf=0.).clone()
+            pose[...,3].clamp_min_(0.)
+            patch = patch.nan_to_num(nan=0., posinf=0., neginf=0.)
+            map_context = self.encoder(patch, pose)*local_valid[...,None]
+            context = self.fuse(map_context, history_context, local_valid, trajectory_valid,
+                pose[...,3], present.float())
+            return context, dict(valid=present, snapshot_valid=snapshot_valid, patch=patch, pose=pose,
+                map_valid=local_valid, map_context=map_context, history_context=history_context)
         if self.fix_version >= 2:
             valid &= torch.as_tensor(data.get("vnext_spatial_trajectory_valid", np.zeros(lead)), device=device).bool()
         context = self.encoder(patch, pose)*valid[..., None]
@@ -453,9 +670,17 @@ class SpatialMapMemory(nn.Module):
             labels.append(torch.as_tensor(data.get("search_"+name, np.zeros(lead)), device=device).float())
             known.append(torch.as_tensor(data.get("search_"+name+"_valid", np.zeros(lead)), device=device).bool() & version)
         labels, known = torch.stack(labels, -1), torch.stack(known, -1)
-        mask = known & train_mask[..., None] & details["valid"][..., None]
-        loss = F.binary_cross_entropy_with_logits(self.event_head(context), labels.nan_to_num().clamp(0, 1), reduction="none")
+        map_valid = details.get("map_valid", details["valid"])
+        mask = known & train_mask[..., None] & map_valid[..., None]
+        map_context = details.get("map_context", context)
+        loss = F.binary_cross_entropy_with_logits(self.event_head(map_context), labels.nan_to_num().clamp(0, 1), reduction="none")
         map_loss = (loss*mask).sum()/mask.sum().clamp_min(1)
+        history_loss = map_loss*0
+        if self.fix_version >= 3:
+            history_mask = known & train_mask[...,None] & details["valid"][...,None]
+            error = F.binary_cross_entropy_with_logits(self.history_head(context),
+                labels.nan_to_num().clamp(0,1), reduction="none")
+            history_loss = (error*history_mask).sum()/history_mask.sum().clamp_min(1)
         pose_known = torch.as_tensor(data.get("search_pose_valid", np.zeros(lead)), device=device).bool()
         pose_known &= torch.as_tensor(data.get("vnext_pose_prev_valid", np.zeros(lead)), device=device).bool()
         window = torch.as_tensor(data.get("vnext_window_valid", np.ones(lead)), device=device).bool()
@@ -468,9 +693,13 @@ class SpatialMapMemory(nn.Module):
         target = torch.as_tensor(data.get("search_pose_delta", np.zeros((*lead, 3))), device=device).float()
         pose_loss, metrics, _ = self.pose.supervised_loss(previous, current, control, target, pose_mask,
             calibration_mask=pose_calibration, frame_ids=data.get("vnext_frame_id"))
-        total = map_loss+float(cfg(self.config, "vnext_pose_loss_weight"))*pose_loss
+        total = map_loss+history_loss+float(cfg(self.config, "vnext_pose_loss_weight"))*pose_loss
         metrics.update({"B/map_loss": map_loss.detach(), "B/total_loss": total.detach(),
-                        "B/map_valid": details["valid"].float().mean().detach()})
+                        "B/map_valid": map_valid.float().mean().detach()})
+        if self.fix_version >= 3:
+            metrics.update({"B/history_loss":history_loss.detach(),
+                "B/history_valid":details["valid"].float().mean().detach(),
+                "B/memory_valid":details["valid"].float().mean().detach()})
         return total, metrics, features.new_zeros(2)
 
     @torch.no_grad()
@@ -498,4 +727,16 @@ class SpatialMapMemory(nn.Module):
                 localization=("estimated continuous origin pose" if bool(state["tracking_ready"][0]) else
                               "unknown after motion/qualification gap; historical prefix retained" if started else
                               "unknown: no qualified episode-origin pose"))
+        if self.fix_version >= 3:
+            ledger["segments"] = state["ledger_segment"][0, :used].detach().cpu().numpy().copy()
+            result.update(trajectory_valid=bool(state["global_continuity"][0]),
+                local_tracking_ready=bool(state["tracking_ready"][0]),
+                active_segment=int(state["segment"][0]), memory_available=bool(state["history_valid"][0].any()),
+                history_frames=state["history_frames"][0].detach().cpu().numpy().copy(),
+                history_meta=state["history_meta"][0].detach().cpu().numpy().copy(),
+                history_valid=state["history_valid"][0].detach().cpu().numpy().copy(),
+                map_write_policy="qualified local segments; unknown inter-segment transforms are never filled",
+                localization=("estimated continuous origin pose" if bool(state["global_continuity"][0]) else
+                    "estimated local segment; global relation unknown" if bool(state["tracking_ready"][0]) else
+                    "view history active; local pose currently unknown"))
         return result

@@ -381,6 +381,212 @@ class CurrentOperatingCalibrationTests(unittest.TestCase):
         self.assertFalse(bool(result['direction_ready'][0]))
 
 
+class ForecastGuidanceRevisionThreeTests(unittest.TestCase):
+    def model(self, revision=3):
+        cfg=config();cfg.vnext_spatial_enabled=True;cfg.vnext_spatial_fix_version=revision
+        return SearchVNext(24,cfg)
+
+    @staticmethod
+    def future_support(model, options=(1,2), event=2, skill=.5):
+        with torch.no_grad():
+            for option in options:
+                model.a.support_counts[3,option,0,event]=200
+                model.a.support_positives[3,option,0,event]=40
+                model.a.cal_counts[3,option,0,event]=100
+                model.a.cal_positives[3,option,0,event]=20
+                model.a.cal_errors[3,option,0,event]=100*.16*(1-skill)
+
+    @staticmethod
+    def factual_prediction(features,memory,controls,actuator,lengths,phase,remaining):
+        batch,options=controls.shape[:2]
+        p=controls.new_full((batch,options,7),.01)
+        # Stand-in action-conditioned outcomes let the test isolate whether
+        # the actual candidate ranking consumes the calibrated prediction.
+        p[...,2]=torch.where(controls[...,0,8]>0,.9,.2)
+        return dict(logits=torch.logit(p).unsqueeze(-2).expand(-1,-1,3,-1),
+            current_logits=controls.new_zeros(batch,options,3,5),
+            future=controls.new_zeros(batch,options,3,8))
+
+    def prediction(self,model,controls):
+        with mock.patch.object(model.a,"forward",side_effect=self.factual_prediction):
+            return model.predict(torch.zeros(1,24),torch.zeros(1,16),controls,
+                torch.zeros(1,3),option_ids=torch.tensor([1,2]))
+
+    def test_discovery_support_changes_candidate_ranking_with_real_control_prefix(self):
+        model=self.model();self.future_support(model)
+        controls=torch.zeros(1,2,3,9);controls[:,0,:,8]=-10;controls[:,1,:,8]=10
+        result=self.prediction(model,controls)
+        self.assertTrue(bool(result["support"].all()))
+        self.assertTrue(bool(result["supported"][...,2].all()))
+        self.assertEqual(result["score"].argmax(-1).item(),1)
+        swapped=self.prediction(model,controls.flip(1))
+        self.assertEqual(swapped["score"].argmax(-1).item(),0)
+        self.assertTrue(torch.isfinite(result["descriptor"]).all())
+        legacy=self.model(2);legacy.a.load_state_dict(model.a.state_dict())
+        self.assertFalse(bool(self.prediction(legacy,controls)["support"].any()))
+
+    def test_marginal_prior_improvement_cannot_certify_forecast(self):
+        controls=torch.zeros(1,2,3,9)
+        for event in (0,1,2,4,5):
+            model=self.model();self.future_support(model,event=event,skill=.001)
+            result=self.prediction(model,controls)
+            self.assertFalse(bool(result["support"].any()),FUTURE_EVENTS[event])
+        legacy=self.model(2);self.future_support(legacy,event=0,skill=.001)
+        self.assertTrue(bool(self.prediction(legacy,controls)["support"].all()))
+
+    def test_probe_is_separate_from_formal_permission_and_needs_online_visuals(self):
+        model=self.model();CurrentOperatingCalibrationTests.calibrate(model,false_confident=10)
+        probability=torch.full((1,3,5),.95)
+        image=torch.zeros(1,64,64,3,dtype=torch.uint8)
+        heat=torch.zeros(1,64,64,dtype=torch.uint8);heat[:,25:39,25:39]=255
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(probability),None)), \
+             mock.patch.object(model,"online_memory",return_value=(torch.zeros(1,16),None,{})):
+            current=model.current(torch.zeros(1,24))
+            self.assertTrue(bool(current["interaction_probe_candidate"][0]))
+            self.assertFalse(bool(current["interaction_probe_ready"][0]))
+            self.assertFalse(bool(current["interaction_ready"][0]))
+            online,*_=model.online(torch.zeros(1,24),image,heat,camera_pitch=torch.zeros(1))
+            self.assertTrue(bool(online["interaction_probe_ready"][0]))
+            self.assertFalse(bool(online["interaction_ready"][0]))
+            self.assertGreater(float(online["interaction_probe_quality"][0]),.5)
+            diagnostics=model.current_calibration_metrics()
+            self.assertEqual(float(diagnostics["A/current_interactable_calibration_ready"]),0.)
+            self.assertEqual(float(diagnostics["A/current_interactable_probe_calibration_ready"]),1.)
+
+    def test_probe_rejects_sky_uniform_heat_missing_pose_and_off_center_cue(self):
+        model=self.model();CurrentOperatingCalibrationTests.calibrate(model,false_confident=10)
+        probability=torch.full((1,3,5),.95)
+        image=torch.zeros(1,64,64,3,dtype=torch.uint8)
+        center=torch.zeros(1,64,64,dtype=torch.uint8);center[:,25:39,25:39]=255
+        side=torch.zeros_like(center);side[:,4:16,4:16]=255
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(probability),None)), \
+             mock.patch.object(model,"online_memory",return_value=(torch.zeros(1,16),None,{})):
+            for heat,pitch in [(center,None),(center,torch.tensor([-60.])),
+                               (torch.full_like(center,255),torch.zeros(1)),(side,torch.zeros(1))]:
+                result,*_=model.online(torch.zeros(1,24),image,heat,camera_pitch=pitch)
+                self.assertFalse(bool(result["interaction_probe_ready"][0]))
+                self.assertEqual(float(result["interaction_probe_quality"][0]),0.)
+
+    def test_probe_rejects_bad_calibration_inconsistent_heads_and_disagreement(self):
+        model=self.model();CurrentOperatingCalibrationTests.calibrate(model,false_confident=30)
+        probability=torch.full((1,3,5),.95)
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(probability),None)):
+            self.assertFalse(bool(model.current(torch.zeros(1,24))["interaction_probe_candidate"][0]))
+        CurrentOperatingCalibrationTests.calibrate(model,false_confident=10)
+        for index in (1,2):
+            bad=probability.clone();bad[...,index]=.2
+            with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(bad),None)):
+                self.assertFalse(bool(model.current(torch.zeros(1,24))["interaction_probe_candidate"][0]))
+        bad=probability.clone();bad[:,0,3]=.2
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(bad),None)):
+            self.assertFalse(bool(model.current(torch.zeros(1,24))["interaction_probe_candidate"][0]))
+        # Sparse optimistic observations do not become evidence above chance.
+        model.config.vnext_interaction_probe_min_samples=100
+        with mock.patch.object(model.a,"current_logits",return_value=(torch.logit(probability),None)):
+            self.assertFalse(bool(model.current(torch.zeros(1,24))["interaction_probe_candidate"][0]))
+
+    def test_probe_qualification_is_reachable_with_production_Brier_support(self):
+        # Aggregate counts are from the audited 192.5k production checkpoint;
+        # the small operating reservoir below encodes its ~0.635 precision.
+        # This is an interface reachability regression, not a re-evaluation of
+        # historical probabilities or evidence of task success.
+        model=self.model();a=model.a
+        count=[1636801]*5;positive=[83781,29901,21281,21281,5016]
+        cal_count=[37657,37657,37657,37657,37625]
+        cal_positive=[1857,780,295,295,765]
+        cal_error=[616.1868,221.6017,242.4287,240.2804,784.0323]
+        with torch.no_grad():
+            for name,value in [("current_counts",count),("current_positives",positive),
+                               ("current_cal_counts",cal_count),("current_cal_positives",cal_positive),
+                               ("current_cal_errors",cal_error)]:getattr(a,name).copy_(torch.tensor(value))
+            a.cal_identity[0,:214]=torch.arange(214)
+            a.cal_valid[0,:214,:5]=True
+            a.cal_label[0,:136,:5]=1
+            prob=torch.full((214,5),.95)
+            a.cal_label[0,136:214,0]=1  # Visible evidence is reliable.
+            a.cal_error[0,:214,:5]=(prob-a.cal_label[0,:214,:5]).square()
+        a._current_operating_cache=None
+        supported,quality=a.interaction_probe_calibration()
+        self.assertTrue(bool(supported));self.assertGreater(float(quality),.5)
+        self.assertFalse(bool(a.ready_current()[3]))
+
+    @staticmethod
+    def factual_domain_batch(model,with_history=False,held_out=False):
+        d=batch(n=12,slots=3,b=1);shape=(1,12)
+        d["vnext_calibration"][:]=float(held_out)
+        d["vnext_window_valid"][:]=1;d["vnext_frame_id"]=np.arange(12)[None]+100
+        d["vnext_spatial_valid"]=np.ones(shape,np.float32)
+        d["vnext_spatial_trajectory_valid"]=np.zeros(shape,np.float32)
+        d["vnext_spatial_local_valid"]=np.zeros(shape,np.float32)
+        d["is_first"]=np.zeros(shape,bool);d["is_first"][:,0]=True
+        d["is_last"]=np.zeros(shape,bool);d["is_last"][:,-1]=True
+        d["is_terminal"]=d["is_last"].copy()
+        d["log_applied_control"]=np.zeros((*shape,9),np.float32)
+        d["log_actuator_after"]=np.zeros((*shape,3),np.float32)
+        d["log_actuator_valid"]=np.ones(shape,np.float32);d["log_actuator_valid"][:,0]=0
+        d["log_vnext_version"]=np.full(shape,2,np.float32)
+        d["log_vnext_decision"]=np.zeros(shape,np.float32);d["log_vnext_decision"][:,1::3]=1
+        d["log_vnext_horizon"]=np.full(shape,3,np.float32)
+        d["log_vnext_option_id"]=np.repeat(np.arange(4),3)[None].astype(np.float32)
+        # Row1..3 forms one actually executed noop Actor lease.
+        d["log_vnext_option_id"][:,1:4]=7
+        d["log_vnext_plan_commands"]=np.zeros((*shape,3),np.float32)
+        d["log_vnext_actor_plan"]=np.zeros((*shape,3),np.float32)
+        d["log_vnext_requested"]=np.zeros(shape,np.float32)
+        d["log_vnext_choice"]=np.zeros(shape,np.float32)
+        d["log_vnext_phase"]=np.zeros(shape,np.float32)
+        if with_history:
+            slots=model.b.history_slots
+            d["vnext_spatial_history_snapshot_valid"]=np.ones(shape,np.float32)
+            d["vnext_spatial_history_frames"]=np.full((*shape,slots,4,4,4),128,np.uint8)
+            d["vnext_spatial_history_meta"]=np.zeros((*shape,slots,8),np.float32)
+            d["vnext_spatial_history_valid"]=np.ones((*shape,slots),np.float32)
+            d["vnext_spatial_history_tick"]=np.arange(12,dtype=np.float32)[None]
+        return d
+
+    def test_old_zero_memory_replay_trains_but_cannot_certify_new_history_predictor(self):
+        model=self.model();data=self.factual_domain_batch(model)
+        features=torch.randn(1,12,24,requires_grad=True)
+        before=model.a.events[0].weight.detach().clone()
+        metrics=model.train_step(features,data)
+        self.assertGreater(float(metrics["A/current_valid_labels"]),0)
+        self.assertGreater(float(metrics["A/future_valid_labels"]),0)
+        self.assertGreater(float(metrics["A/future_grad_norm"]),0)
+        self.assertFalse(torch.equal(before,model.a.events[0].weight))
+        self.assertEqual(float(metrics["A/qualification_context_rows"]),0.)
+        self.assertFalse(model.a.current_counts.any());self.assertFalse(model.a.support_counts.any())
+        self.assertFalse(model.a.current_cal_counts.any());self.assertFalse(model.a.cal_counts.any())
+        self.assertIsNone(features.grad)
+
+    def test_history_without_pose_can_certify_and_old_holdout_never_becomes_training(self):
+        model=self.model();data=self.factual_domain_batch(model,with_history=True)
+        metrics=model.train_step(torch.randn(1,12,24),data)
+        self.assertEqual(float(metrics["A/qualification_context_rows"]),12.)
+        self.assertGreater(float(model.a.current_counts.sum()),0)
+        self.assertGreater(float(model.a.support_counts.sum()),0)
+        heldout=self.model();old=self.factual_domain_batch(heldout,held_out=True)
+        before=[v.detach().clone() for v in heldout.a.parameters()]
+        metrics=heldout.train_step(torch.randn(1,12,24),old)
+        self.assertEqual(float(metrics["A/update_applied"]),0.)
+        self.assertTrue(all(torch.equal(x,y) for x,y in zip(before,heldout.a.parameters())))
+        self.assertFalse(heldout.a.current_cal_counts.any())
+        new=self.factual_domain_batch(heldout,with_history=True,held_out=True)
+        heldout.train_step(torch.randn(1,12,24),new)
+        self.assertGreater(float(heldout.a.current_cal_counts.sum()),0)
+        self.assertGreater(float(heldout.a.cal_counts.sum()),0)
+        self.assertFalse(heldout.a.current_counts.any())
+
+    def test_history_marker_alone_cannot_certify_and_memory_off_has_zero_domain(self):
+        model=self.model();data=self.factual_domain_batch(model)
+        data["vnext_spatial_history_snapshot_valid"]=np.ones((1,12),np.float32)
+        model.train_step(torch.randn(1,12,24),data)
+        self.assertFalse(model.a.current_counts.any())
+        off=self.model();off.config.vnext_memory_enabled=False
+        off.train_step(torch.randn(1,12,24),self.factual_domain_batch(off))
+        self.assertGreater(float(off.a.current_counts.sum()),0)
+        self.assertGreater(float(off.a.support_counts.sum()),0)
+
+
 if __name__=="__main__":
     unittest.main()
 

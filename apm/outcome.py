@@ -28,6 +28,8 @@ DEFAULTS = dict(
     vnext_current_consistency_min=.5,
     vnext_direction_min_contrast=.1, vnext_direction_min_peak=.5,
     vnext_direction_max_up_pitch=30.,
+    vnext_forecast_min_skill=.05,
+    vnext_interaction_probe_precision=.6, vnext_interaction_probe_min_samples=16,
 )
 
 
@@ -338,10 +340,13 @@ class OutcomeHeads(nn.Module):
         for a negative and 1-sqrt(e) for a positive. No eval labels are used and
         no new persistent checkpoint buffers are needed.
         """
-        thresholds = self.current_thresholds()
-        key = (tuple(float(x) for x in thresholds.detach().cpu()), thresholds.device, thresholds.dtype)
+        consistency = float(cfg(self.config,"vnext_current_consistency_min"))
+        values = (float(getattr(self.config,"vnext_visible_high",.7)), consistency, consistency,
+                  float(getattr(self.config,"vnext_interactable_high",.85)), .5)
+        key = (values, self.current_counts.device, self.current_counts.dtype)
         if self._current_operating_cache is not None and self._current_operating_cache[0] == key:
             return self._current_operating_cache[1]
+        thresholds = self.current_counts.new_tensor(values)
         label = self.cal_label[0,:,:len(CURRENT_EVENTS)]
         error = self.cal_error[0,:,:len(CURRENT_EVENTS)]
         valid = self.cal_valid[0,:,:len(CURRENT_EVENTS)] & (self.cal_identity[0]>=0)[:,None]
@@ -354,8 +359,17 @@ class OutcomeHeads(nn.Module):
         tp = (selected & positive).sum(0).float()
         samples = selected.sum(0).float()
         positives = positive.sum(0).float()
+        precision = tp/samples.clamp_min(1)
+        # A lower confidence bound is evidence for a bounded real probe, never
+        # a substitute for the stricter qualified-action precision threshold.
+        z = 1.6448536269514722  # two-sided 90% Wilson interval
+        denominator = 1+z*z/samples.clamp_min(1)
+        center = precision+z*z/(2*samples.clamp_min(1))
+        radius = z*(precision*(1-precision)/samples.clamp_min(1)+
+                    z*z/(4*samples.clamp_min(1).square())).clamp_min(0).sqrt()
+        lower = torch.where(samples>0,(center-radius)/denominator,torch.zeros_like(samples))
         result = dict(samples=samples, true_positive=tp, positives=positives,
-            precision=tp/samples.clamp_min(1), recall=tp/positives.clamp_min(1),
+            precision=precision, precision_lower=lower, recall=tp/positives.clamp_min(1),
             threshold=thresholds)
         self._current_operating_cache = (key,result)
         return result
@@ -364,17 +378,21 @@ class OutcomeHeads(nn.Module):
         x = self.current_trunk(torch.cat((feat.detach().float(),memory.float()),-1))
         return torch.stack([head(x) for head in self.current_heads],-2),x
 
-    def ready_current(self):
+    def base_ready_current(self):
+        """Data and held-out Brier support, without operating-point promotion."""
         n = self.current_cal_counts.clamp_min(1)
         rate = self.current_cal_positives/n
         baseline = (rate*(1-rate)).clamp_min(.001)
-        ready = ((self.current_counts>=cfg(self.config,"vnext_min_labels"))&
+        return ((self.current_counts>=cfg(self.config,"vnext_min_labels"))&
             (self.current_positives>=cfg(self.config,"vnext_min_positives"))&
             ((self.current_counts-self.current_positives)>=cfg(self.config,"vnext_min_positives"))&
             (self.current_cal_counts>=cfg(self.config,"vnext_min_calibration"))&
             (self.current_cal_positives>=min(4,cfg(self.config,"vnext_min_positives")))&
             ((self.current_cal_counts-self.current_cal_positives)>=min(4,cfg(self.config,"vnext_min_positives")))&
             (self.current_cal_errors/n <= baseline))
+
+    def ready_current(self):
+        ready = self.base_ready_current()
         if (bool(getattr(self.config,"vnext_spatial_enabled",False)) and
                 int(getattr(self.config,"vnext_spatial_fix_version",0)) >= 2):
             stats = self.current_operating_statistics()
@@ -383,6 +401,21 @@ class OutcomeHeads(nn.Module):
             ready &= stats["samples"]>=int(cfg(self.config,"vnext_current_min_operating_samples"))
             ready &= stats["precision"]>=required
         return ready
+
+    def interaction_probe_calibration(self):
+        """Independent, moderate evidence for low-cost factual sampling only.
+
+        Center/reach heads need real positive/negative data and held-out skill,
+        but need not already satisfy all formal-action precision requirements.
+        The joint operating decision must be better than chance with a Wilson
+        lower bound. C still owns the probe budget, protection and result wait.
+        """
+        stats = self.current_operating_statistics()
+        supported = self.base_ready_current()[:4].all()
+        supported &= stats["samples"][3]>=int(cfg(self.config,"vnext_interaction_probe_min_samples"))
+        supported &= stats["precision"][3]>=float(cfg(self.config,"vnext_interaction_probe_precision"))
+        supported &= stats["precision_lower"][3]>.5
+        return supported, stats["precision_lower"][3]
 
     def forward(self,feat,memory,controls,actuator,lengths,phase,remaining):
         logits,x = self.current_logits(feat,memory)
@@ -409,7 +442,8 @@ class SearchVNext(nn.Module):
         self.memory_dim = int(cfg(config,"vnext_memory_dim"))
         self.spatial = bool(getattr(config, "vnext_spatial_enabled", False))
         self.current_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",0)) >= 2
-        if self.spatial and getattr(config,"vnext_spatial_fix_version",0) not in (0,1,2):
+        self.guidance_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",0)) >= 3
+        if self.spatial and getattr(config,"vnext_spatial_fix_version",0) not in (0,1,2,3):
             raise ValueError("Unsupported spatial fix revision")
         if self.current_fix:
             probabilities = ("vnext_current_min_precision","vnext_interaction_min_precision",
@@ -422,6 +456,13 @@ class SearchVNext(nn.Module):
                 raise ValueError("Direction contrast must be in (0,1]")
             if not 0<=float(cfg(config,"vnext_direction_max_up_pitch"))<=70:
                 raise ValueError("Direction upward pitch bound must be between 0 and 70 degrees")
+        if self.guidance_fix:
+            if not 0<float(cfg(config,"vnext_forecast_min_skill"))<1:
+                raise ValueError("Forecast relative skill must be in (0,1)")
+            if not .5<float(cfg(config,"vnext_interaction_probe_precision"))<=1:
+                raise ValueError("Interaction probe precision must exceed chance")
+            if int(cfg(config,"vnext_interaction_probe_min_samples"))<1:
+                raise ValueError("Interaction probes require held-out operating samples")
         if self.spatial:
             from .spatial_memory import SpatialMapMemory
             self.b = SpatialMapMemory(feature_dim, config)
@@ -458,6 +499,23 @@ class SearchVNext(nn.Module):
             direction, valid, strength = self.visual_direction(heatmap,camera_pitch,feat)
             valid &= current["ready"]["visible"] & (current["visible"]>=float(getattr(self.config,"vnext_visible_high",.7)))
             current.update(direction=direction,direction_ready=valid,direction_strength=strength)
+            if self.guidance_fix:
+                # Only legal same-frame visuals and our own command-integrated
+                # pitch may refine the head-based probe candidate. A centered,
+                # contrasted cue is required; uniform sky response is no cue.
+                heat=torch.as_tensor(heatmap,device=feat.device)
+                if heat.ndim==4:heat=heat[...,0]
+                heat=heat.float()/255. if heat.dtype==torch.uint8 else heat.float()
+                center_peak=heat[:,20:44,20:44].flatten(1).amax(-1)
+                peak=heat.flatten(1).amax(-1)
+                centered=direction.abs().amax(-1)<=.4
+                centered &= center_peak>=float(cfg(self.config,"vnext_direction_min_peak"))
+                centered &= center_peak>=peak-.1
+                pitch=(torch.full((len(feat),),float('nan'),device=feat.device) if camera_pitch is None
+                       else torch.as_tensor(camera_pitch,device=feat.device).float().reshape(len(feat)))
+                probe=current["interaction_probe_candidate"] & valid & centered & (pitch>=-10.)
+                current["interaction_probe_ready"]=probe
+                current["interaction_probe_quality"]*=probe.float()
         return current,memory,state,info
 
     def visual_direction(self, heatmap, camera_pitch, ref):
@@ -511,6 +569,19 @@ class SearchVNext(nn.Module):
             ready={name:ready[...,i] for i,name in enumerate(CURRENT_EVENTS)},current_ready=ready)
         if self.current_fix:
             result["interaction_ready"] = ready[...,3]
+        if self.guidance_fix:
+            probe_supported,probe_quality=self.a.interaction_probe_calibration()
+            probe=probe_supported & ready[...,0]
+            probe &= torch.isfinite(mean[...,:4]).all(-1) & torch.isfinite(disagreement[...,:4]).all(-1)
+            probe &= (disagreement[...,:4]<=float(cfg(self.config,"vnext_max_disagreement"))).all(-1)
+            probe &= mean[...,0]>=float(getattr(self.config,"vnext_visible_high",.7))
+            probe &= (mean[...,1:3]>=float(cfg(self.config,"vnext_current_consistency_min"))).all(-1)
+            probe &= mean[...,3]>=float(getattr(self.config,"vnext_interactable_high",.85))
+            # Final permission requires online visual/pitch evidence. A call to
+            # current() alone is not a grounded action-probe authorization.
+            result.update(interaction_probe_candidate=probe,
+                interaction_probe_ready=torch.zeros_like(probe),
+                interaction_probe_quality=probe_quality.expand_as(probe).float()*probe.float())
         return result
 
     @torch.no_grad()
@@ -542,9 +613,14 @@ class SearchVNext(nn.Module):
         supported=(n>=cfg(self.config,"vnext_min_labels"))&(pos>=cfg(self.config,"vnext_min_positives"))
         supported &= (n-pos)>=cfg(self.config,"vnext_min_positives")
         supported &= (cp>=min(4,cfg(self.config,"vnext_min_positives")))&((cn-cp)>=min(4,cfg(self.config,"vnext_min_positives")))
-        supported &= (cn>=cfg(self.config,"vnext_min_calibration"))&(self.a.cal_errors[h,ids,ph]/cn.clamp_min(1)<=(rate*(1-rate)).clamp_min(.001))
+        brier=self.a.cal_errors[h,ids,ph]/cn.clamp_min(1)
+        baseline=(rate*(1-rate)).clamp_min(.001)
+        supported &= (cn>=cfg(self.config,"vnext_min_calibration"))&(brier<=baseline)
+        skill=(1-brier/baseline).clamp(0,1)
+        if self.guidance_fix:
+            supported &= torch.isfinite(skill) & (skill>=float(cfg(self.config,"vnext_forecast_min_skill")))
         supported &= uncertainty<=cfg(self.config,"vnext_max_disagreement")
-        support=supported[...,[0,4,5]].any(-1)
+        support=supported[...,[0,1,2,4,5] if self.guidance_fix else [0,4,5]].any(-1)
         if self.spatial:
             # Recovery is qualified by observed obstruction outcomes as well;
             # requiring target-discovery positives would disable useful retreat
@@ -554,12 +630,21 @@ class SearchVNext(nn.Module):
         descriptor=torch.cat((probs,uncertainty.mean(-1,keepdim=True),supported.float().mean(-1,keepdim=True),
             lengths.float()[...,None]/8,cv[...,None],uncertainty.max(-1,keepdim=True).values),-1)
         weights = probs.new_tensor([1., 2., .5, -.5, 1., 2., -.5])
-        score = (probs * weights * supported.float()).sum(-1)
+        if self.guidance_fix:
+            # Positive consequences use a pessimistic ensemble estimate; costs
+            # use the optimistic one. Held-out skill scales each event rather
+            # than promoting an almost-constant prediction to full influence.
+            robust=torch.where(weights>=0,(probs-uncertainty).clamp(0,1),
+                                (probs+uncertainty).clamp(0,1))
+            score=(robust*weights*supported.float()*skill).sum(-1)
+        else:
+            score = (probs * weights * supported.float()).sum(-1)
         score -= lengths.float() * float(getattr(self.config,"vnext_score_cost",.01))
         score -= uncertainty.mean(-1) * float(getattr(self.config,"vnext_score_uncertainty",.2))
         return dict(probs=probs,events=probs,uncertainty=uncertainty,disagreement=uncertainty,
             score=score, score_supported=support,
-            supported=supported,support=support,descriptor=descriptor,future=output["future"].mean(-2))
+            supported=supported,support=support,descriptor=descriptor,future=output["future"].mean(-2),
+            forecast_skill=skill)
 
     predict_candidates = predict
 
@@ -618,6 +703,18 @@ class SearchVNext(nn.Module):
         memory,details=self.b.batch(features,data)
         if not cfg(self.config,"vnext_memory_enabled"):
             memory=memory*0
+        # Old Replay remains useful factual training data after an explicit
+        # upgrade. Its absent history yields a zero B context, however, and
+        # cannot certify the nonzero-history predictor used by fix3 online.
+        # This is a qualification-only mask: neither real losses nor the
+        # train/held-out split are changed, and pose readiness is irrelevant.
+        qualification_context=torch.ones((b,t),device=device,dtype=torch.bool)
+        if self.guidance_fix and cfg(self.config,"vnext_memory_enabled"):
+            marker=torch.as_tensor(data.get("vnext_spatial_history_snapshot_valid",np.zeros((b,t))),device=device)
+            if marker.shape != (b,t):
+                raise ValueError("A qualification history validity must have shape [batch,time]")
+            qualification_context=torch.isfinite(marker)&(marker>.5)
+            qualification_context &= torch.as_tensor(details["valid"],device=device).bool()
         current_y,current_k=_labels(data,CURRENT_EVENTS,device)
         current_logits,_=self.a.current_logits(features,memory)
         # Independent heads use deterministic frame-identity bootstrap masks;
@@ -629,7 +726,10 @@ class SearchVNext(nn.Module):
             loss=loss+_masked_bce(current_logits[...,head,:],current_y,current_k&train[...,None]&boot[...,None])/self.a.heads
         metrics={"A/current_loss":loss.detach(),
                  "A/current_valid_labels":(current_k&train[...,None]).sum().detach()}
-        records=[("current",current_logits.sigmoid().mean(-2).detach(),current_y,current_k,train,a_calibration,frameid)]
+        if self.guidance_fix:
+            metrics["A/qualification_context_rows"]=(qualification_context&window_valid).sum().detach()
+        records=[("current",current_logits.sigmoid().mean(-2).detach(),current_y,
+                  current_k&qualification_context[...,None],train,a_calibration,frameid)]
         horizons=[h for h in (1,2,3) if h<t]
         if int(self.a.updates)%int(cfg(self.config,"vnext_aux_every"))==0 and t>int(cfg(self.config,"vnext_aux_horizon")):
             horizons.append(int(cfg(self.config,"vnext_aux_horizon")))
@@ -700,7 +800,7 @@ class SearchVNext(nn.Module):
                 hloss+=(ferr*vm).sum()/vm.sum().clamp_min(1)/self.a.heads
             future_loss=future_loss+hloss/len(horizons)
             metrics["A/H%d/prediction_loss"%h]=hloss.detach()
-            verified=valid&self.matched_option_windows(data,act,controls,h)
+            verified=valid&qualification_context[:,:n]&self.matched_option_windows(data,act,controls,h)
             supervised=valid&train[:,:n]
             labelled=mask&train[:,:n,None]
             future_windows+=supervised.sum()
@@ -795,6 +895,12 @@ class SearchVNext(nn.Module):
                 result[prefix+"precision"] = stats["precision"][index].detach()
             if bool(stats["positives"][index]>0):
                 result[prefix+"recall"] = stats["recall"][index].detach()
+        if self.guidance_fix:
+            probe_supported,_=self.a.interaction_probe_calibration()
+            result["A/current_interactable_calibration_ready"]=self.a.ready_current()[3].float().detach()
+            result["A/current_interactable_probe_calibration_ready"]=probe_supported.float().detach()
+            if bool(stats["samples"][3]>0):
+                result["A/current_interactable_precision_lower"]=stats["precision_lower"][3].detach()
         return result
 
     def train_step(self,features,data,step=None):
@@ -964,7 +1070,7 @@ def check_vnext_checkpoint(checkpoint,enabled):
     if spatial:
         expected.update(pose_version=1,spatial_map_version=2)
         revision=checkpoint.get("spatial_fix_version",0)
-        if revision not in (0,1,2) or revision != checkpoint.get("config",{}).get("vnext_spatial_fix_version",0):
+        if revision not in (0,1,2,3) or revision != checkpoint.get("config",{}).get("vnext_spatial_fix_version",0):
             raise ValueError("Unsupported or inconsistent spatial fix revision")
     for key,value in expected.items():
         if checkpoint.get(key)!=value:

@@ -75,6 +75,209 @@ def collected_episode(agent, length=40):
 
 
 class SpatialIntegrationTests(unittest.TestCase):
+    def test_fix3_persistent_policy_never_reads_oracle_pose_or_labels(self):
+        cfg=config(vnext_spatial_fix_version=3)
+        agent=make_agent(cfg)
+        raw=replay_batch(12)
+        obs={k:v[:,0] for k,v in raw.items() if k!="action"}
+        noisy=dict(obs,search_pose_delta=np.full((1,3),1.e8),
+            search_pose_valid=np.ones(1),log_spatial_gt_pose=np.full((1,3),1.e8),
+            location_stats={"pos":np.full((1,3),1.e8)},
+            search_center_interactable=np.ones(1))
+        rng=torch.get_rng_state()
+        left,ls=agent._policy(obs,None,False)
+        torch.set_rng_state(rng)
+        right,rs=agent._policy(noisy,None,False)
+        for k in ["action","log_spatial_history_frames","log_spatial_history_meta",
+                  "log_spatial_summary","log_spatial_pose"]:
+            torch.testing.assert_close(left[k],right[k],rtol=0,atol=0)
+        torch.testing.assert_close(ls[2]["history_valid"],rs[2]["history_valid"])
+
+    def test_training_driver_delivers_terminal_feedback_before_reset(self):
+        from unittest import mock
+        import collections
+        cfg=config(vnext_spatial_fix_version=3)
+        owner=make_agent(cfg)
+        class Env:
+            id="terminal_fixture"
+            def __init__(self):self.t=0
+            def observation(self,done=False):
+                return dict(image=np.zeros((4,4,3),np.uint8),heatmap=np.zeros((4,4),np.uint8),
+                    is_first=self.t==0,is_last=done,is_terminal=done,is_zoomed=False,
+                    score=0.,score_on_zoomed=0.,jumping_steps=0,accumulated_reward=0.,
+                    is_calculated=False,intrinsic=0.,log_actuator_valid=float(self.t>0),
+                    log_env_error=0.)
+            def reset(self):
+                self.t=0
+                return lambda:self.observation()
+            def step(self,action):
+                self.t+=1;done=self.t==2
+                return lambda:(self.observation(done),2. if done else 0.,done,
+                    dict(real_done=True,success=done,first_success_step=2))
+        class Policy:
+            def __call__(self,obs,reset,state):
+                if state is None:
+                    control=owner._vnext_control.initial(1,torch.device("cpu"))
+                    control["trial_option"][:]=3;control["last_option"][:]=3
+                    control["trial_phase"][:]=0
+                    state=(None,None,None,control)
+                return {"action":torch.eye(12)[[6]]},state
+            def observe_vnext_results(self,state,results,training=False):
+                owner.observe_vnext_results(state,results,training)
+        logger=SimpleNamespace(step=0,scalar=lambda *a:None,video=lambda *a:None,write=lambda **kw:None)
+        storage=mock.Mock();storage.count_data_pairs.return_value=0
+        storage.get_and_remove_less_than.return_value=[]
+        with mock.patch.object(tools,"save_episodes"):
+            tools.simulate(Policy(),[Env()],collections.OrderedDict(),".",logger,storage,
+                           2,.99,steps=2,is_training=True)
+        self.assertEqual(int(owner._vnext_control.phase_completed[0,3]),1)
+        self.assertEqual(int(owner._vnext_control.phase_positive[0,3]),1)
+
+    def test_fix3_history_stays_available_without_global_pose_and_replay_is_causal(self):
+        cfg=config(vnext_spatial_fix_version=3,batch_size=2,batch_length=12)
+        agent=make_agent(cfg)
+        ep=collected_episode(agent,36)
+        self.assertFalse(ep["log_spatial_trajectory_valid"].any())
+        self.assertTrue((ep["log_spatial_memory_available"][1:]>0).all())
+        data=next(make_dataset({"history":ep},cfg))
+        self.assertGreater(float(data["vnext_spatial_history_snapshot_valid"].sum()),0)
+        features=torch.randn(2,12,cfg.dyn_deter+cfg.dyn_stoch*cfg.dyn_discrete,requires_grad=True)
+        memory=agent._vnext.memory_batch(features,data)
+        self.assertTrue(memory.any())
+        before=agent._vnext.b.history_head.weight.detach().clone()
+        metrics=agent._vnext.train_step(features,data)
+        self.assertGreater(float(metrics["B/history_valid"]),0)
+        self.assertGreater(float(metrics["B/history_loss"]),0)
+        self.assertGreater(float(metrics["A/future_grad_norm"]),0)
+        self.assertFalse(torch.equal(before,agent._vnext.b.history_head.weight))
+        self.assertIsNone(features.grad)
+        sample=next(sample_spatial_episodes({"history":ep},24,seed=3,history_slots=cfg.vnext_slots))
+        for row,index in enumerate(sample["vnext_observation_index"]):
+            if index+1<len(ep["reward"]):
+                np.testing.assert_array_equal(sample["vnext_spatial_history_frames"][row],
+                    ep["log_spatial_history_frames"][index+1])
+            else:
+                self.assertEqual(sample["vnext_spatial_history_snapshot_valid"][row],0)
+
+    def test_fix3_legacy_and_new_history_keep_one_schema_without_fabrication(self):
+        cfg=config(vnext_spatial_fix_version=3,batch_size=2,batch_length=12)
+        agent=make_agent(cfg);ep=collected_episode(agent,28)
+        old={k:v.copy() for k,v in ep.items() if not k.startswith("log_spatial_history_")
+             and k!="log_spatial_memory_available"}
+        episodes={"old":old};stream=make_dataset(episodes,cfg)
+        first=next(stream)
+        self.assertFalse(first["vnext_spatial_history_snapshot_valid"].any())
+        episodes["new"]=ep
+        data=next(stream)
+        self.assertEqual(set(first),set(data))
+        self.assertEqual(data["vnext_spatial_history_frames"].dtype,np.uint8)
+        self.assertEqual(data["vnext_spatial_history_frames"].shape,(2,12,cfg.vnext_slots,4,4,4))
+        self.assertTrue(np.isfinite(data["vnext_spatial_history_meta"]).all())
+
+    def test_fix3_future_bank_metadata_and_unknown_nan_pose_are_not_certified(self):
+        cfg=config(vnext_spatial_fix_version=3,batch_size=1,batch_length=12)
+        agent=make_agent(cfg);ep=collected_episode(agent,24)
+        for row in range(1,len(ep["reward"])):
+            ep["log_spatial_history_meta"][row,:,1]=ep["log_spatial_history_tick"][row]+10
+        data=next(make_dataset({"future":ep},cfg))
+        self.assertFalse(data["vnext_spatial_history_snapshot_valid"].any())
+        data["vnext_spatial_pose"][:]=np.nan
+        data["vnext_spatial_local_valid"][:]=0
+        dim=cfg.dyn_deter+cfg.dyn_stoch*cfg.dyn_discrete
+        context,details=agent._vnext.b.batch(torch.randn(1,12,dim),data)
+        self.assertTrue(torch.isfinite(context).all())
+        self.assertFalse(context.any())
+        self.assertFalse(details["map_valid"].any())
+
+    def test_fix3_checkpoint_roundtrip_preserves_history_and_phase_experience(self):
+        cfg=config(vnext_spatial_fix_version=3,batch_size=1,batch_length=12)
+        agent=make_agent(cfg);ep=collected_episode(agent,24)
+        agent._train(next(make_dataset({"new":ep},cfg)))
+        agent._vnext_control.phase_coverage[0,6]=17
+        with tempfile.TemporaryDirectory() as directory:
+            cfg.logdir=Path(directory)/"source";cfg.traindir=cfg.logdir/"train_eps"
+            cfg.traindir.mkdir(parents=True)
+            tools.save_episodes(cfg.traindir,{"new":ep})
+            path=save_training_checkpoint(agent,cfg,100000)
+            other=make_agent(config(vnext_spatial_fix_version=3,batch_size=1,batch_length=12))
+            other.load_state_dict(torch.load(path,map_location="cpu")["agent_state_dict"],strict=True)
+            for k,v in agent.state_dict().items():
+                torch.testing.assert_close(v,other.state_dict()[k],rtol=0,atol=0)
+            self.assertEqual(int(other._vnext_control.phase_coverage[0,6]),17)
+
+    def test_explicit_fix2_upgrade_keeps_learned_weights_and_named_optimizer_moments(self):
+        import hashlib
+        source_cfg=config(vnext_spatial_fix_version=2,batch_size=1,batch_length=12)
+        source=make_agent(source_cfg);ep=collected_episode(source,24)
+        source._train(next(make_dataset({"old":ep},source_cfg)))
+        source._step=50
+        source._vnext.a.current_counts.fill_(123)
+        source._vnext.a.cal_counts.fill_(5)
+        with tempfile.TemporaryDirectory() as directory:
+            source_cfg.logdir=Path(directory)/"source";source_cfg.traindir=source_cfg.logdir/"train_eps"
+            source_cfg.traindir.mkdir(parents=True)
+            tools.save_episodes(source_cfg.traindir,{"old":ep})
+            path=save_training_checkpoint(source,source_cfg,100000)
+            digest=hashlib.sha256(path.read_bytes()).hexdigest()
+            cfg=config(vnext_spatial_fix_version=3,batch_size=1,batch_length=12,
+                resume_upgrade_spatial=True,resume_from=str(path),logdir=str(Path(directory)/"upgraded"),
+                traindir=None,evaldir=None,steps=1000,vnext_search_fraction=.15,vnext_total_fraction=.30)
+            plan=prepare_resume(cfg)
+            self.assertEqual(cfg.vnext_spatial_fix_version,3)
+            upgraded=make_agent(cfg,seed=47)
+            restore_training_state(upgraded,plan,SimpleNamespace(step=0))
+            self.assertEqual(upgraded._step,50)
+            self.assertFalse(upgraded._should_pretrain._once)
+            self.assertFalse(upgraded._vnext.a.current_counts.any())
+            self.assertFalse(upgraded._vnext.a.cal_counts.any())
+            self.assertFalse(upgraded._vnext_control.phase_coverage.any())
+            torch.testing.assert_close(upgraded._vnext.a.events[0].weight,source._vnext.a.events[0].weight)
+            for name,param in source._vnext.b.named_parameters():
+                old_state=source._vnext._b_opt.state.get(param)
+                if old_state:
+                    new_param=dict(upgraded._vnext.b.named_parameters())[name]
+                    new_state=upgraded._vnext._b_opt.state[new_param]
+                    for key,value in old_state.items():
+                        torch.testing.assert_close(value,new_state[key])
+            for name,param in upgraded._vnext.b.named_parameters():
+                if name.startswith(("history_","fusion")):
+                    self.assertNotIn(param,upgraded._vnext._b_opt.state)
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),digest)
+            self.assertEqual(torch.load(path,map_location="cpu")["spatial_fix_version"],2)
+            # Production creates the new run's replay directory before saving.
+            cfg.traindir=Path(cfg.logdir)/"train_eps"
+            cfg.traindir.mkdir(parents=True,exist_ok=True)
+            saved=save_training_checkpoint(upgraded,cfg,100000)
+            result=torch.load(saved,map_location="cpu")
+            self.assertEqual(result["spatial_fix_version"],3)
+            self.assertEqual(result["spatial_upgrade_lineage"][0]["source_step"],50)
+            self.assertTrue(plan["spatial_upgrade"]["initialized_tensors"])
+            normal=config(vnext_spatial_fix_version=3,batch_size=1,batch_length=12,
+                resume_from=str(saved),resume_upgrade_spatial=False,
+                logdir=str(Path(directory)/"normal_fix3"),traindir=None,evaldir=None,steps=2000)
+            nextplan=prepare_resume(normal)
+            continued=make_agent(normal,seed=91)
+            restore_training_state(continued,nextplan,SimpleNamespace(step=0))
+            self.assertEqual(normal.vnext_spatial_fix_version,3)
+            self.assertEqual(len(continued._spatial_upgrade_lineage),1)
+            self.assertIsNone(nextplan["spatial_upgrade"])
+            for key,value in upgraded.state_dict().items():
+                torch.testing.assert_close(value,continued.state_dict()[key],rtol=0,atol=0)
+
+    def test_ordinary_fix2_resume_does_not_silently_enable_fix3(self):
+        cfg=config(vnext_spatial_fix_version=2,batch_size=1,batch_length=12)
+        agent=make_agent(cfg);ep=collected_episode(agent,16)
+        agent._step=40
+        with tempfile.TemporaryDirectory() as directory:
+            cfg.logdir=Path(directory)/"source";cfg.traindir=cfg.logdir/"train_eps"
+            cfg.traindir.mkdir(parents=True);tools.save_episodes(cfg.traindir,{"old":ep})
+            path=save_training_checkpoint(agent,cfg,100000)
+            target=config(vnext_spatial_fix_version=3,resume_from=str(path),resume_upgrade_spatial=False,
+                logdir=str(Path(directory)/"resume"),traindir=None,evaldir=None,steps=1000)
+            plan=prepare_resume(target)
+            self.assertEqual(target.vnext_spatial_fix_version,2)
+            self.assertIsNone(plan["spatial_upgrade"])
+
     def test_revision_two_unlocalized_map_does_not_disable_A_or_pose_learning(self):
         cfg=config(vnext_spatial_fix_version=2,batch_size=2,batch_length=12)
         agent=make_agent(cfg)
@@ -218,6 +421,10 @@ class SpatialIntegrationTests(unittest.TestCase):
         self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],2)
         checkpoint["spatial_fix_version"] = 3
         checkpoint["config"]["vnext_spatial_fix_version"] = 3
+        check_vnext_checkpoint(checkpoint,True)
+        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],3)
+        checkpoint["spatial_fix_version"] = 4
+        checkpoint["config"]["vnext_spatial_fix_version"] = 4
         with self.assertRaisesRegex(ValueError,"revision"):
             check_vnext_checkpoint(checkpoint,True)
         with self.assertRaisesRegex(ValueError,"revision"):

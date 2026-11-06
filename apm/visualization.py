@@ -17,7 +17,8 @@ import numpy as np
 PHASES = ("SEARCH", "APPROACH", "INTERACT", "RECOVERY")
 SOURCES = {-1: "unspecified", 0: "actor", 1: "learned", 2: "rule interaction",
            3: "rule recovery", 4: "settle", 5: "training probe",
-           6: "bounded recovery probe", 7: "alignment probe"}
+           6: "bounded recovery probe", 7: "alignment probe",
+           8: "interaction probe", 9: "bounded search probe"}
 
 
 def _get(config, name, default):
@@ -178,6 +179,9 @@ class SearchVisualizer:
                    override=bool(_scalar(policy_output, "log_vnext_override")),
                    visible=visible, pose=pose.tolist(), pose_ready=pose_ready, reward=0., success=False,
                    pose_gap_count=int(_scalar(policy_output,"log_spatial_pose_gap_count")),
+                   segment=int(_scalar(policy_output,"log_spatial_segment")),
+                   local_ready=bool(_scalar(policy_output,"log_spatial_local_valid")),
+                   memory_available=bool(_scalar(policy_output,"log_spatial_memory_available")),
                    value=None)
         if len(ep.rows) >= self.max_rows:
             ep.omitted_rows += 1
@@ -323,12 +327,25 @@ class SearchVisualizer:
             ledger_values = _array(map_state["ledger"].get("values", [])).reshape(-1, 6)
             if len(ledger_cells) != len(ledger_values):
                 raise ValueError("Spatial ledger cells and values have different lengths")
+            if int(_get(self.config,"vnext_spatial_fix_version",0)) >= 3:
+                tags = _array(map_state["ledger"].get("segments",[])).reshape(-1)
+                active = int(map_state.get("active_segment",0))
+                if len(tags) != len(ledger_values):
+                    raise ValueError("Segmented ledger requires one tag per historical cell")
+                ledger_values = ledger_values[tags==active]
         visited_cells = (int((ledger_values[:, 0] > 0).sum()) if has_ledger else
                          int((grid[..., 0] > 0).sum()) if grid is not None else None)
         revisits = (float(ledger_values[:, 3].sum()) if has_ledger else
                     float(grid[..., 3].sum()) if grid is not None else None)
         summary = dict(episode_id=str(env_id), episode_completed_at_training_step=int(training_step),
             spatial_fix_version=int(_get(self.config, "vnext_spatial_fix_version", 0)),
+            active_segment=int(map_state.get("active_segment",0)) if map_state else 0,
+            local_tracking_ready=bool(map_state.get("local_tracking_ready",False)) if map_state else False,
+            persistent_memory_available=bool(map_state.get("memory_available",False)) if map_state else False,
+            history_slots_retained=(int(np.asarray(map_state.get("history_valid",[])).sum()) if map_state else 0),
+            memory_available_fraction=float(np.mean([r.get("memory_available",False) for r in ep.rows])),
+            map_scope=("current trusted local segment; disconnected history retained separately"
+                       if int(_get(self.config,"vnext_spatial_fix_version",0))>=3 else "episode-origin map"),
             pose_gap_count=max(max((row["pose_gap_count"] for row in ep.rows),default=0),
                                int(_scalar(map_state,"gap_count")) if map_state is not None else 0),
             first_pose_gap_step=next((row["step"] for row in ep.rows if row["pose_gap_count"]>0),None),
@@ -395,6 +412,9 @@ class SearchVisualizer:
                     pose=np.asarray([r["pose"] for r in rows], np.float32),
                     pose_ready=np.asarray([r["pose_ready"] for r in rows], bool),
                     pose_gap_count=np.asarray([r["pose_gap_count"] for r in rows],np.int16),
+                    segment=np.asarray([r["segment"] for r in rows],np.int32),
+                    local_valid=np.asarray([r["local_ready"] for r in rows],bool),
+                    memory_available=np.asarray([r["memory_available"] for r in rows],bool),
                     phase=np.asarray([r["phase"] for r in rows], np.int16),
                     option=np.asarray([r["option"] for r in rows], np.int16),
                     source=np.asarray([r["source"] for r in rows], np.int16),
@@ -408,7 +428,11 @@ class SearchVisualizer:
                     map_resolution=np.asarray(map_state.get("resolution", 0.), np.float32),
                     ledger_cells=np.asarray(ledger.get("cells", []), np.int64).reshape(-1, 2),
                     ledger_values=np.asarray(ledger.get("values", []), np.float32).reshape(-1, 6),
-                    ledger_directions=np.asarray(ledger.get("directions", []), np.float32).reshape(-1, 12))
+                    ledger_directions=np.asarray(ledger.get("directions", []), np.float32).reshape(-1, 12),
+                    ledger_segments=np.asarray(ledger.get("segments", []),np.int32),
+                    history_frames=np.asarray(map_state.get("history_frames", []),np.uint8),
+                    history_meta=np.asarray(map_state.get("history_meta", []),np.float32),
+                    history_valid=np.asarray(map_state.get("history_valid", []),bool))
                 if path.exists():
                     raise FileExistsError("Refusing to replace an incomplete visualization directory: %s" % path)
                 tmp.rename(path)
@@ -478,6 +502,12 @@ class SearchVisualizer:
         if ledger is not None:
             cells = np.asarray(ledger.get("cells", []), dtype=float).reshape(-1, 2)
             values = np.asarray(ledger.get("values", []), dtype=float).reshape(-1, 6)
+            if snap["summary"]["spatial_fix_version"]>=3:
+                segments = np.asarray(ledger.get("segments",[])).reshape(-1)
+                if len(segments)!=len(cells):
+                    raise ValueError("Cannot draw untagged disconnected map segments")
+                active_mask = segments==snap["summary"]["active_segment"]
+                cells,values = cells[active_mask],values[active_mask]
             if len(cells):
                 resolution = float(state.get("resolution", 1.))
                 patches = [Rectangle((c[0]*resolution-.5*resolution, c[1]*resolution-.5*resolution),
@@ -490,6 +520,11 @@ class SearchVisualizer:
         if snap["terminal_pose"] is not None:
             poses = np.concatenate((poses, snap["terminal_pose"][None]), axis=0)
             available = np.r_[available,snap["summary"]["terminal_tracking_ready"]]
+        if snap["summary"]["spatial_fix_version"]>=3:
+            active = snap["summary"]["active_segment"]
+            available = np.asarray([r.get("local_ready",False) and r.get("segment",0)==active for r in snap["rows"]],bool)
+            if snap["terminal_pose"] is not None:
+                available = np.r_[available,snap["summary"]["local_tracking_ready"]]
         drawn = poses.copy()
         if snap["summary"]["spatial_fix_version"] >= 2:
             drawn[~available,:2] = np.nan
@@ -502,15 +537,33 @@ class SearchVisualizer:
                      width=scale*.12, head_width=scale*.6, color="#1765b0", zorder=5)
         summary = snap["summary"]
         tracking_status = "pose qualified" if summary["terminal_tracking_ready"] else "UNLOCALIZED: translation disabled"
+        if summary["spatial_fix_version"]>=3:
+            tracking_status = "local segment %d: %s | persistent visual history: %s" % (
+                summary["active_segment"], "tracked" if summary["local_tracking_ready"] else "uncertain",
+                "active" if summary["persistent_memory_available"] else "unavailable")
         ax.set_title("B: estimated 2D search memory | %s | %d steps\n%s" %
                      ("success" if summary["success"] else "failure", summary["total_steps"], tracking_status))
-        ax.set_xlabel("Episode-relative x (estimated metres)"); ax.set_ylabel("Episode-relative z (estimated metres)")
+        label_prefix = "Local-segment" if summary["spatial_fix_version"]>=3 else "Episode-relative"
+        ax.set_xlabel(label_prefix+" x (estimated metres)"); ax.set_ylabel(label_prefix+" z (estimated metres)")
         ax.set_aspect("equal", adjustable="datalim")
         handles = [Line2D([], [], marker="s", linestyle="", color=c, label=t) for c, t in
                    (("#ecedef", "unknown"), ("#c0d3dd", "directional observation proxy"),
                     ("#486987", "visited"), ("#203e5a", "repeat visits"),
                     ("#3cad69", "ground-view heatmap cue" if summary["spatial_fix_version"]>=2 else "target-evidence viewpoint"))]
         ax.legend(handles=handles, loc="upper right", fontsize=7)
+        if summary["spatial_fix_version"]>=3 and state is not None:
+            frames = np.asarray(state.get("history_frames",[]))
+            valid = np.asarray(state.get("history_valid",[]),bool).reshape(-1)
+            if frames.ndim==4 and len(frames)==len(valid) and valid.any():
+                selected = frames[np.flatnonzero(valid)[:4],...,:3]
+                if selected.dtype!=np.uint8:
+                    factor = 255. if selected.max(initial=0)<=1.01 else 1.
+                    selected = np.clip(selected*factor,0,255).astype(np.uint8)
+                ribbon = np.concatenate(list(selected),axis=1)
+                preview=fig.add_axes([.65,.23,.27,.10])
+                preview.imshow(ribbon,interpolation="nearest")
+                preview.set_xticks([]);preview.set_yticks([])
+                preview.set_title("Persistent observed RGB tokens (%d slots)" % summary["history_slots_retained"],fontsize=7)
         fig.subplots_adjust(bottom=.21)
         localization_note = ("Unlocalized translation is NOT integrated: a point at the origin does NOT mean the agent stayed still."
                              if summary["unlocalized_steps"] or not summary["terminal_tracking_ready"] else
@@ -520,6 +573,9 @@ class SearchVisualizer:
         scope_note = ("Episode visited-cell ledger plus rolling directional-view proxy; no true terrain is shown."
                       if summary["full_episode_ledger_available"] else
                       "Retained rolling map; path outside it does not imply retained coverage.")
+        if summary["spatial_fix_version"]>=3:
+            localization_note = "Current local segment only; unknown transitions are never stitched into a global trajectory."
+            scope_note = "Episode visual history remains active independently of pose; earlier map segments are retained but not overlaid."
         footer = (localization_note + "\n" +
                   "Localized observations: %.1f%% (%d unlocalized steps). Target marks are viewpoints, not block positions.\n" %
                   (100*summary["localized_fraction"], summary["unlocalized_steps"]) + scope_note)
@@ -553,11 +609,11 @@ class SearchVisualizer:
             if b-a >= max(1, len(rows)//60):
                 axes[1].text((a+b-1)/2, .45, str(options[a]), ha="center", va="center", fontsize=6)
         axes[2].imshow(np.asarray([r["source"] for r in rows])[None], aspect="auto", interpolation="nearest",
-                       cmap=ListedColormap(["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba"]),
-                       vmin=-1, vmax=7, extent=[-.5, len(rows)-.5, 0, 1])
+                       cmap=ListedColormap(["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba", "#b87558", "#4aa69d"]),
+                       vmin=-1, vmax=9, extent=[-.5, len(rows)-.5, 0, 1])
         axes[2].set_yticks([]); axes[2].set_ylabel("Source")
-        source_colors = ["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba"]
-        axes[2].legend(handles=[Patch(color=c, label=SOURCES[i]) for i, c in zip(range(-1, 8), source_colors)],
+        source_colors = ["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba", "#b87558", "#4aa69d"]
+        axes[2].legend(handles=[Patch(color=c, label=SOURCES[i]) for i, c in zip(range(-1, 10), source_colors)],
                        loc="upper center", bbox_to_anchor=(.5, 1.0), ncol=5, fontsize=6)
         axes[3].plot(x, [r["visible"] for r in rows], label="current target probability", color="#46836e")
         values = [np.nan if r["value"] is None else r["value"] for r in rows]

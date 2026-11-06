@@ -960,5 +960,280 @@ class SpatialInteractionV2Tests(unittest.TestCase):
             self.assertTrue((controls[:,7,1:]==0).all())
 
 
+class GuidanceV3Tests(unittest.TestCase):
+    run_step = VNextControlTests.run_step
+    frame = staticmethod(SpatialRecoveryFixTests.frame)
+
+    def cfg(self,**values):
+        kwargs=dict(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            vnext_probe_probability=0.,vnext_stall_steps=2000,
+            vnext_interact_result_wait=4,vnext_retry_cooldown=5,
+            vnext_search_fraction=.15,vnext_total_fraction=.30)
+        kwargs.update(values)
+        return config(**kwargs)
+
+    def state(self,c):
+        state=c.initial(1,"cpu");state["age"][:]=100
+        return state
+
+    def probe_current(self,ready=True):
+        cur=current(visible=.99,joint=.95)
+        cur["ready"]["center_interactable"][:]=False
+        cur["interaction_probe_ready"]=torch.tensor([ready])
+        cur["interaction_probe_quality"]=torch.tensor([.7])
+        return cur
+
+    def certify(self,c,phase,option):
+        c.updates.fill_(128)
+        c.phase_coverage[phase,option]=16
+        c.phase_completed[phase,option]=16
+        c.phase_positive[phase,option]=4
+
+    def test_phase_coverage_cannot_reuse_recovery_as_search(self):
+        c=VNextController(8,self.cfg(vnext_probe_probability=1.))
+        c.coverage[6]=100000;c.phase_coverage[RECOVERY,6]=100000
+        state=self.state(c)
+        _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+            obs={"image":self.frame()})
+        self.assertEqual(info["log_vnext_choice"].item(),6)
+        self.assertEqual(info["log_vnext_source"].item(),9)
+        self.assertEqual(c.phase_coverage[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_coverage[RECOVERY,6].item(),100000)
+
+    def test_empirical_qualified_search_can_guide_without_localized_B(self):
+        c=VNextController(8,self.cfg());self.certify(c,SEARCH,6)
+        with torch.no_grad():
+            c.q1[-1].bias[6]=3;c.q2[-1].bias[6]=3
+        state=self.state(c)
+        _,_,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=False,
+            obs={"image":self.frame(),"vnext_spatial_summary":torch.zeros(1,12)})
+        self.assertEqual(info["log_vnext_choice"].item(),6)
+        self.assertEqual(info["log_vnext_source"].item(),1)
+        self.assertEqual(info["log_vnext_empirical_support"][0,6].item(),1)
+
+    def test_counts_without_factual_outcomes_do_not_certify_Q(self):
+        c=VNextController(8,self.cfg());c.updates.fill_(500)
+        c.phase_coverage[:]=500;c.coverage[:]=500
+        support=c.empirical_support(self.state(c))
+        self.assertFalse(support.any())
+        _,_,info=self.run_step(c,UnsupportedSpatialAB(),self.state(c),proposal=0,training=False)
+        self.assertEqual(info["log_vnext_source"].item(),9)
+
+    def test_phase_outcomes_and_twin_disagreement_are_independent_checks(self):
+        c=VNextController(8,self.cfg());self.certify(c,RECOVERY,6)
+        self.assertFalse(c.empirical_support(self.state(c))[0,6])
+        self.certify(c,SEARCH,6)
+        with torch.no_grad():
+            c.q1[-1].bias[6]=4;c.q2[-1].bias[6]=-4
+        _,_,info=self.run_step(c,UnsupportedSpatialAB(),self.state(c),proposal=0,training=False)
+        self.assertEqual(info["log_vnext_empirical_support"][0,6].item(),0)
+        self.assertNotEqual(info["log_vnext_source"].item(),1)
+
+    def test_online_completed_trials_are_unique_and_replay_does_not_inflate_them(self):
+        c=VNextController(8,self.cfg());state=self.state(c)
+        for i in range(4):
+            _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+                obs={"image":torch.roll(self.frame(),i*4,2)})
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),1)
+        before=[v.clone() for v in (c.phase_coverage,c.phase_completed,c.phase_positive)]
+        d=replay(time=7);d["log_vnext_version"][:]=2
+        for _ in range(3):
+            metrics=c.train_batch(torch.ones(1,7,8),torch.zeros(1,7,4),UnsupportedSpatialAB(),d)
+            self.assertGreater(metrics["C/transitions"],0)
+        for a,b in zip(before,(c.phase_coverage,c.phase_completed,c.phase_positive)):
+            self.assertTrue(torch.equal(a,b))
+
+    def test_static_repeated_view_is_not_positive_trial_outcome(self):
+        c=VNextController(8,self.cfg());state=self.state(c)
+        for _ in range(4):
+            _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+                obs={"image":self.frame()})
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),0)
+
+    def test_low_cost_interaction_probe_is_bounded_waits_and_keeps_pickup(self):
+        c=VNextController(8,self.cfg());state=self.state(c);events=[]
+        for _ in range(120):
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=self.probe_current(),training=False,obs={"image":self.frame()})
+            events.append((int(action.argmax(-1)),int(info["log_vnext_choice"]),int(info["log_vnext_source"]),
+                           int(info["log_vnext_decision"])))
+            self.assertLessEqual(info["log_vnext_extra_used"].item(),30)
+        self.assertEqual(sum(o==8 and start for a,o,source,start in events),3)
+        self.assertEqual(sum(a==1 and o==8 for a,o,source,start in events),6)
+        self.assertEqual(sum(a==6 and o==8 for a,o,source,start in events),3)
+        self.assertTrue(all(source==8 for a,o,source,start in events if o==8))
+        self.assertEqual(state["interaction_probe_trials"].item(),3)
+        self.assertEqual(state["interaction_trials"].item(),3)
+        self.assertFalse(state["pending_interact"].item())
+
+    def test_raw_joint_probability_without_visual_probe_permission_cannot_force_attack(self):
+        c=VNextController(8,self.cfg());state=self.state(c)
+        for _ in range(30):
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                cur=self.probe_current(False),training=False)
+            self.assertNotEqual(action.argmax(-1).item(),1)
+            self.assertNotEqual(info["log_vnext_source"].item(),8)
+        self.assertEqual(state["interaction_trials"].item(),0)
+
+    def test_new_probes_respect_actor_attack_off_and_budget(self):
+        for reason in ["attack","off","budget"]:
+            c=VNextController(8,self.cfg(vnext_control=reason!="off"))
+            state=self.state(c)
+            if reason=="budget":state["history"][0,:31]=2
+            action,state,info=self.run_step(c,UnsupportedSpatialAB(),state,
+                proposal=1 if reason=="attack" else 0,cur=self.probe_current(),training=False)
+            self.assertEqual(info["log_vnext_override"].item(),0,reason)
+            self.assertEqual(state["interaction_probe_trials"].item(),0)
+
+    def test_long_unlocalized_search_has_real_scanning_and_bounded_diverse_trials(self):
+        c=VNextController(8,self.cfg());state=self.state(c);choices=set();probes=0
+        for _ in range(300):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=False,
+                obs={"image":self.frame(),"vnext_spatial_summary":torch.zeros(1,12)})
+            if info["log_vnext_source"].item()==9:
+                choices.add(int(info["log_vnext_choice"]))
+                probes+=int(info["log_vnext_decision"])
+            self.assertLessEqual(info["log_vnext_extra_used"].item(),30)
+            self.assertLessEqual(info["log_vnext_search_used"].item(),15)
+        self.assertGreaterEqual(probes,8)
+        self.assertIn(6,choices)
+        self.assertGreaterEqual(len(choices),4)
+        self.assertEqual(c.phase_coverage.sum().item(),0) # eval is not training
+        self.assertEqual(c.phase_completed.sum().item(),0)
+
+    def test_stuck_sideways_actor_gets_recovery_after_previous_allowance_exhausted(self):
+        c=VNextController(8,self.cfg(vnext_stall_steps=8));state=self.state(c);later=[];passage=[]
+        for i in range(300):
+            _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=8,training=False,
+                obs={"image":self.frame()})
+            if i>120 and info["log_vnext_recovery_probe"].item():later.append(i)
+            if info["log_vnext_recovery_probe"].item():passage.append(int(info["log_vnext_choice"]))
+            self.assertLessEqual(info["log_vnext_extra_used"].item(),30)
+        self.assertTrue(later)
+        self.assertTrue(any(o in (3,4,5) for o in passage),passage)
+        self.assertGreater(state["recovery_round"].item(),0)
+
+    def test_new_episode_state_reset_does_not_reset_learned_phase_experience(self):
+        c=VNextController(8,self.cfg(vnext_control=False));state=c.initial(2,"cpu")
+        c.phase_coverage[SEARCH,6]=23
+        state["episode_phase_coverage"][:]=4
+        state["interaction_probe_trials"][:]=2;state["recovery_round"][:]=3
+        _,state,_=c.choose(UnsupportedSpatialAB(),torch.ones(2,8),torch.zeros(2,4),current(2),{},
+            F.one_hot(torch.tensor([0,0]),12).float(),state,torch.tensor([True,False]),100000,False)
+        self.assertEqual(state["interaction_probe_trials"].tolist(),[0,2])
+        self.assertEqual(state["recovery_round"].tolist(),[0,3])
+        self.assertEqual(state["episode_phase_coverage"][0].sum().item(),1)
+        self.assertGreaterEqual(state["episode_phase_coverage"][1].sum().item(),4*4*12)
+        self.assertEqual(c.phase_coverage[SEARCH,6].item(),23)
+
+    def test_recovery_probe_does_not_claim_exact_actor_equivalent_plan(self):
+        c=VNextController(8,self.cfg(vnext_stall_steps=8));state=self.state(c)
+        state["stalled"][:]=30
+        _,_,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=7,training=False,
+            obs={"image":self.frame()})
+        self.assertNotEqual(info["log_vnext_choice"].item(),10)
+        self.assertEqual(info["log_vnext_source"].item(),6)
+
+    def test_terminal_success_feedback_is_recorded_before_immediate_reset_once(self):
+        c=VNextController(8,self.cfg());state=self.state(c)
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+            obs={"image":self.frame()})
+        self.assertEqual(state["trial_option"].item(),6)
+        c.observe_result(state,torch.tensor([2.]),torch.tensor([True]),training=True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),1)
+        self.assertEqual(state["trial_option"].item(),-1)
+        c.observe_result(state,torch.tensor([2.]),torch.tensor([True]),training=True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        # The next policy call sees reset RGB, not the preceding terminal reward.
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+            first=True,obs={"image":self.frame(),"reward":torch.zeros(1)})
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),1)
+
+    def test_terminal_truncation_closes_actual_partial_trial_without_fake_success(self):
+        c=VNextController(8,self.cfg());state=self.state(c)
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+            obs={"image":self.frame()})
+        c.observe_result(state,0.,True,training=True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),0)
+
+    def test_nonterminal_hook_defers_feedback_to_choose_without_double_count(self):
+        c=VNextController(8,self.cfg());state=self.state(c)
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+            obs={"image":self.frame()})
+        c.observe_result(state,2.,False,training=True)
+        self.assertEqual(state["trial_feedback"].item(),0)
+        self.assertEqual(c.phase_completed.sum().item(),0)
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+            obs={"image":self.frame(),"reward":torch.tensor([2.])})
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),1)
+        c.observe_result(state,0.,True,training=True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+
+    def test_invalid_terminal_result_does_not_certify_prior_tentative_trial(self):
+        for reward,valid in [(2.,False),(float("nan"),True)]:
+            c=VNextController(8,self.cfg());state=self.state(c)
+            _,state,_=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,training=True,
+                obs={"image":self.frame()})
+            state["trial_positive"][:]=True;state["trial_feedback"][:]=1
+            c.observe_result(state,reward,True,training=True,valid=valid)
+            self.assertEqual(c.phase_completed.sum().item(),0)
+            self.assertEqual(c.phase_positive.sum().item(),0)
+            self.assertEqual(state["trial_option"].item(),-1)
+
+    def test_terminal_hook_skips_fresh_reset_actor_and_evaluation_learning(self):
+        c=VNextController(8,self.cfg())
+        state=c.initial(1,"cpu")
+        self.assertIs(c.observe_result(state,2.,True,training=True),state)
+        self.assertEqual(c.phase_completed.sum().item(),0)
+        # A stale/reset token without a corresponding executed last option is
+        # not a factual trial, even if an old pending flag was populated.
+        state["trial_option"][:]=6;state["trial_feedback"][:]=1;state["trial_positive"][:]=True
+        c.observe_result(state,2.,True,training=True)
+        self.assertEqual(c.phase_completed.sum().item(),0)
+        self.assertEqual(c.phase_positive.sum().item(),0)
+        # Actor trials do not qualify unexecuted search options.
+        c_off=VNextController(8,self.cfg(vnext_control=False));state=self.state(c_off)
+        _,state,_=self.run_step(c_off,UnsupportedSpatialAB(),state,proposal=0,training=True)
+        c_off.observe_result(state,2.,True,training=True)
+        self.assertEqual(c_off.phase_completed.sum().item(),0)
+        # Evaluation can close runtime state but never trains qualification.
+        _,state,_=self.run_step(c,UnsupportedSpatialAB(),self.state(c),proposal=0,training=False)
+        c.observe_result(state,2.,True,training=False)
+        self.assertEqual(c.phase_completed.sum().item(),0)
+        self.assertEqual(c.phase_positive.sum().item(),0)
+        self.assertEqual(state["trial_option"].item(),-1)
+
+    def test_terminal_hook_partial_batch_preserves_other_live_trial(self):
+        c=VNextController(8,self.cfg());state=c.initial(2,"cpu");state["age"][:]=100
+        _,state,_=c.choose(UnsupportedSpatialAB(),torch.ones(2,8),torch.zeros(2,4),current(2),
+            {"image":self.frame().expand(2,-1,-1,-1)},
+            F.one_hot(torch.tensor([0,0]),12).float(),state,torch.tensor([False,False]),100000,True)
+        self.assertEqual(state["trial_option"].tolist(),[6,6])
+        c.observe_result(state,torch.tensor([2.,0.]),torch.tensor([True,False]),True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),1)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),1)
+        self.assertEqual(state["trial_option"].tolist(),[-1,6])
+        c.observe_result(state,torch.tensor([0.,0.]),torch.tensor([False,True]),True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),2)
+        self.assertEqual(c.phase_positive[SEARCH,6].item(),1)
+        c.observe_result(state,torch.tensor([2.,2.]),torch.tensor([True,True]),True)
+        self.assertEqual(c.phase_completed[SEARCH,6].item(),2)
+
+    def test_historical_state_dict_shapes_remain_strictly_loadable(self):
+        old=VNextController(8,self.cfg(vnext_spatial_fix_version=2))
+        restored=VNextController(8,self.cfg(vnext_spatial_fix_version=2))
+        restored.load_state_dict(old.state_dict(),strict=True)
+        self.assertNotIn("phase_coverage",old.state_dict())
+        new=VNextController(8,self.cfg())
+        self.assertEqual(tuple(new.state_dict()["phase_coverage"].shape),(4,12))
+        self.assertEqual(new.q1[0].weight.shape,old.q1[0].weight.shape)
+
+
 if __name__=="__main__":unittest.main()
 

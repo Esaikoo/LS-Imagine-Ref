@@ -12,7 +12,7 @@ SEARCH, ALIGN, INTERACT, RECOVERY = range(4)
 OPTION_NAMES = ("actor","left","right","forward","left_forward","right_forward",
                 "align_up","align_down","interact","settle","back","recovery_turn")
 N_OPTIONS, PREDICTION_DIM, CONTEXT_DIM = 12, 12, 24
-SOURCE_NAMES = ("actor", "learned", "rule_interaction", "rule_camera_recovery", "settle", "training_probe", "bounded_recovery_probe", "alignment_probe")
+SOURCE_NAMES = ("actor", "learned", "rule_interaction", "rule_camera_recovery", "settle", "training_probe", "bounded_recovery_probe", "alignment_probe", "interaction_probe", "bounded_search_probe")
 
 
 def option_names(spatial=False, phase=None):
@@ -42,7 +42,9 @@ DEFAULTS = dict(vnext_control=True,vnext_interaction=True,vnext_memory_dim=128,
     vnext_visual_novelty_threshold=.025,vnext_blocked_forward_steps=6,
     vnext_recovery_probe_limit=4,
     vnext_interact_result_wait=6,vnext_interact_max_trials=8,
-    vnext_align_probe_limit=4,vnext_align_deadzone=.15)
+    vnext_align_probe_limit=4,vnext_align_deadzone=.15,
+    vnext_c_min_positive_trials=4,vnext_c_max_disagreement=.15,
+    vnext_search_probe_every=24,vnext_recovery_retry_after=64,vnext_interaction_probe_limit=3)
 FIELDS = {k:() for k in (
     "version","decision","choice","option_id","option_end","option_duration",
     "behavior_probability","phase","phase_reason","remaining","remaining_after",
@@ -51,7 +53,8 @@ FIELDS = {k:() for k in (
     "source","stalled","clear_attempts","spatial_progress",
     "visual_progress","visual_repeat","motion_rejected","forward_stall",
     "recovery_trials","recovery_probe","interaction_wait","interaction_trials",
-    "interaction_exhausted","alignment_trials","alignment_probe")}
+    "interaction_exhausted","alignment_trials","alignment_probe",
+    "interaction_probe","interaction_probe_trials","search_probe","search_probe_trials","recovery_round")}
 FIELDS.update(context=(CONTEXT_DIM,),mask=(N_OPTIONS,),prediction=(N_OPTIONS,PREDICTION_DIM),
               q=(N_OPTIONS,),task_q=(N_OPTIONS,),search_q=(N_OPTIONS,),a_score=(N_OPTIONS,),
               score_supported=(N_OPTIONS,),empirical_support=(N_OPTIONS,),
@@ -181,6 +184,7 @@ class VNextController(nn.Module):
         self.spatial = bool(cfg(config,"vnext_spatial_enabled"))
         self.spatial_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 1
         self.interaction_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 2
+        self.guidance_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 3
         self.version = SPATIAL_VERSION if self.spatial else VERSION
         if self.spatial:
             if not 0 < float(cfg(config,"vnext_c_discount")) <= 1:
@@ -196,6 +200,11 @@ class VNextController(nn.Module):
                     int(cfg(config,"vnext_interact_max_trials")),int(cfg(config,"vnext_align_probe_limit"))) < 1
                     or not 0 < float(cfg(config,"vnext_align_deadzone")) < 1):
                 raise ValueError("Interaction result waits, trial bounds and alignment deadzone must be positive")
+            if self.guidance_fix and (min(int(cfg(config,"vnext_c_min_positive_trials")),
+                    int(cfg(config,"vnext_search_probe_every")),int(cfg(config,"vnext_recovery_retry_after")),
+                    int(cfg(config,"vnext_interaction_probe_limit"))) < 1
+                    or not 0<float(cfg(config,"vnext_c_max_disagreement"))<=1):
+                raise ValueError("Guidance evidence, cadence and disagreement bounds must be positive")
         self.memory_dim=int(cfg(config,"vnext_memory_dim") if memory_dim is None else memory_dim)
         if int(cfg(config,"vnext_commit_steps"))!=3:
             raise ValueError("vNext protocol commits at most K3")
@@ -222,6 +231,12 @@ class VNextController(nn.Module):
         self._optimizer=torch.optim.Adam(self._parameters_q,lr=float(cfg(config,"vnext_c_lr")))
         self.register_buffer("updates",torch.zeros((),dtype=torch.long))
         self.register_buffer("coverage",torch.zeros(N_OPTIONS,dtype=torch.long))
+        if self.guidance_fix:
+            # Actual online starts/outcomes, stratified by phase. Replay updates
+            # never manufacture new trials or reuse ALIGN as SEARCH experience.
+            self.register_buffer("phase_coverage",torch.zeros(4,N_OPTIONS,dtype=torch.long))
+            self.register_buffer("phase_completed",torch.zeros(4,N_OPTIONS,dtype=torch.long))
+            self.register_buffer("phase_positive",torch.zeros(4,N_OPTIONS,dtype=torch.long))
         self._rng=np.random.RandomState(int(getattr(config,"seed",0))+19741)
 
     def rng_state(self):
@@ -253,7 +268,13 @@ class VNextController(nn.Module):
             source=z().long(),forward_stall=z().long(),
             visual_bank=z(48,192),visual_angles=z(48,2),visual_valid=z(48).bool(),
             visual_cursor=z().long(),visual_yaw=z(),recovery_trials=z().long(),
-            interaction_wait=z().long(),interaction_trials=z().long(),alignment_trials=z().long())
+            interaction_wait=z().long(),interaction_trials=z().long(),alignment_trials=z().long(),
+            interaction_probe_trials=z().long(),search_probe_trials=z().long(),
+            search_probe_cooldown=z().long(),recovery_cooldown=z().long(),recovery_round=z().long(),
+            trial_option=torch.full((batch,),-1,device=device,dtype=torch.long),
+            trial_phase=z().long(),trial_positive=z().bool(),trial_feedback=z().long(),
+            last_option=torch.full((batch,),-1,device=device,dtype=torch.long),
+            episode_phase_coverage=z(4,N_OPTIONS).long())
 
     def independent_progress(self, state, image):
         """Small, causal same-view appearance memory, independent of PoseNet.
@@ -365,6 +386,15 @@ class VNextController(nn.Module):
         It is qualification only: phase, budget, clearance and interaction
         masks still determine whether any qualified option may be executed.
         """
+        if self.guidance_fix:
+            phase=state["phase"].long()
+            enough_updates=self.updates>=int(cfg(self.config,"vnext_c_min_updates"))
+            support=(self.phase_coverage[phase]>=int(cfg(self.config,"vnext_c_min_option_trials")))
+            support &= self.phase_completed[phase]>=int(cfg(self.config,"vnext_c_min_option_trials"))
+            support &= self.phase_positive[phase]>=int(cfg(self.config,"vnext_c_min_positive_trials"))
+            support &= enough_updates
+            support[:,ACTOR]=False
+            return support
         summary=state["spatial_summary"]
         confident=(summary[:,0]>.5)&(summary[:,11]>=float(cfg(self.config,"vnext_motion_confidence")))
         enough_updates=self.updates>=int(cfg(self.config,"vnext_c_min_updates"))
@@ -372,6 +402,76 @@ class VNextController(nn.Module):
         support=confident[:,None]&enough_updates&enough_trials[None]
         support[:,ACTOR]=False
         return support
+
+    def observe_trial_feedback(self,state,reward,motion,repeat,known,image,training):
+        """Accumulate real consequences only; novelty is a visual proxy, not pose."""
+        if not self.guidance_fix:return
+        active=(state["trial_option"]>0)&(state["last_option"]==state["trial_option"])
+        camera=state["previous_control"][:,7:9].abs().sum(-1)>0
+        ground=state["actuator"][:,2].ge(-5)&state["actuator"][:,2].le(45)
+        if image is None:
+            ground[:]=False
+        else:
+            pixels=torch.as_tensor(image,device=reward.device)
+            pixels=pixels.float()/255. if pixels.dtype==torch.uint8 else pixels.float()
+            lower=pixels[:,pixels.shape[1]//3:]
+            texture=lower.permute(0,3,1,2).flatten(2).std(-1,unbiased=False).mean(-1)>.025
+            ground &= texture
+        view=camera&ground&~repeat&state["has_visual"]
+        # Movement and changed ground views are factual appearance evidence;
+        # neither is claimed as ground-truth displacement or target discovery.
+        credit=(reward>0)|motion|view
+        state["trial_positive"] |= active&credit
+        state["trial_feedback"] += active.long()
+
+    def complete_trial(self,state,rows,training):
+        if not self.guidance_fix:return
+        observed=rows[(state["trial_option"][rows]>0)&(state["trial_feedback"][rows]>0)]
+        if training and len(observed):
+            phase=state["trial_phase"][observed];option=state["trial_option"][observed]
+            credit=state["trial_positive"][observed].long()
+            for p,o,positive in zip(phase.tolist(),option.tolist(),credit.tolist()):
+                self.phase_completed[p,o]+=1
+                self.phase_positive[p,o]+=positive
+        state["trial_option"][rows]=-1
+        state["trial_positive"][rows]=False
+        state["trial_feedback"][rows]=0
+
+    def record_start(self,phase,option):
+        for p,o in zip(phase.tolist(),option.tolist()):
+            self.coverage[o]+=1
+            if self.guidance_fix:self.phase_coverage[p,o]+=1
+
+    @torch.no_grad()
+    def observe_result(self,state,reward,done,training,valid=None):
+        """Close terminal/truncated real trials before the driver resets.
+
+        Normal results are observed by the next choose(). The driver calls this
+        hook immediately after real env.step for done rows only, so terminal
+        rewards and the last executed action are not lost by reset. Clearing the
+        trial token makes repeated hooks and a later choose() idempotent.
+        """
+        if not self.guidance_fix or state is None:return state
+        ref=state["previous_control"];batch=len(ref);device=ref.device
+        ended=torch.as_tensor(done,device=device).bool().reshape(-1).expand(batch)
+        if not bool(ended.any()):return state
+        value=torch.as_tensor(reward,device=device).float()
+        value=(value.reshape(-1).expand(batch) if value.numel()==1 else value.reshape(batch,-1).sum(-1))
+        quality=torch.isfinite(value)
+        if valid is not None:
+            raw=torch.as_tensor(valid,device=device).reshape(-1).expand(batch)
+            quality &= torch.isfinite(raw)&(raw>.5)
+        executed=(state["trial_option"]>0)&(state["last_option"]==state["trial_option"])
+        observed=ended&quality&executed
+        state["trial_feedback"]+=observed.long()
+        state["trial_positive"]|=observed&(value>0)
+        # An invalid terminal transport result cannot certify a trial even if
+        # its earlier actions had tentative appearance feedback.
+        invalid=ended&(~quality|~executed)
+        state["trial_feedback"][invalid]=0
+        state["trial_positive"][invalid]=False
+        self.complete_trial(state,ended.nonzero().squeeze(-1),training)
+        return state
 
     def templates(self,actuator,remaining,phase=None):
         device=actuator.device
@@ -528,6 +628,10 @@ class VNextController(nn.Module):
         reward=torch.as_tensor(obs.get("reward",obs.get("obs_reward",feat.new_zeros(batch))),
                                device=device).reshape(batch,-1).sum(-1)
         progress=reward>0
+        if self.guidance_fix:
+            self.observe_trial_feedback(state,reward,moving_progress,visual_repeat,known_view,image,training)
+            state["search_probe_cooldown"]=(state["search_probe_cooldown"]-1).clamp_min(0)
+            state["recovery_cooldown"]=(state["recovery_cooldown"]-1).clamp_min(0)
         proposed_control,_=apply_command_torch(proposed,state["actuator"])
         clipped=((proposed==2)|(proposed==3))&(proposed_control[:,7]==0)&(state["actuator"][:,2].abs()>=60)
         state["limit_run"]=torch.where(clipped&~progress,state["limit_run"]+1,torch.zeros_like(state["limit_run"]))
@@ -555,6 +659,11 @@ class VNextController(nn.Module):
             state["forward_stall"][moving_progress|progress]=0
             if self.spatial_fix:state["recovery_trials"][moving_progress|progress]=0
         state["stalled"][progress]=0
+        if self.guidance_fix:
+            retry=(state["recovery_trials"]>=int(cfg(self.config,"vnext_recovery_probe_limit")))
+            retry &= (state["recovery_cooldown"]==0)&~moving_progress&~progress
+            state["recovery_trials"][retry]=0
+            state["recovery_round"][retry]+=1
         failed=(state["interaction_trials"]>=int(cfg(self.config,"vnext_interact_max_trials"))
                 if self.interaction_fix else
                 state["interact_failures"]>=int(cfg(self.config,"vnext_interact_retries")))
@@ -563,6 +672,12 @@ class VNextController(nn.Module):
         high=(visible>=float(cfg(self.config,"vnext_visible_high")))&self.ready(current,"visible",feat)
         low=visible<float(cfg(self.config,"vnext_visible_low"))
         act=(actionable>=float(cfg(self.config,"vnext_interactable_high")))&self.ready(current,"center_interactable",feat)
+        interaction_probe=torch.zeros_like(act)
+        if self.guidance_fix:
+            interaction_probe=torch.as_tensor(current.get("interaction_probe_ready",False),device=device).bool().expand(batch).clone()
+            interaction_probe &= high&~act
+            interaction_probe &= state["interaction_probe_trials"]<int(cfg(self.config,"vnext_interaction_probe_limit"))
+            act |= interaction_probe
         for key,condition in (("visible_run",high),("invisible_run",low),("actionable_run",act),("not_actionable_run",~act)):
             state[key]=torch.where(condition,state[key]+1,torch.zeros_like(state[key]))
         hysteresis=int(cfg(self.config,"vnext_phase_hysteresis"))
@@ -663,6 +778,13 @@ class VNextController(nn.Module):
             mask[:,8]=allowed&(phase==INTERACT)&act&(state["actuator"][:,1]==0)&(state["cooldown"]==0)&~failed&total_ok[:,8]
             if self.interaction_fix:mask[:,8]&=~state["pending_interact"]
             mask[:,9]=allowed&(phase==INTERACT)&(state["actuator"][:,1]>0)&(settle_used+lengths[:,9]<=int(cfg(self.config,"vnext_settle_limit")))&total_ok[:,9]
+        if self.guidance_fix:
+            # Different low-risk ways out of a sustained Actor loop remain
+            # available to A/Q; each is still subject to the rolling budget.
+            for o in (1,2,3,4,5):
+                legal=allowed&(phase==RECOVERY)&total_ok[:,o]&~act
+                if o in (3,4,5):legal &= state["actuator"][:,2].ge(-5)&state["actuator"][:,2].le(45)
+                mask[:,o] |= legal
         if self.spatial:
             # A blocked jump-forward Actor must be allowed to let the original
             # sticky jump expire before a learned clearance attempt. No timer
@@ -699,6 +821,8 @@ class VNextController(nn.Module):
                 compatible|=torch.isin(active,torch.tensor([1,2,6,7],device=device))&(phase==ALIGN)
         compatible|=((active==8)|(active==9))&(phase==INTERACT)
         compatible|=((active==10)|(active==11))&(phase==RECOVERY)
+        if self.guidance_fix:
+            compatible|=((active>=1)&(active<=5))&(phase==RECOVERY)
         budget_one=extra_used<extra_limit
         search_active=(active>=1)&(active<=(6 if self.spatial else 5))&(phase==SEARCH)
         budget_one&=~search_active|(search_used<search_limit)
@@ -723,7 +847,12 @@ class VNextController(nn.Module):
             log_vnext_interaction_trials=state["interaction_trials"],
             log_vnext_interaction_exhausted=failed.float() if self.interaction_fix else feat.new_zeros(batch),
             log_vnext_alignment_trials=state["alignment_trials"],
-            log_vnext_alignment_probe=feat.new_zeros(batch))
+            log_vnext_alignment_probe=feat.new_zeros(batch),
+            log_vnext_interaction_probe=feat.new_zeros(batch),
+            log_vnext_interaction_probe_trials=state["interaction_probe_trials"],
+            log_vnext_search_probe=feat.new_zeros(batch),
+            log_vnext_search_probe_trials=state["search_probe_trials"],
+            log_vnext_recovery_round=state["recovery_round"])
         descriptor=feat.new_zeros(batch,N_OPTIONS,PREDICTION_DIM)
         q=feat.new_zeros(batch,N_OPTIONS)
         a_score=feat.new_zeros(batch,N_OPTIONS)
@@ -736,6 +865,7 @@ class VNextController(nn.Module):
         actor_plan=proposed[:,None].expand(-1,3).clone()
         if new.any():
             starts=new.nonzero().squeeze(-1)
+            if self.guidance_fix:self.complete_trial(state,starts,training)
             state["source"][starts]=0
             # Explicit actuator recovery is a small, logged safety experiment,
             # not evidence of learned exploration. It needs no uncalibrated A
@@ -747,7 +877,8 @@ class VNextController(nn.Module):
                 mask[recover]=False
                 mask[recover,ACTOR]=True
                 mask[recover,11]=True
-                if training:self.coverage[11]+=len(recover)
+                if training:
+                    self.record_start(phase[recover],torch.full_like(recover,11))
             forced_recovery=emergency&mask[:,11]
             calculate=starts[mask[starts,1:].any(-1)&~forced_recovery[starts]]
             if len(calculate):
@@ -798,6 +929,15 @@ class VNextController(nn.Module):
                 x=self.input(feat[calculate],memory[calculate] if memory is not None else None,
                              descriptor[calculate],context[calculate])
                 task_q[calculate]=torch.minimum(self.q1(x).sigmoid(),self.q2(x).sigmoid())
+                if self.guidance_fix:
+                    disagreement=(self.q1(x).sigmoid()-self.q2(x).sigmoid()).abs()
+                    disagreement += (self.search_q1(x)-self.search_q2(x)).abs()/float(cfg(self.config,"vnext_search_value_clip"))
+                    empirical_support[calculate] &= disagreement<=float(cfg(self.config,"vnext_c_max_disagreement"))
+                    if not training:
+                        trustworthy=support.bool()|empirical_support[calculate]
+                        local_mask[:,1:] &= trustworthy[:,1:]
+                        local_mask[:,8]=mask[calculate,8]
+                        local_mask[:,9]=mask[calculate,9]
                 if self.spatial:
                     search_q[calculate]=torch.minimum(self.search_q1(x),self.search_q2(x))
                     q[calculate]+=float(cfg(self.config,"vnext_a_score_weight"))*a_score[calculate]
@@ -815,6 +955,10 @@ class VNextController(nn.Module):
                 best=greedy.clone()
                 source=torch.where(greedy>0,torch.ones_like(greedy),torch.zeros_like(greedy))
                 source=torch.where(test,torch.full_like(source,2),source)
+                if self.guidance_fix:
+                    probe_interaction=test&interaction_probe[calculate]
+                    source=torch.where(probe_interaction,torch.full_like(source,8),source)
+                    info["log_vnext_interaction_probe"][calculate[probe_interaction]]=1
                 source=torch.where(settle,torch.full_like(source,4),source)
                 if self.interaction_fix and direction is not None:
                     # A reliable same-frame visual bearing can try one camera
@@ -845,6 +989,30 @@ class VNextController(nn.Module):
                         source[which]=7
                         local_mask[which,align_option[which]]=True
                         info["log_vnext_alignment_probe"][calculate[which]]=1
+                if self.guidance_fix:
+                    # B's uncertain position is not a reason to suppress all
+                    # information gathering. These bounded trials are NOT learned
+                    # choices, and never certify A's predictions or fake a reward.
+                    candidates=(6,1,2,3,4,5)
+                    eligible=(phase[calculate]==SEARCH)&(best==ACTOR)&~test&~settle
+                    eligible &= state["search_probe_cooldown"][calculate]==0
+                    for j in eligible.nonzero().squeeze(-1).tolist():
+                        row=calculate[j]
+                        possible=[]
+                        for o in candidates:
+                            if not mask[row,o]:continue
+                            if o in (3,4,5) and not (-5<=float(state["actuator"][row,2])<=45):continue
+                            same=(controls[row,o]-controls[row,ACTOR]).abs().sum()==0
+                            same &= (end_actuator[row,o]-end_actuator[row,ACTOR]).abs().sum()==0
+                            same &= lengths[row,o]==lengths[row,ACTOR]
+                            if not bool(same):possible.append(o)
+                        if not possible:continue
+                        counts=state["episode_phase_coverage"][row,SEARCH,possible]
+                        # Priority begins with a short observation sweep; local
+                        # balancing prevents eval from repeating the same option.
+                        option=possible[int(counts.argmin())]
+                        best[j]=option;source[j]=9;local_mask[j,option]=True
+                        info["log_vnext_search_probe"][row]=1
                 if self.spatial_fix:
                     # Real bounded probes break the cold-start circle:
                     # requiring blocked-head/option experience before the
@@ -852,15 +1020,32 @@ class VNextController(nn.Module):
                     # These choices are explicitly logged as rule probes,
                     # never credited as learned/A-supported exploration.
                     legal_probe=mask[calculate].clone()
+                    if self.guidance_fix:
+                        for o in range(1,N_OPTIONS):
+                            same=(controls[calculate,o]-controls[calculate,ACTOR]).abs().sum((-1,-2))==0
+                            same&=(end_actuator[calculate,o]-end_actuator[calculate,ACTOR]).abs().sum(-1)==0
+                            same&=lengths[calculate,o]==lengths[calculate,ACTOR]
+                            legal_probe[:,o]&=~same
                     eligible=(phase[calculate]==RECOVERY)&(greedy==ACTOR)&~test&~settle
                     eligible&=state["recovery_trials"][calculate]<int(cfg(self.config,"vnext_recovery_probe_limit"))
                     trial=state["recovery_trials"][calculate]
+                    if self.guidance_fix:trial=trial+state["recovery_round"][calculate]
                     probe=torch.full_like(greedy,-1)
                     # Get a different view after failed clearance/backing,
                     # before spending another attack lease on the same wall.
                     probe=torch.where(legal_probe[:,11],torch.full_like(probe,11),probe)
                     probe=torch.where(legal_probe[:,6]&(trial%2==1),torch.full_like(probe,6),probe)
                     probe=torch.where(legal_probe[:,10]&(trial%2==0),torch.full_like(probe,10),probe)
+                    if self.guidance_fix:
+                        order=(10,6,4,5,3,11)
+                        for j in range(len(calculate)):
+                            offset=int(trial[j])%len(order)
+                            for distance in range(len(order)):
+                                option=order[(offset+distance)%len(order)]
+                                if bool(legal_probe[j,option]):
+                                    probe[j]=option;break
+                            if abs(float(state["actuator"][calculate[j],2]))>=30 and legal_probe[j,11]:
+                                probe[j]=11
                     probe=torch.where(legal_probe[:,7],torch.full_like(probe,7),probe)
                     need_wait=(state["forward_stall"][calculate]>=int(cfg(self.config,"vnext_blocked_forward_steps")))
                     probe=torch.where(legal_probe[:,9]&need_wait,torch.full_like(probe,9),probe)
@@ -878,28 +1063,43 @@ class VNextController(nn.Module):
                         legal=legal[legal!=ACTOR]
                         least=np.array([],dtype=int)
                         if len(legal):
-                            counts=self.coverage[torch.as_tensor(legal,device=device)].cpu().numpy()
+                            counts=(self.phase_coverage[phase[row],torch.as_tensor(legal,device=device)]
+                                    if self.guidance_fix else self.coverage[torch.as_tensor(legal,device=device)]).cpu().numpy()
                             least=legal[counts==counts.min()]
                             # Preserve a committed diagnostic/interaction
                             # experiment; epsilon cannot convert its logging
                             # into an unrelated probe or interrupt waiting.
-                            diagnostic=self.spatial_fix and int(source[j]) in (2,4,6,7)
+                            diagnostic=self.spatial_fix and int(source[j]) in ((2,4,6,7,8,9) if self.guidance_fix else (2,4,6,7))
                             if not diagnostic and self._rng.rand()<eps:
                                 best[j]=int(self._rng.choice(least))
                                 source[j]=5
-                        diagnostic=self.spatial_fix and int(source[j]) in (2,4,6,7)
+                        diagnostic=self.spatial_fix and int(source[j]) in ((2,4,6,7,8,9) if self.guidance_fix else (2,4,6,7))
                         p=1. if diagnostic else (1-eps if len(least) else 1.)*float(best[j]==greedy[j])
                         if not diagnostic and len(least) and int(best[j]) in least:p+=eps/len(least)
                         probability[row]=p
-                        self.coverage[best[j]]+=1
+                        self.record_start(phase[row:row+1],best[j:j+1])
                 selected[calculate]=best;mask[calculate]=local_mask
                 state["source"][calculate]=source
             state["active"][starts]=selected[starts];state["position"][starts]=0
             state["length"][starts]=lengths[starts,selected[starts]]
             state["commands"][starts]=commands[starts,selected[starts]]
+            if self.guidance_fix:
+                state["episode_phase_coverage"][starts,phase[starts],selected[starts]]+=1
+                state["trial_option"][starts]=selected[starts]
+                state["trial_phase"][starts]=phase[starts]
+                state["trial_positive"][starts]=False
+                state["trial_feedback"][starts]=0
+                interaction_rows=starts[state["source"][starts]==8]
+                state["interaction_probe_trials"][interaction_rows]+=1
+                search_rows=starts[state["source"][starts]==9]
+                state["search_probe_trials"][search_rows]+=1
+                state["search_probe_cooldown"][search_rows]=int(cfg(self.config,"vnext_search_probe_every"))
             if self.spatial_fix:
                 probes=starts[torch.isin(state["source"][starts],torch.tensor([3,6],device=device))]
                 state["recovery_trials"][probes]+=1
+                if self.guidance_fix:
+                    exhausted=probes[state["recovery_trials"][probes]>=int(cfg(self.config,"vnext_recovery_probe_limit"))]
+                    state["recovery_cooldown"][exhausted]=int(cfg(self.config,"vnext_recovery_retry_after"))
             if self.interaction_fix:
                 trials=starts[selected[starts]==8]
                 state["interaction_trials"][trials]+=1
@@ -916,6 +1116,7 @@ class VNextController(nn.Module):
         applied,next_actuator=apply_command_torch(command,before)
         if self.spatial_fix:state["visual_yaw"]=(state["visual_yaw"]+applied[:,8]+180)%360-180
         state["actuator"],state["previous_control"]=next_actuator,applied
+        state["last_option"]=option.clone()
         state["position"]+=1
         finished=state["position"]>=state["length"]
         info["log_vnext_option_end"]=finished.float()
@@ -1060,5 +1261,16 @@ class VNextController(nn.Module):
             metrics.update({"C/task_value_loss":float(task_loss),"C/search_value_loss":float(search_loss.detach()),
                             "C/search_target_return":float(search_target.mean()),
                             "C/search_reward":float(realized.mean())})
+        if self.guidance_fix:
+            eligibility=(self.phase_coverage>=int(cfg(self.config,"vnext_c_min_option_trials")))
+            eligibility &= self.phase_completed>=int(cfg(self.config,"vnext_c_min_option_trials"))
+            eligibility &= self.phase_positive>=int(cfg(self.config,"vnext_c_min_positive_trials"))
+            eligibility &= self.updates>=int(cfg(self.config,"vnext_c_min_updates"))
+            metrics.update({
+                "C/search_online_trials":float(self.phase_coverage[SEARCH,1:].sum()),
+                "C/search_scan_trials":float(self.phase_coverage[SEARCH,6]),
+                "C/search_observed_trials":float(self.phase_completed[SEARCH,1:].sum()),
+                "C/search_positive_trials":float(self.phase_positive[SEARCH,1:].sum()),
+                "C/search_empirical_eligible_options":float(eligibility[SEARCH,1:].sum())})
         return metrics
 

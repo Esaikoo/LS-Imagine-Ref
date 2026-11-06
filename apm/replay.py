@@ -48,7 +48,7 @@ def _actual_control_valid(episode, index):
     return True
 
 
-def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
+def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slots=16):
     """Preserve original LS episode/window sampling; align outgoing map logs.
 
     Cache row i contains observation i and logs of the decision at i-1. Thus
@@ -69,6 +69,10 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
         log_spatial_cue_valid=(), log_spatial_raw_cue=(), log_spatial_motion_unknown=(),
         log_spatial_pose_gap_count=(), log_spatial_first_gap_step=(),
         log_spatial_camera_pitch=(), log_spatial_pitch_known=(),
+        log_spatial_history_frames=(history_slots,4,4,4),
+        log_spatial_history_meta=(history_slots,8), log_spatial_history_valid=(history_slots,),
+        log_spatial_history_tick=(), log_spatial_segment=(),
+        log_spatial_local_valid=(), log_spatial_memory_available=(), log_spatial_visual_revisit=(),
         log_actuator_before=(3,), log_actuator_after=(3,),
         log_applied_control=(9,), log_env_error=(), log_actuator_valid=(),
         log_search_override=(), log_search_decision=(), log_vnext_world_group=())
@@ -98,7 +102,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
                 if example is None:
                     shape = ((64,64,3) if name == "zoomed_image" else
                              (64,64) if name == "heatmap_on_zoomed" else shapes.get(name, ()))
-                    example = np.zeros(shape, np.uint8 if name in ("zoomed_image", "heatmap_on_zoomed", "log_spatial_patch") else np.float32)
+                    example = np.zeros(shape, np.uint8 if name in ("zoomed_image", "heatmap_on_zoomed", "log_spatial_patch", "log_spatial_history_frames") else np.float32)
                 templates[name] = np.zeros_like(example)
             fill = templates[name]
             result[name] = np.asarray([fill if value is None else value
@@ -109,6 +113,12 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
         summaries = np.zeros((length,12), np.float32)
         spatial_valid = np.zeros(length, np.float32)
         trajectory_valid = np.zeros(length, np.float32)
+        history_frames = np.zeros((length,history_slots,4,4,4),np.uint8)
+        history_meta = np.zeros((length,history_slots,8),np.float32)
+        history_valid = np.zeros((length,history_slots),np.float32)
+        history_tick = np.zeros(length,np.float32)
+        history_snapshot_valid = np.zeros(length,np.float32)
+        local_valid = np.zeros(length,np.float32)
         previous = np.zeros((length,64,64,3), np.uint8)
         controls = np.zeros((length,9), np.float32)
         actuator_valid = np.zeros(length, np.float32)
@@ -144,8 +154,33 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
                         if "log_spatial_trajectory_valid" in ep:
                             marker = ep["log_spatial_trajectory_valid"][i+1]
                             trajectory_valid[row] = bool(marker is not None and np.isfinite(marker) and float(marker)>.5)
-                        # Revision 0/1 readers ignore this new field. A revision
-                        # 2 reader must not certify a missing historical marker.
+                        # Continuous global pose and a usable local segment are
+                        # distinct. Historical data cannot fabricate either flag.
+                        local_marker = ep.get("log_spatial_local_valid",np.zeros(total))[i+1]
+                        local_valid[row] = bool(local_marker is not None and np.isfinite(local_marker) and float(local_marker)>.5)
+                        bank_names = ("log_spatial_history_frames", "log_spatial_history_meta",
+                                      "log_spatial_history_valid", "log_spatial_history_tick")
+                        if all(name in ep for name in bank_names):
+                            bank, meta, mask, tick = (np.asarray(ep[name][i+1]) for name in bank_names)
+                            if bank.shape != (history_slots,4,4,4) or meta.shape != (history_slots,8) or mask.shape != (history_slots,):
+                                raise ValueError("Spatial history snapshot/configuration mismatch")
+                            finite = np.isfinite(bank).all() and np.isfinite(meta).all() and np.isfinite(mask).all() and np.isfinite(tick).all()
+                            if finite and np.asarray(tick).size == 1:
+                                history_frames[row] = bank
+                                history_meta[row] = meta
+                                history_valid[row] = mask > .5
+                                history_tick[row] = float(tick)
+                                available = ep.get("log_spatial_memory_available",np.zeros(total))[i+1]
+                                # Snapshot availability is independent of pose;
+                                # bank entries must nevertheless be causal.
+                                selected_meta = meta[mask>.5]
+                                causal = bool((selected_meta[:,0]>=0).all() and
+                                    (selected_meta[:,1]>=selected_meta[:,0]).all() and
+                                    (selected_meta[:,1]<=float(tick)).all())
+                                marker_valid = available is not None and np.isfinite(available) and float(available)>.5
+                                values_valid = bool((bank>=0).all() and (bank<=255).all() and
+                                    (mask>=0).all() and (mask<=1).all() and float(tick)>=0)
+                                history_snapshot_valid[row] = bool(marker_valid and values_valid and (mask>.5).any() and causal)
                 if i > 0 and not realfirst[row]:
                     error = bool(ep.get("log_env_error", np.zeros(total))[i])
                     if not error and bool(actuator_valid[row]):
@@ -157,6 +192,10 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21):
         result.update(vnext_spatial_patch=patches, vnext_spatial_pose=poses,
             vnext_spatial_summary=summaries, vnext_spatial_valid=spatial_valid,
             vnext_spatial_trajectory_valid=trajectory_valid,
+            vnext_spatial_local_valid=local_valid,
+            vnext_spatial_history_frames=history_frames, vnext_spatial_history_meta=history_meta,
+            vnext_spatial_history_valid=history_valid, vnext_spatial_history_tick=history_tick,
+            vnext_spatial_history_snapshot_valid=history_snapshot_valid,
             vnext_pose_prev_image=previous, vnext_pose_control=controls,
             vnext_pose_prev_valid=pair_valid, vnext_calibration=calibration,
             vnext_window_valid=np.ones(length,np.float32),vnext_real_first=realfirst,

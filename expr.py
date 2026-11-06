@@ -150,6 +150,26 @@ class LS_Imagine(nn.Module):
             self._metrics[name] = []
 
     @torch.no_grad()
+    def observe_vnext_results(self, state, results, training=False):
+        """Consume real terminal feedback before the driver resets an episode."""
+        if self._vnext_control is None or not self._vnext_control.guidance_fix or state is None:
+            return
+        control = state[3]
+        ref = control["phase"]
+        reward = torch.zeros(len(ref), device=ref.device)
+        done = torch.zeros(len(ref), device=ref.device, dtype=torch.bool)
+        valid = torch.zeros_like(done)
+        for index, result in results.items():
+            observation, value, ended = result[:3]
+            reward[index] = float(np.asarray(value).sum())
+            done[index] = bool(ended)
+            marker = observation.get("log_actuator_valid",0.)
+            error = observation.get("log_env_error",1.)
+            valid[index] = bool(np.isfinite(marker) and float(marker)>.5 and
+                                np.isfinite(error) and float(error)<.5)
+        self._vnext_control.observe_result(control, reward, done, training, valid=valid)
+
+    @torch.no_grad()
     def visualization_map(self, state, index=0, terminal_obs=None):
         """Copy a predicted map for export; never update policy/recurrent state."""
         if self._vnext is None or not self._vnext.spatial or state is None:
@@ -471,7 +491,8 @@ def make_dataset(episodes, config):
         if getattr(config, "vnext_spatial_enabled", False):
             from apm.replay import sample_spatial_episodes
             return tools.from_generator(sample_spatial_episodes(episodes,config.batch_length,
-                seed=config.seed,patch_size=config.vnext_map_patch),config.batch_size)
+                seed=config.seed,patch_size=config.vnext_map_patch,
+                history_slots=config.vnext_slots),config.batch_size)
         generator = sample_episodes_vnext(
             episodes, config.batch_length, slots=config.vnext_slots, seed=config.seed)
         return tools.from_generator(generator, config.batch_size)

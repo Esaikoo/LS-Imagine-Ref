@@ -18,7 +18,7 @@ import torch
 
 SCHEMA_VERSION = 1
 _RUNTIME_KEYS = {
-    "resume_from", "logdir", "traindir", "evaldir", "offline_traindir",
+    "resume_from", "resume_upgrade_spatial", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics",
     "use_wandb", "wandb_key", "results_dir", "name", "debug",
 }
@@ -153,10 +153,93 @@ def _validate_search_versions(checkpoint, values):
         raise ValueError("C checkpoint/model version mismatch")
 
 
+def _spatial_upgrade_request(checkpoint, incoming):
+    """Explicit fix2->fix3 warm start. Source files are never rewritten."""
+    if not incoming.get("resume_upgrade_spatial", False):
+        return checkpoint, None
+    saved = dict(checkpoint["config"])
+    if not saved.get("search_vnext_enabled") or not saved.get("vnext_spatial_enabled"):
+        raise ValueError("Spatial upgrade requires a spatial vNext training checkpoint")
+    if checkpoint.get("spatial_fix_version", 0) != 2 or saved.get("vnext_spatial_fix_version", 0) != 2:
+        raise ValueError("Explicit spatial upgrade currently supports fix2 -> fix3 only")
+    if int(incoming.get("vnext_spatial_fix_version", 0)) != 3:
+        raise ValueError("Spatial upgrade must target revision 3")
+    _validate_search_versions(checkpoint, saved)
+    updated = dict(checkpoint)
+    updated["config"] = dict(saved, vnext_spatial_fix_version=3)
+    # These are intentional guidance changes, not silently inherited old limits.
+    changes = {}
+    for key in ("vnext_search_fraction", "vnext_total_fraction"):
+        if key in incoming:
+            updated["config"][key] = incoming[key]
+            changes[key] = incoming[key]
+    updated["spatial_fix_version"] = 3
+    return updated, dict(from_revision=2, to_revision=3, source_step=int(checkpoint["step"]),
+        guidance_configuration=changes, calibration_reset=True,
+        phase_experience_reset=True, history_initialized=True,
+        comparison_note="mixed-revision continuation, not a from-scratch fix3 ablation")
+
+
+def _upgrade_b_optimizer(agent, saved_state):
+    """Retain Adam moments by old parameter name; new history parameters start fresh."""
+    from types import SimpleNamespace
+    from apm.spatial_memory import SpatialMapMemory
+    values = dict(vars(agent._config), vnext_spatial_fix_version=2)
+    legacy = SpatialMapMemory(agent._vnext_control.feature_dim, SimpleNamespace(**values))
+    old_names = [name for name, _ in legacy.named_parameters()]
+    new_names = [name for name, _ in agent._vnext.b.named_parameters()]
+    fresh = agent._vnext._b_opt.state_dict()
+    if len(saved_state["param_groups"]) != 1 or len(fresh["param_groups"]) != 1:
+        raise ValueError("Spatial optimizer migration requires one named B parameter group")
+    old_ids = saved_state["param_groups"][0]["params"]
+    new_ids = fresh["param_groups"][0]["params"]
+    if len(old_ids) != len(old_names) or len(new_ids) != len(new_names):
+        raise ValueError("Spatial optimizer parameter layout mismatch")
+    old_by_name = dict(zip(old_names, old_ids))
+    state = {new_id: saved_state["state"][old_by_name[name]]
+             for name, new_id in zip(new_names, new_ids)
+             if name in old_by_name and old_by_name[name] in saved_state["state"]}
+    group = dict(saved_state["param_groups"][0], params=new_ids)
+    return dict(state=state, param_groups=[group])
+
+
+def _restore_spatial_upgrade(agent, checkpoint, record):
+    """Merge only compatible old tensors, leaving new module state explicitly initialized."""
+    old, merged = checkpoint["agent_state_dict"], agent.state_dict()
+    initialized = sorted(set(merged)-set(old))
+    if any(not name.startswith(("_vnext.b.", "_vnext_control.phase_")) for name in initialized):
+        raise ValueError("Unexpected new parameter outside spatial upgrade modules")
+    reset = []
+    for name, value in old.items():
+        if name not in merged or merged[name].shape != value.shape:
+            raise ValueError("Incompatible spatial upgrade tensor: " + name)
+        tail = name.removeprefix("_vnext.a.")
+        # A now conditions on a different B representation. Old evidence can
+        # train compatible weights but cannot certify this new input domain.
+        qualification = name.startswith("_vnext.a.") and (
+            tail.startswith(("current_counts", "current_positives", "current_cal_",
+                             "support_", "cal_")))
+        if qualification:
+            reset.append(name)
+        else:
+            merged[name] = value
+    agent.load_state_dict(merged, strict=True)
+    optimizers = dict(checkpoint["optims_state_dict"])
+    key = "_vnext._b_opt"
+    if key not in optimizers:
+        raise ValueError("Spatial upgrade requires the saved B optimizer")
+    optimizers[key] = _upgrade_b_optimizer(agent, optimizers[key])
+    record.update(initialized_tensors=initialized, reset_qualification_tensors=reset,
+                  optimizer_policy="retain compatible named moments; new B history starts without moments")
+    return optimizers
+
+
 def prepare_resume(config):
     """Restore saved training configuration and inspect source data, without writes."""
     requested = getattr(config, "resume_from", "")
     if not requested:
+        if getattr(config, "resume_upgrade_spatial", False):
+            raise ValueError("resume_upgrade_spatial requires an explicit resume_from")
         return None
     requested = _path(requested)
     if requested.is_dir():
@@ -174,8 +257,9 @@ def prepare_resume(config):
         raise ValueError("An audit-only checkpoint cannot resume formal training")
     if not all(key in checkpoint for key in ("agent_state_dict", "optims_state_dict", "step", "config")):
         raise ValueError("Resume requires a full training checkpoint and saved configuration")
-    saved = dict(checkpoint["config"])
     incoming = dict(vars(config))
+    checkpoint, spatial_upgrade = _spatial_upgrade_request(checkpoint, incoming)
+    saved = dict(checkpoint["config"])
     if bool(incoming.get("search_vnext_enabled", False)) != bool(saved.get("search_vnext_enabled", False)):
         raise ValueError("Cannot resume across legacy/vNext algorithms; start a fresh experiment")
     for key in ("task", "target_item"):
@@ -268,7 +352,8 @@ def prepare_resume(config):
                 model_step=model_step, environment_step=environment_step,
                 replay_sources=sources, replay=replay, replay_steps=replay_steps,
                 budget_offset=budget_offset, next_branch_step=next_branch,
-                completed_branch_groups=sorted(groups), runtime_notes=notes)
+                completed_branch_groups=sorted(groups), runtime_notes=notes,
+                spatial_upgrade=spatial_upgrade)
 
 
 def _resolve(obj, path):
@@ -319,8 +404,17 @@ def restore_training_state(agent, plan, logger):
     import tools
     checkpoint, config = plan["checkpoint"], agent._config
     _validate_search_versions(checkpoint, config)
-    agent.load_state_dict(checkpoint["agent_state_dict"], strict=True)
-    tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
+    if plan.get("spatial_upgrade"):
+        optimizers = _restore_spatial_upgrade(agent, checkpoint, plan["spatial_upgrade"])
+        plan["runtime_notes"].append("explicit_fix2_to_fix3_upgrade_resets_predictive_qualification")
+    else:
+        agent.load_state_dict(checkpoint["agent_state_dict"], strict=True)
+        optimizers = checkpoint["optims_state_dict"]
+    tools.recursively_load_optim_state_dict(agent, optimizers)
+    lineage = list(checkpoint.get("spatial_upgrade_lineage", []))
+    if plan.get("spatial_upgrade"):
+        lineage.append(dict(plan["spatial_upgrade"]))
+    agent._spatial_upgrade_lineage = lineage
     if getattr(agent, "_search_a", None) is not None:
         agent._search_a.load_rng_state(checkpoint.get("search_a_rng_state"))
     if getattr(agent, "_search_c", None) is not None:
@@ -384,6 +478,7 @@ def write_resume_manifest(plan, config):
         skip_random_prefill=True, skip_initial_pretraining=True,
         fresh_environment=True, exact_trajectory_resume=False,
         runtime_restore=plan.get("runtime_restore", {}),
+        spatial_upgrade=plan.get("spatial_upgrade"),
         notes=list(dict.fromkeys(plan["runtime_notes"])))
     path.write_text(json.dumps(_jsonable(record), indent=2) + "\n")
     return path
@@ -435,7 +530,7 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
                               if getattr(config,"search_vnext_enabled",False) else None),
         pose_version=1 if getattr(config,"vnext_spatial_enabled",False) else None,
         spatial_map_version=2 if getattr(config,"vnext_spatial_enabled",False) else None,
-        spatial_fix_version=(int(getattr(config,"vnext_spatial_fix_version",2))
+        spatial_fix_version=(int(getattr(config,"vnext_spatial_fix_version",3))
                              if getattr(config,"vnext_spatial_enabled",False) else None),
         vnext_rng_state=(agent._vnext_control.rng_state()
                          if getattr(agent, "_vnext_control", None) is not None else None),
@@ -455,6 +550,7 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
         search_candidate_version=((2 if getattr(config,"vnext_spatial_enabled",False) else 1)
                                   if getattr(config, "search_vnext_enabled", False)
                                   else config.search_a_control_version),
+        spatial_upgrade_lineage=getattr(agent, "_spatial_upgrade_lineage", []),
         runtime_state=runtime, rng_state=_rng_state(), training_state_version=SCHEMA_VERSION,
         next_branch_step=int(next_branch_step),
         replay_sources=[str(path) for path in sources],

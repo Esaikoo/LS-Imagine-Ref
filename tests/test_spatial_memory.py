@@ -618,6 +618,125 @@ class SpatialMemoryTests(unittest.TestCase):
         self.assertGreater(float(state['grid'][:,1].sum()),0.)
         self.assertNotIn('log_spatial_trajectory_valid',info)
 
+    def test_revision_three_unqualified_pose_keeps_episode_visual_history_active(self):
+        model=SpatialMapMemory(24,config(vnext_spatial_fix_version=3,vnext_slots=4))
+        f,_,h,control=inputs();image=self.ground_frame();state=None
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction(.5,.12)):
+            for t in range(160):
+                current=image.clone();current[...,t//40%3]*=.2
+                context,state,info=model.online(f,current,h,state,is_first=torch.tensor([t==0]),previous_control=control)
+                self.assertTrue(torch.isfinite(context).all())
+                self.assertTrue(bool(context.any()))
+                self.assertEqual(float(info['log_spatial_memory_available'][0]),1.)
+                self.assertEqual(float(info['log_spatial_map_write'][0]),0.)
+                self.assertEqual(float(info['log_spatial_trajectory_valid'][0]),0.)
+        self.assertEqual(int(state['tick'][0]),160)
+        self.assertEqual(int(state['ledger_used'][0]),0)
+        self.assertGreater(int(state['history_valid'].sum()),1)
+        self.assertEqual(float(state['history_meta'][0,0,0]),0.)
+
+    def test_revision_three_gap_recovers_local_segment_without_rejoining_old_coordinates(self):
+        model=self.qualified_memory(vnext_spatial_fix_version=3,vnext_slots=4)
+        f,_,h,control=inputs();image=self.ground_frame()
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            _,state,_=model.online(f,image,h,is_first=torch.ones(1).bool(),previous_control=control)
+        state['pose'][0,0]=9.
+        cells=model.recenter(state)
+        entry=model.ledger_entry(state,0,centered_cell(state['pose'][0,:2],model.resolution))
+        state['ledger_values'][0,entry,0]=8.
+        history=state['history_frames'].clone()
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction(.5,.12)):
+            context,state,gap=model.online(f,image,h,state,previous_control=control)
+        self.assertTrue(bool(context.any()))
+        self.assertFalse(bool(state['tracking_ready'][0]))
+        self.assertEqual(float(gap['log_spatial_trajectory_valid'][0]),0.)
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction()):
+            for i in range(3):
+                _,state,info=model.online(f,image,h,state,previous_control=control)
+                self.assertEqual(float(info['log_spatial_map_write'][0]),float(i==2))
+        self.assertEqual(int(state['segment'][0]),1)
+        self.assertEqual(float(state['pose'][0,:2].abs().sum()),0.)
+        self.assertTrue(bool(state['tracking_ready'][0]))
+        self.assertFalse(bool(state['global_continuity'][0]))
+        self.assertEqual(int(state['pose_gap_count'][0]),1)
+        self.assertEqual(float(info['log_spatial_trajectory_valid'][0]),0.)
+        self.assertEqual(float(info['log_spatial_local_valid'][0]),1.)
+        self.assertGreaterEqual(int(state['ledger_used'][0]),3)
+        self.assertIn(0,state['ledger_segment'][0,:state['ledger_used'][0]].tolist())
+        self.assertIn(1,state['ledger_segment'][0,:state['ledger_used'][0]].tolist())
+        # The old remote 9m cell must not reappear in the new segment's map.
+        self.assertEqual(float(state['grid'][:,0].max()),1.)
+        torch.testing.assert_close(state['history_frames'],history)
+        snapshot=model.visualization_state(state)
+        self.assertFalse(snapshot['trajectory_valid'])
+        self.assertTrue(snapshot['local_tracking_ready'])
+        self.assertEqual(snapshot['active_segment'],1)
+
+    def test_revision_three_history_changes_context_for_identical_current_view(self):
+        torch.manual_seed(81)
+        model=SpatialMapMemory(24,config(vnext_spatial_fix_version=3,vnext_slots=4))
+        f,_,h,control=inputs();common=self.ground_frame()
+        states=[]
+        with mock.patch.object(model.pose,'forward',return_value=self.pose_prediction(.5,.12)):
+            for channel in [0,2]:
+                old=torch.zeros_like(common);old[...,channel]=1
+                _,state,_=model.online(f,old,h,is_first=torch.ones(1).bool(),previous_control=control)
+                context,state,_=model.online(f,common,h,state,previous_control=control)
+                states.append(context)
+        self.assertGreater(float((states[0]-states[1]).abs().max()),1.e-4)
+
+    @staticmethod
+    def history_replay(info):
+        data={}
+        for tail in ['patch','pose','history_frames','history_meta','history_valid','history_tick','local_valid','trajectory_valid']:
+            data['vnext_spatial_'+tail]=info['log_spatial_'+tail][:,None].clone()
+        data['vnext_spatial_valid']=torch.ones(len(info['log_spatial_pose']),1)
+        data['vnext_spatial_history_snapshot_valid']=torch.ones_like(data['vnext_spatial_valid'])
+        return data
+
+    def test_revision_three_online_replay_agree_and_memory_learns_without_pose(self):
+        model=SpatialMapMemory(24,config(vnext_spatial_fix_version=3,vnext_slots=4))
+        f,image,h,control=inputs();image=self.ground_frame();f.normal_()
+        online,state,info=model.online(f,image,h,is_first=torch.ones(1).bool(),previous_control=control)
+        data=self.history_replay(info);data['image']=image[:,None]
+        data['search_label_version']=torch.full((1,1),3.)
+        for name in ['visible','new','progress']:
+            data['search_'+name]=torch.ones(1,1);data['search_'+name+'_valid']=torch.ones(1,1)
+        features=f[:,None].clone().requires_grad_()
+        context,details=model.batch(features,data)
+        torch.testing.assert_close(context[:,0],online,atol=1.e-6,rtol=1.e-5)
+        self.assertTrue(bool(details['valid'].all()))
+        self.assertFalse(bool(details['map_valid'].any()))
+        before=model.history_encoder.frames[0].weight.detach().clone()
+        optimizer=torch.optim.Adam(model.parameters(),lr=.01)
+        loss,metrics,_=model.loss(features,data,context,details,torch.ones(1,1).bool())
+        optimizer.zero_grad();loss.backward();optimizer.step()
+        self.assertEqual(float(metrics['B/map_loss']),0.)
+        self.assertGreater(float(metrics['B/history_loss']),0.)
+        self.assertEqual(float(metrics['B/history_valid']),1.)
+        self.assertFalse(torch.equal(before,model.history_encoder.frames[0].weight))
+        self.assertIsNone(features.grad)
+
+    def test_revision_three_missing_history_never_fabricates_available_memory(self):
+        model=SpatialMapMemory(24,config(vnext_spatial_fix_version=3,vnext_slots=4))
+        features=torch.randn(1,2,24)
+        context,details=model.batch(features,{'vnext_spatial_valid':torch.ones(1,2)})
+        self.assertFalse(bool(context.any()))
+        self.assertFalse(bool(details['valid'].any()))
+
+    def test_revision_three_multi_environment_reset_preserves_other_history(self):
+        model=SpatialMapMemory(24,config(vnext_spatial_fix_version=3,vnext_slots=4))
+        f,image,h,control=inputs(2);image=self.ground_frame().expand(2,-1,-1,-1).clone()
+        _,state,_=model.online(f,image,h,is_first=torch.ones(2).bool(),previous_control=control)
+        _,state,_=model.online(f,image,h,state,previous_control=control)
+        second=state['history_meta'][1].clone()
+        image[0].zero_()
+        _,state,info=model.online(f,image,h,state,is_first=torch.tensor([True,False]),previous_control=control)
+        self.assertEqual(int(state['history_valid'][0].sum()),1)
+        self.assertEqual(float(state['history_meta'][0,:,2].sum()),1.)
+        self.assertGreater(float(state['history_meta'][1,:,2].sum()),float(second[:,2].sum()))
+        self.assertEqual(state['tick'].tolist(),[1,3])
+
 
 if __name__ == "__main__":
     unittest.main()
