@@ -30,7 +30,7 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 
 class LS_Imagine(nn.Module):
-    def __init__(self, obs_space, act_space, config, logger, dataset):
+    def __init__(self, obs_space, act_space, config, logger, dataset, goal_bank=None):
         super(LS_Imagine, self).__init__()
         self._config = config
         self._logger = logger
@@ -104,6 +104,16 @@ class LS_Imagine(nn.Module):
             random=lambda: expl.Random(config, act_space),
             plan2explore=lambda: expl.Plan2Explore(config, self._wm, reward),
         )[config.expl_behavior]().to(self._config.device)
+        self._goal_reference = None
+        if getattr(config, "goal_ref_enabled", False):
+            if (not getattr(config, "search_vnext_enabled", False)
+                    or not getattr(config, "vnext_spatial_enabled", False)
+                    or getattr(config, "vnext_spatial_fix_version", 0) != 3):
+                raise ValueError("Goal verification requires the spatial fix3 vNext backbone")
+            from apm.goal_reference import GoalReference
+            with torch.random.fork_rng(devices=[]):
+                self._goal_reference = GoalReference(config, bank=goal_bank)
+
         self._vnext = self._vnext_control = None
         if getattr(config, "search_vnext_enabled", False):
             size = (config.dyn_stoch * config.dyn_discrete if config.dyn_discrete
@@ -112,6 +122,22 @@ class LS_Imagine(nn.Module):
             with torch.random.fork_rng(devices=[]):
                 self._vnext = SearchVNext(size, config)
                 self._vnext_control = VNextController(size, config, memory_dim=self._vnext.memory_dim)
+            if self._goal_reference is not None:
+                optimizers = (
+                    ("vnext_A_opt", self._vnext._a_opt),
+                    ("vnext_B_opt", self._vnext._b_opt),
+                    ("vnext_C_opt", self._vnext_control._optimizer),
+                    ("goal_D_opt", self._goal_reference.optimizer),
+                )
+                for name, optimizer in optimizers:
+                    count = sum(p.numel() for group in optimizer.param_groups for p in group["params"])
+                    suffix = ""
+                    if optimizer is self._vnext_control._optimizer:
+                        targets = sum(p.numel() for p in self._vnext_control.parameters()) - count
+                        suffix = f" Target copies: {targets:,}."
+                    print(f"Optimizer {name} has {count:,} variables.{suffix}")
+                print(f"Goal reference bank: {len(self._goal_reference.bank_pixels)} positives, "
+                      f"{len(self._goal_reference.negative_pixels)} hard negatives.")
 
     def __call__(self, obs, reset, state=None, training=True):
         step = self._step
@@ -131,7 +157,7 @@ class LS_Imagine(nn.Module):
             if self._should_log(step):
                 self.flush_metrics()
                 if self._config.video_pred_log:
-                    openl = self._wm.video_pred(next(self._dataset))
+                    openl = self._wm.video_pred(self._goal_model_batch(next(self._dataset)))
                     self._logger.video("train_openl", to_np(openl))
                 self._logger.write(fps=True)
 
@@ -298,7 +324,29 @@ class LS_Imagine(nn.Module):
                    "is_zoomed", "jump", "is_calculated", "obs_reward",
                    "inventory", "inventory_max", "equipped", "health", "hunger", "breath"}
         clean = {key: value for key, value in obs.items() if key in allowed}
+        goal = tracking = None
+        raw_heatmap = None
+        if self._goal_reference is not None:
+            for key in ("goal_image", "goal_image_valid"):
+                if key in obs:
+                    clean[key] = obs[key]
+            from apm.goal_guidance import build_policy_observation
+            if control_state is not None:
+                control_state = dict(control_state)
+                tracking = control_state.pop("goal_tracking", None)
+            raw_heatmap = clean["heatmap"]
+            previous = (control_state["previous_control"] if control_state is not None
+                        else obs.get("vnext_bootstrap_control"))
+            clean, goal, tracking = build_policy_observation(
+                clean, self._goal_reference, tracking, previous_control=previous)
+            policy_heatmap = clean["heatmap"]
         clean = self._wm.preprocess(clean)
+        if goal is not None:
+            clean["goal_context"] = goal["context"]
+            clean["goal_evidence_state"] = goal["state"]
+            clean["goal_peak_rejected"] = goal["peak_rejected"]
+            clean["goal_interaction_probability"] = goal["interaction_probability"]
+            clean["goal_interaction_valid"] = goal["interaction_valid"]
         embed = self._wm.encoder(clean)
         latent, _ = self._wm.dynamics.obs_step(latent, previous_action, embed, clean["is_first"])
         if self._config.eval_state_mean:
@@ -322,12 +370,19 @@ class LS_Imagine(nn.Module):
                      else control_state["actuator"][:,2].detach().clone())
             first = clean["is_first"].reshape(len(feature)).bool()
             spatial_inputs["camera_pitch"] = torch.where(first,torch.zeros_like(pitch),pitch)
+        memory_heatmap = clean["heatmap"]
+        if goal is not None:
+            memory_heatmap = torch.as_tensor(raw_heatmap, device=feature.device).float().unsqueeze(-1) / 255.
+            spatial_inputs["goal_context"] = goal["context"]
+            spatial_inputs["goal_peak_rejected"] = goal["peak_rejected"]
         current, memory, memory_state, memory_info = self._vnext.online(
-            feature, clean["image"], clean["heatmap"], memory_state,
+            feature, clean["image"], memory_heatmap, memory_state,
             clean["is_first"], previous_control=previous_control,
             reward=clean.get("obs_reward"),**spatial_inputs)
         if self._vnext.spatial:
             enabled = bool(self._config.vnext_memory_enabled)
+            if enabled and "log_goal_direction_novelty" in memory_info:
+                clean["goal_direction_novelty"] = memory_info["log_goal_direction_novelty"]
             clean["vnext_spatial_summary"] = (memory_info["log_spatial_summary"] if enabled
                                               else torch.zeros_like(memory_info["log_spatial_summary"]))
             clean["vnext_spatial_directions"] = (memory_info["log_spatial_directions"] if enabled
@@ -346,6 +401,23 @@ class LS_Imagine(nn.Module):
         output = {"action": action, "logprob": actor.log_prob(action)}
         output.update(memory_info)
         output.update(control_info)
+        if goal is not None:
+            control_state["goal_tracking"] = tracking
+            output.update(
+                log_goal_version=torch.ones_like(goal["gate"]),
+                log_goal_model_update=self._goal_reference.updates.expand_as(goal["gate"]),
+                log_goal_context=goal["context"].detach(),
+                log_goal_state=goal["state"].detach(),
+                log_goal_gate=goal["gate"].detach(),
+                log_goal_conflict=goal["conflict"].detach(),
+                log_goal_peak_rejected=goal["peak_rejected"].detach(),
+                log_goal_interaction_probability=goal["interaction_probability"].detach(),
+                log_goal_interaction_valid=goal["interaction_valid"].detach(),
+                log_goal_boxes=goal["boxes"].detach(),
+                log_goal_candidate_scores=goal["candidate_scores"].detach(),
+                log_goal_candidate_sources=goal["candidate_sources"].detach(),
+                log_goal_ref_map=(goal["region"].squeeze(-1).clamp(0, 1)*255).round().to(torch.uint8),
+                log_goal_heatmap_policy=torch.as_tensor(policy_heatmap, device=feature.device).round().clamp(0, 255).to(torch.uint8))
         # Preserve the intervention/decision metric interface; protocol 7 also
         # records separate option and task-stage rates in vNext diagnostics.
         output["log_search_override"] = control_info["log_vnext_override"]
@@ -354,6 +426,18 @@ class LS_Imagine(nn.Module):
             "log_vnext_override", feature.new_zeros(len(feature))).float()
         latent = {key: value.detach() for key, value in latent.items()}
         return output, (latent, action, memory_state, control_state)
+
+    @torch.no_grad()
+    def _goal_model_batch(self, raw):
+        """Use current D on legal frames while preserving historical action logs."""
+        if self._goal_reference is None:
+            return raw
+        from apm.goal_guidance import build_policy_observation, fuse_zoomed_observation
+        if (not self._goal_reference.fusion_enabled
+                or not bool(self._goal_reference.reliability[0] > 0.)):
+            return raw
+        model_data, _, _ = build_policy_observation(raw, self._goal_reference)
+        return fuse_zoomed_observation(model_data, self._goal_reference)
 
     def _train(self, data):
         metrics = {}
@@ -364,7 +448,19 @@ class LS_Imagine(nn.Module):
                 torch.cuda.synchronize(self._config.device)
             return time.perf_counter()
         stage = clock() if profile else None
-        post, post_zoomed, context, mets = self._wm._train(data, step=self._step)
+        if self._goal_reference is not None:
+            if self._update_count % max(1, self._config.goal_ref_train_every) == 0:
+                metrics.update(self._goal_reference.train_batch(data))
+            if profile:
+                now = clock()
+                metrics["diagnostics/time_goal_update_ms"] = (now-stage)*1000.
+                stage = now
+        model_data = self._goal_model_batch(data)
+        if profile and self._goal_reference is not None:
+            now = clock()
+            metrics["diagnostics/time_goal_fusion_ms"] = (now-stage)*1000.
+            stage = now
+        post, post_zoomed, context, mets = self._wm._train(model_data, step=self._step)
         metrics.update(mets)
         if profile:
             now = clock()
@@ -492,7 +588,10 @@ def make_dataset(episodes, config):
             from apm.replay import sample_spatial_episodes
             return tools.from_generator(sample_spatial_episodes(episodes,config.batch_length,
                 seed=config.seed,patch_size=config.vnext_map_patch,
-                history_slots=config.vnext_slots),config.batch_size)
+                history_slots=config.vnext_slots,
+                goal_enabled=(getattr(config, "goal_ref_enabled", False)
+                              or getattr(config, "goal_search_enabled", False)),
+                goal_use_raw_image=getattr(config, "goal_ref_use_raw_image", False)),config.batch_size)
         generator = sample_episodes_vnext(
             episodes, config.batch_length, slots=config.vnext_slots, seed=config.seed)
         return tools.from_generator(generator, config.batch_size)
@@ -517,6 +616,9 @@ def make_env(config, mode, id):
                   or (config.search_a_model_version >= 3 and config.search_a_visible_weight > 0)))
             or (config.search_b_enabled and config.search_b_loss_weight > 0)
             or config.search_c_enabled or getattr(config, "search_vnext_enabled", False)))
+        goal_ref = bool(getattr(config, "goal_ref_enabled", False))
+        if goal_ref:
+            collect_labels = mode == "train"
         kwargs = dict(
             log_dir=log_dir, target_item=config.target_item,
             minedojo_gradle_offline=bool(getattr(config,"minedojo_gradle_offline",False)),
@@ -528,16 +630,23 @@ def make_env(config, mode, id):
             simulator_seed=(config.env_seed + id + (100000 if mode == "eval" else 0)
                             if config.env_seed >= 0 else None))
 
+        if goal_ref and mode == "train":
+            kwargs["search_evidence_specs"]["goal_supervision"] = True
+
         from envs.tasks import get_specs
         _, specs, _ = get_specs(task, target_item=config.target_item)
         if getattr(config, "search_vnext_enabled", False):
             kwargs["LS_Imagine_specs"] = dict(specs["LS_Imagine_specs"], vnext=True,
                                                vnext_world_seed=kwargs["simulator_seed"])
+            if goal_ref:
+                kwargs["LS_Imagine_specs"].update(
+                    goal_reference=True, goal_use_raw_image=config.goal_ref_use_raw_image)
             if getattr(config, "vnext_spatial_enabled", False):
                 kwargs["LS_Imagine_specs"]["spatial"] = True
                 kwargs["spatial_specs"] = dict(
                     supervision=(mode == "train" and config.vnext_pose_supervision),
-                    audit=bool(config.vnext_visual_audit), cell_size=config.vnext_map_resolution)
+                    audit=bool(config.vnext_visual_audit and not (goal_ref and mode == "eval")),
+                    cell_size=config.vnext_map_resolution)
         max_steps = config.episode_max_steps_override or specs["terminal_specs"]["max_steps"]
         kwargs["terminal_specs"] = dict(specs["terminal_specs"], max_steps=max_steps)
         if config.episode_max_steps_override:
@@ -651,8 +760,14 @@ def main(config): # config is namespace
 
     state = None
 
-    if not config.offline_traindir and resume_plan is None:
+    goal_ref = bool(getattr(config, "goal_ref_enabled", False))
+
+    def prefill_training():
         prefill = max(0, config.prefill - count_steps(config.traindir))
+        if goal_ref:
+            prefill = min(prefill, max(0, min(config.steps, config.eval_every) - step - 1))
+        if not prefill:
+            return None
         print(f"Prefill dataset ({prefill} steps).")
         if hasattr(acts, "discrete"):
             random_actor = tools.OneHotDist(
@@ -688,6 +803,12 @@ def main(config): # config is namespace
 
         logger.step += prefill * config.action_repeat
         print(f"Logger: ({logger.step} steps).")
+        return state
+
+    pending_prefill = not config.offline_traindir and resume_plan is None
+    if pending_prefill and not goal_ref:
+        state = prefill_training()
+        pending_prefill = False
 
     print("Simulate agent.")
     train_dataset = make_dataset(train_eps, config)
@@ -698,6 +819,7 @@ def main(config): # config is namespace
         config,
         logger,
         train_dataset,
+        goal_bank=resume_plan["checkpoint"].get("goal_reference_bank") if resume_plan else None,
     ).to(config.device)
 
     agent.requires_grad_(requires_grad=False)
@@ -708,6 +830,17 @@ def main(config): # config is namespace
                        else pathlib.Path(config.logdir))
         logger.search_visualizer = SearchVisualizer(visual_root,config)
         logger.search_visualizer.set_step(agent._step)
+
+    if agent._goal_reference is not None:
+        import json
+        goal = agent._goal_reference
+        if hasattr(logger, "search_visualizer"):
+            logger.search_visualizer.set_goal_bank(goal.export_bank()["pixels"])
+        (logdir / "goal_reference_manifest.json").write_text(json.dumps({
+            "fingerprint": goal.bank_fingerprint, "manifest": goal.bank_manifest,
+            "goal_ref_version": config.goal_ref_version,
+            "fusion_enabled": config.goal_fusion_enabled, "search_enabled": config.goal_search_enabled,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if resume_plan:
         restore_training_state(agent, resume_plan, logger)
@@ -746,8 +879,13 @@ def main(config): # config is namespace
                     is_training=False,
                 )
                 if config.video_pred_log:
-                    video_pred = agent._wm.video_pred(next(eval_dataset))
+                    video_pred = agent._wm.video_pred(agent._goal_model_batch(next(eval_dataset)))
                     logger.video("eval_openl", to_np(video_pred))
+
+            if pending_prefill:
+                state = prefill_training()
+                pending_prefill = False
+                agent._step = logger.step // config.action_repeat
 
             if agent._step >= config.steps:
                 agent.flush_metrics()
@@ -759,6 +897,9 @@ def main(config): # config is namespace
                 save_training_checkpoint(agent, config, next_branch_step)
             print("Start training.")
 
+            interval = config.eval_every
+            if goal_ref:
+                interval -= agent._step % interval
             state = tools.simulate(
                 agent, # LS_Imagine
                 train_envs,
@@ -769,7 +910,7 @@ def main(config): # config is namespace
                 config.episode_max_steps,
                 config.discount,
                 limit=config.dataset_size,
-                steps=min(config.eval_every, config.steps - agent._step),
+                steps=min(interval, config.steps - agent._step),
                 state=state,
                 is_training=True,
             )

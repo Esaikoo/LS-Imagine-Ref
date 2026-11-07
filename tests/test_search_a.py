@@ -434,6 +434,44 @@ class LoggerPersistenceTests(unittest.TestCase):
                 finally:
                     logger._writer.close()
 
+    def test_goal_console_separates_pending_labels_and_eval_from_all_saved_scalars(self):
+        import contextlib
+        import io
+        import json
+        import tools
+
+        train = {"A/future_valid_labels": 0., "A/future_prediction_loss": 0.,
+                 "A/prediction_loss": 0., "B/history_valid": .8, "C/transitions": 32.,
+                 "D/region_labels": 20., "D/positive_regions": 2.,
+                 "D/region_loss": .5, "D/region_cal_reliability": .25, "model_loss": 1234.}
+        evaluation = {"eval_success": 1/3, "eval_first_success_step": 700.,
+                      "eval_goal_search_learned_used_mean": .02, "eval_goal_gate_mean": .125,
+                      "eval_return": 2.}
+        config = SimpleNamespace(use_wandb=False, goal_ref_enabled=True)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(tools, "SummaryWriter") as writer:
+            root = pathlib.Path(directory)
+            logger = tools.Logger(config, root, 2500)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                for name, value in train.items():
+                    logger.scalar(name, value)
+                logger.write()
+                for name, value in evaluation.items():
+                    logger.scalar(name, value)
+                logger.write(step=10000)
+            lines = output.getvalue().splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn("A/future waiting for valid labels", lines[0])
+            self.assertIn("B/history valid 80.0% / C/replay options 32", lines[0])
+            self.assertIn("D/region 0.5 (pos 2/20, cal 25.0%)", lines[0])
+            self.assertNotIn("model_loss", lines[0])
+            self.assertIn("eval_success 33.3%", lines[1])
+            self.assertIn("SEARCH learned 2.0% / D/gate 12.5%", lines[1])
+            self.assertNotIn("SEARCH probe", lines[1])
+            saved = [json.loads(line) for line in (root/"metrics.jsonl").read_text().splitlines()]
+            self.assertEqual(saved, [{"step": 2500, **train}, {"step": 10000, **evaluation}])
+            self.assertEqual(writer.return_value.add_scalar.call_count, len(train) + len(evaluation))
+
     def test_finish_saves_pending_partial_interval_and_video(self):
         import json
         import tools

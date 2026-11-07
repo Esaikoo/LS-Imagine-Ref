@@ -32,6 +32,25 @@ class SpatialMemoryTests(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(2)
 
+    def test_goal_history_survives_unknown_pose_without_fabricating_map_points(self):
+        model = SpatialMapMemory(24, config(vnext_spatial_fix_version=3,goal_search_enabled=True,
+            target_item="wool"))
+        feat,image,heat,control = inputs()
+        first = torch.tensor([True])
+        goal = torch.tensor([[.9,.8,.1,0.,0.,0.,2.,1.]])
+        context,state,logs = model.online(feat,image,heat,is_first=first,goal_context=goal)
+        self.assertEqual(context.shape,(1,16))
+        self.assertFalse(bool(state["tracking_ready"][0]))
+        self.assertEqual(state["ledger_used"].item(),0)
+        self.assertGreater(logs["log_goal_memory"][0,1].item(),.8)
+        self.assertFalse(logs["log_goal_direction_novelty"].any())
+        self.assertGreater(state["history_goal"][0,0,1].item(),.8)
+        _,next_state,after = model.online(feat,image,heat,state=state,is_first=~first,
+            previous_control=control,goal_context=torch.zeros_like(goal))
+        self.assertLess(after["log_goal_memory"][0,1].item(),logs["log_goal_memory"][0,1].item())
+        self.assertGreater(after["log_goal_memory"][0,1].item(),.7)
+        self.assertEqual(next_state["ledger_used"].item(),0)
+
     def test_supervision_local_rotation_and_angle_seam(self):
         result = local_pose_delta([2, 60, 3], [1, 99, 3], 90, 95)
         np.testing.assert_allclose(result, [0, 1, math.radians(5)], atol=1.e-6)

@@ -117,6 +117,10 @@ class SpatialMapMemory(nn.Module):
         self.config = config
         self.fix_version = int(getattr(config, "vnext_spatial_fix_version", 1))
         self.dim = int(cfg(config, "vnext_memory_dim"))
+        self.goal_search = bool(getattr(config, "goal_search_enabled", False))
+        self.dynamic_goal = getattr(config, "target_item", "") == "wool"
+        if self.goal_search:
+            self.goal_memory_encoder = nn.Linear(6, self.dim, bias=False)
         self.size = int(cfg(config, "vnext_map_size"))
         self.resolution = float(cfg(config, "vnext_map_resolution"))
         self.patch_size = int(cfg(config, "vnext_map_patch"))
@@ -180,10 +184,13 @@ class SpatialMapMemory(nn.Module):
                 history_meta=torch.zeros(batch, self.history_slots, 8, device=device),
                 history_valid=torch.zeros(batch, self.history_slots, device=device, dtype=torch.bool),
                 history_yaw=torch.zeros(batch, device=device))
+        if self.goal_search:
+            state["history_goal"] = torch.zeros(batch, self.history_slots, 5, device=device)
+            state["ledger_goal"] = torch.zeros(batch, self.ledger_capacity, 5, device=device)
         return state
 
     @torch.no_grad()
-    def update_history(self, state, image, heatmap, control, reward, first):
+    def update_history(self, state, image, heatmap, control, reward, first, goal=None, peak_rejected=None):
         """Maintain true observed viewpoints across map segments and uncertainty.
 
         Metadata: created tick, last tick, visits, max ground cue, actual progress
@@ -204,6 +211,8 @@ class SpatialMapMemory(nn.Module):
         state["history_yaw"] = wrap_angle(state["history_yaw"]+
             torch.where(first, torch.zeros_like(control[:, 8]), control[:, 8])*math.pi/180.)
         _, cue, _ = self.ground_evidence(rgb, heat, state["camera_pitch"], state["pitch_known"])
+        if goal is not None:
+            cue = torch.where(goal[:, 7] > .5, goal[:, 0]*(goal[:, 6] == 2), cue)
         attempted = ((control[:, 0]>0)|(control[:, 6]>0)) & ~first
         progress = torch.zeros(batch, device=rgb.device, dtype=torch.bool)
         if reward is not None:
@@ -223,15 +232,23 @@ class SpatialMapMemory(nn.Module):
                 # observations. Protect the first viewpoint for the episode.
                 novel = not bool(valid.any()) or float(distance.masked_fill(~valid, 1.e4).min())>.08
                 periodic = int(state["tick"][b]) % int(getattr(self.config, "vnext_memory_save_every", 8)) == 0
-                if not (novel or periodic or bool(attempted[b]|progress[b])):
+                goal_event = goal is not None and bool((goal[b, 7] > .5) & (
+                    (goal[b, 6] > 0) | peak_rejected[b]))
+                if not (novel or periodic or goal_event or bool(attempted[b]|progress[b])):
                     continue
                 if not bool(valid.all()):
                     slot = int((~valid).long().argmax())
                 else:
                     meta = state["history_meta"][b]
                     retention = 2*meta[:, 4].clamp(0,1)+meta[:, 3]-.001*(state["tick"][b]-meta[:, 1])
+                    if goal is not None:
+                        evidence = state["history_goal"][b]
+                        decay = self.goal_evidence_decay(state["tick"][b] - evidence[:, 3])
+                        retention += evidence[:, 1] * decay
                     retention[0] += 10000.
                     slot = int(retention.argmin())
+                if goal is not None:
+                    state["history_goal"][b, slot].zero_()
                 state["history_meta"][b, slot].zero_()
                 state["history_meta"][b, slot, 0] = state["tick"][b]
             meta = state["history_meta"][b, slot]
@@ -244,7 +261,55 @@ class SpatialMapMemory(nn.Module):
             meta[7] = state["camera_pitch"][b]
             state["history_frames"][b, slot] = pooled[b]
             state["history_valid"][b, slot] = True
+            if goal is not None:
+                self.write_goal_evidence(state["history_goal"][b, slot], goal[b], state["tick"][b], peak_rejected[b])
         return repeated
+
+    def goal_evidence_decay(self, age):
+        # Evidence belongs to an observed viewpoint. Even static categories
+        # can disappear; a mobile entity ages much faster.
+        return torch.exp(-age.clamp_min(0).float()/(24. if self.dynamic_goal else 160.))
+
+    def write_goal_evidence(self, slot, goal, tick, peak_rejected):
+        if goal[7] <= .5:
+            return
+        candidate = goal[0] * (goal[6] == 1)
+        verified = goal[0] * (goal[6] == 2)
+        rejected = goal[5].clamp_min(.5) * peak_rejected
+        update = torch.stack((candidate, verified, rejected))
+        if bool(update.max() > 0):
+            decay = self.goal_evidence_decay(tick - slot[3])
+            slot[:3] = torch.maximum(slot[:3] * decay, update)
+            slot[3] = tick
+            slot[4] = slot[4] * decay + (verified > 0).float()
+
+    def goal_summary(self, state, absolute_cell, map_write):
+        tick = state["tick"][:, None]
+        history = state["history_goal"]
+        hist = self.goal_evidence_decay(tick-history[..., 3]) * state["history_valid"]
+        present = (history[..., :3] > 0).any(-1) & state["history_valid"]
+        hs = (history[..., :3] * hist[..., None]).amax(1)
+        ledger = state["ledger_goal"]
+        nearby = (state["ledger_cells"] - absolute_cell[:, None]).abs().sum(-1) <= 4
+        used = torch.arange(self.ledger_capacity, device=ledger.device)[None] < state["ledger_used"][:, None]
+        active = used & nearby & map_write[:, None]
+        active &= state["ledger_segment"] == state["segment"][:, None]
+        local = self.goal_evidence_decay(tick-ledger[..., 3]) * active
+        ls = (ledger[..., :3]*local[..., None]).amax(1)
+        confirmation = ((history[..., 4]*hist).sum(-1)/8.).clamp(0, 1)
+        freshness = (hist*present).amax(-1)
+        return torch.cat((torch.maximum(hs, ls), confirmation[:, None], freshness[:, None],
+            ls[:, 1:2]), -1)
+
+    @staticmethod
+    def goal_direction_novelty(state, directions, map_write):
+        # Option-relative directions in the currently trusted local segment.
+        offsets = directions.new_tensor([0., -30., 30., 0., -15., 15., 30., 0., 0., 0., 180., -30.])
+        sector = heading_sector(state["pose"][:, 2:3] + offsets[None]*math.pi/180.)
+        sector_novelty = 1.-directions.gather(-1, sector.long())
+        sector_novelty[:, 0] = 0.
+        sector_novelty[:, 7:10] = 0.
+        return sector_novelty * map_write[:, None]
 
     def fuse(self, map_context, history_context, local_valid, trajectory_valid, uncertainty, available):
         quality = torch.stack((local_valid.float(), trajectory_valid.float(),
@@ -382,7 +447,7 @@ class SpatialMapMemory(nn.Module):
 
     @torch.no_grad()
     def online(self, feat, image, heatmap, state=None, is_first=None, previous_control=None, reward=None,
-               camera_pitch=None):
+               camera_pitch=None, goal_context=None, goal_peak_rejected=None):
         device, batch = feat.device, len(feat)
         fresh = self.initial(batch, device)
         missing_state = state is None
@@ -411,6 +476,15 @@ class SpatialMapMemory(nn.Module):
         state["tracking_ready"] &= self.pose.ready
         qualification_lost = was_tracking & ~state["tracking_ready"]
         current = normalized_rgb(torch.as_tensor(image, device=device))
+        goal = peak_rejected = None
+        if self.goal_search:
+            from apm.outcome import goal_context_tensor
+            goal = goal_context_tensor(goal_context, feat)
+            if goal_peak_rejected is None:
+                peak_rejected = (goal[:,5] > .5) & (goal[:,6] == 0)
+            else:
+                peak_rejected = torch.as_tensor(goal_peak_rejected, device=device).reshape(batch).bool()
+            peak_rejected = peak_rejected & (goal[:,7]>.5)
         control = torch.zeros(batch, 9, device=device) if previous_control is None else previous_control.to(device).float()
         if control.shape != (batch, 9) or not bool(torch.isfinite(control).all()):
             raise ValueError("Spatial memory needs finite [batch,9] own controls")
@@ -508,6 +582,9 @@ class SpatialMapMemory(nn.Module):
             ground_view &= map_write
             cue_valid &= map_write
             cue = torch.where(cue_valid, cue, torch.zeros_like(cue))
+        if goal is not None:
+            cue = torch.where(goal[:, 7] > .5, goal[:, 0]*(goal[:, 6] == 2)*map_write, cue)
+            cue_valid &= (goal[:, 7] <= .5) | (goal[:, 6] == 2)
         state["grid"][:, 2] *= float(cfg(self.config, "vnext_map_target_decay"))
         state["ledger_values"][..., 2] *= float(cfg(self.config, "vnext_map_target_decay"))
         visited_before, repeated = [], []
@@ -553,6 +630,8 @@ class SpatialMapMemory(nn.Module):
             state["ledger_values"][b, entry, 3] = state["grid"][b, 3, z, x]
             state["ledger_values"][b, entry, 4] = state["pose"][b, 3]
             state["ledger_directions"][b, entry] = state["directions"][b, z, x]
+            if goal is not None:
+                self.write_goal_evidence(state["ledger_goal"][b, entry], goal[b], state["tick"][b], peak_rejected[b])
         known = (state["grid"][:, 1:2] > 0).float()
         adjacent = F.max_pool2d(known, 3, 1, 1)
         state["grid"][:, 5:6] = adjacent*(1.-known)
@@ -562,7 +641,7 @@ class SpatialMapMemory(nn.Module):
             context *= map_write[:, None]
         history_repeated = torch.zeros_like(valid)
         if self.fix_version >= 3:
-            history_repeated = self.update_history(state, current, heatmap, control, reward, first)
+            history_repeated = self.update_history(state, current, heatmap, control, reward, first, goal, peak_rejected)
             history_context = self.history_encoder(feat, state["history_frames"], state["history_meta"],
                 state["history_valid"], state["tick"].float())
             context = self.fuse(context, history_context, map_write, state["global_continuity"],
@@ -585,6 +664,9 @@ class SpatialMapMemory(nn.Module):
             repeated, (visited/(self.size**2)).clamp(max=1.), observed/(self.size**2), u/(1.+u),
             (displacement/.5).clamp(0, 1), visits/(1.+visits), cue,
             directions.mean(-1), confidence), -1)
+        if goal is not None:
+            goal_memory = self.goal_summary(state, absolute_cell, map_write)
+            context += self.goal_memory_encoder(goal_memory)
         state["previous_image"] = current.clone()
         state["has_previous"][:] = True
         state["previous_cell"] = absolute_cell.clone()
@@ -619,6 +701,9 @@ class SpatialMapMemory(nn.Module):
                 log_spatial_local_valid=state["tracking_ready"].float(),
                 log_spatial_memory_available=state["history_valid"].any(-1).float(),
                 log_spatial_visual_revisit=history_repeated.float())
+        if goal is not None:
+            info.update(log_goal_memory=goal_memory, log_goal_direction_novelty=
+                        self.goal_direction_novelty(state, directions, map_write))
         return context, state, info
 
     def batch(self, features, data):
@@ -654,6 +739,13 @@ class SpatialMapMemory(nn.Module):
             map_context = self.encoder(patch, pose)*local_valid[...,None]
             context = self.fuse(map_context, history_context, local_valid, trajectory_valid,
                 pose[...,3], present.float())
+            if self.goal_search:
+                goal_memory = torch.as_tensor(data.get("vnext_goal_memory", np.zeros((*lead,6))),
+                    device=device).float()
+                if goal_memory.shape != (*lead,6):
+                    raise ValueError("Goal memory Replay needs [batch,time,6]")
+                goal_memory = goal_memory.nan_to_num().clamp(0, 1)
+                context = context + self.goal_memory_encoder(goal_memory)*present[...,None]
             return context, dict(valid=present, snapshot_valid=snapshot_valid, patch=patch, pose=pose,
                 map_valid=local_valid, map_context=map_context, history_context=history_context)
         if self.fix_version >= 2:
@@ -739,4 +831,8 @@ class SpatialMapMemory(nn.Module):
                 localization=("estimated continuous origin pose" if bool(state["global_continuity"][0]) else
                     "estimated local segment; global relation unknown" if bool(state["tracking_ready"][0]) else
                     "view history active; local pose currently unknown"))
+        if self.goal_search:
+            ledger["goal_evidence"] = state["ledger_goal"][0, :used].detach().cpu().numpy().copy()
+            result["history_goal"] = state["history_goal"][0].detach().cpu().numpy().copy()
+            result["goal_evidence_tick"] = int(state["tick"][0])
         return result

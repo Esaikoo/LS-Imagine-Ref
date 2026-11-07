@@ -135,10 +135,36 @@ def _completed_branches(source_runs):
     return groups
 
 
+def validate_goal_checkpoint(checkpoint, values, *, evaluation=False):
+    """Restore the saved input protocol, or reject a cross-architecture resume."""
+    saved = checkpoint.get("config", {})
+    state = checkpoint.get("agent_state_dict", {})
+    enabled = any(key.startswith("_goal_reference.") for key in state)
+    if enabled != bool(saved.get("goal_ref_enabled", False)):
+        raise ValueError("Goal reference checkpoint/configuration mismatch")
+    if enabled and (checkpoint.get("goal_ref_version") != 1
+                    or saved.get("goal_ref_version") != 1
+                    or not checkpoint.get("goal_reference_bank")
+                    or not checkpoint.get("goal_reference_fingerprint")):
+        raise ValueError("Unsupported or incomplete goal reference checkpoint")
+    if checkpoint.get("goal_controller_version") != (3 if saved.get("goal_search_enabled", False) else None):
+        raise ValueError("Unsupported goal controller version")
+    if evaluation:
+        values.update({key: value for key, value in saved.items() if key.startswith("goal_")})
+        values["goal_ref_enabled"] = enabled
+        if enabled:
+            values.update(search_eval_evidence=False, vnext_visual_audit=False,
+                          check_obs_enabled=False)
+    elif (enabled != bool(values.get("goal_ref_enabled", False))
+          or bool(saved.get("goal_search_enabled", False)) != bool(values.get("goal_search_enabled", False))):
+        raise ValueError("Cannot resume across vNext/goal architectures; start a fresh experiment")
+
+
 def _validate_search_versions(checkpoint, values):
     from apm.outcome import check_vnext_checkpoint
     enabled = values.get("search_vnext_enabled", False) if isinstance(values, dict) else getattr(values, "search_vnext_enabled", False)
     check_vnext_checkpoint(checkpoint, enabled)
+    validate_goal_checkpoint(checkpoint, vars(values) if hasattr(values, "__dict__") else values)
     from apm.legacy.observation import check_checkpoint
     from apm.legacy.memory import check_b_checkpoint
     from apm.legacy.control import check_c_checkpoint
@@ -258,6 +284,7 @@ def prepare_resume(config):
     if not all(key in checkpoint for key in ("agent_state_dict", "optims_state_dict", "step", "config")):
         raise ValueError("Resume requires a full training checkpoint and saved configuration")
     incoming = dict(vars(config))
+    validate_goal_checkpoint(checkpoint, incoming)
     checkpoint, spatial_upgrade = _spatial_upgrade_request(checkpoint, incoming)
     saved = dict(checkpoint["config"])
     if bool(incoming.get("search_vnext_enabled", False)) != bool(saved.get("search_vnext_enabled", False)):
@@ -404,6 +431,9 @@ def restore_training_state(agent, plan, logger):
     import tools
     checkpoint, config = plan["checkpoint"], agent._config
     _validate_search_versions(checkpoint, config)
+    goal = getattr(agent, "_goal_reference", None)
+    if goal is not None and goal.bank_fingerprint != checkpoint["goal_reference_fingerprint"]:
+        raise ValueError("Goal reference bank fingerprint mismatch")
     if plan.get("spatial_upgrade"):
         optimizers = _restore_spatial_upgrade(agent, checkpoint, plan["spatial_upgrade"])
         plan["runtime_notes"].append("explicit_fix2_to_fix3_upgrade_resets_predictive_qualification")
@@ -520,7 +550,12 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
         clocks={name: getattr(getattr(agent, name, None), "_last", None) for name in _CLOCKS})
     wm_a, wm_b = getattr(agent._wm, "search_a", None), getattr(agent._wm, "search_b", None)
     controller, c = getattr(agent, "_search_a", None), getattr(agent, "_search_c", None)
+    goal = getattr(agent, "_goal_reference", None)
     payload = dict(agent_state_dict=agent.state_dict(),
+        goal_ref_version=1 if goal is not None else None,
+        goal_controller_version=3 if getattr(config, "goal_search_enabled", False) else None,
+        goal_reference_bank=goal.export_bank() if goal is not None else None,
+        goal_reference_fingerprint=goal.bank_fingerprint if goal is not None else None,
         optims_state_dict=tools.recursively_collect_optim_state_dict(agent),
         step=int(agent._step), config=_config_dict(config),
         search_vnext_version=((2 if getattr(config,"vnext_spatial_enabled",False) else 1)

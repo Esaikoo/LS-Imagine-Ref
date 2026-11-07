@@ -30,6 +30,9 @@ esac
 # Default vnext is the task-preserving revision; abc/full preserve historical runs.
 case "$MODE" in
   vnext) set -- --configs minedojo apm_vnext "$@" ;;
+  vnext4) set -- --configs minedojo apm_vnext4 "$@" ;;
+  vnext4_d_only) set -- --configs minedojo apm_vnext4 --goal_search_enabled False --vnext_control False "$@" ;;
+  vnext4_search_only) set -- --configs minedojo apm_vnext4 --goal_fusion_enabled False "$@" ;;
   vnext_ac) set -- --configs minedojo apm_vnext --vnext_memory_enabled False "$@" ;;
   vnext_no_search) set -- --configs minedojo apm_vnext --vnext_control False "$@" ;;
   vnext_no_interaction) set -- --configs minedojo apm_vnext --vnext_interaction False "$@" ;;
@@ -47,7 +50,7 @@ case "$MODE" in
   ac) set -- --configs minedojo apm_a apm_ac "$@" ;;
   bc) set -- --configs minedojo apm_a apm_bc "$@" ;;
   b) set -- --configs minedojo apm_b "$@" ;;
-  *) echo "A_MODE must be vnext, vnext_ac, vnext_no_search, vnext_no_interaction, abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
+  *) echo "A_MODE must be vnext4, vnext4_d_only, vnext4_search_only, vnext, vnext_ac, vnext_no_search, vnext_no_interaction, abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
 esac
 
 RUN_LOG_ROOT="$LOG_ROOT/$PROJECT_NAME/$MODE"

@@ -14,6 +14,129 @@ VNEXT_VERSION = 1
 PREDICTION_DIM = 12
 CURRENT_EVENTS = ("visible", "center_target", "reachable", "center_interactable", "progress")
 FUTURE_EVENTS = ("new", "first_discovery", "discovery", "revisit", "center_interactable", "progress", "blocked")
+GOAL_FUTURE_EVENTS = ("verified_discovery", "reobserve", "new_area")
+GOAL_CONTEXT_DIM = 8
+
+
+def goal_context_tensor(value, reference):
+    """Causal model evidence, with a separate validity bit for unknown observations."""
+    shape = (*reference.shape[:-1], GOAL_CONTEXT_DIM)
+    if value is None:
+        return reference.new_zeros(shape)
+    context = torch.as_tensor(value, device=reference.device).float()
+    if context.shape != shape:
+        raise ValueError("Goal context needs one eight-component vector per observation")
+    finite = torch.isfinite(context).all(-1)
+    return torch.where(finite[..., None], context, torch.zeros_like(context))
+
+
+class GoalContextAdapter(nn.Module):
+    """Condition the existing heads without changing B's memory width."""
+    def __init__(self, memory_dim):
+        super().__init__()
+        self.projection = nn.Linear(GOAL_CONTEXT_DIM, memory_dim, bias=False)
+
+    def forward(self, memory, context):
+        context = goal_context_tensor(context, memory)
+        return memory + self.projection(context.detach())
+
+
+def goal_discovery_labels(episode):
+    """First genuinely corroborated D confirmation in a complete replay prefix.
+
+    Outgoing context is stored on the next result row. A sparse ray at the
+    selected candidate's center can certify that candidate, and other rays
+    never create a frame-wide negative. This counts first *observed D
+    confirmation*, which can happen after the oracle's first-visible event.
+    """
+    time = len(episode["reward"])
+    target = np.zeros(time, np.float32)
+    valid = np.zeros(time, np.float32)
+    if "log_goal_context" not in episode or "goal_region_valid" not in episode:
+        return target, valid
+    context = np.asarray(episode["log_goal_context"])
+    region = np.asarray(episode.get("goal_region_gt", []))
+    region_valid = np.asarray(episode["goal_region_valid"])
+    if region.ndim == 4 and region.shape[-1] == 1:
+        region, region_valid = region[...,0], region_valid[...,0]
+    if context.shape != (time,8) or region.ndim != 3 or region.shape != region_valid.shape or len(region) != time:
+        return target, valid
+    version = np.asarray(episode.get("log_goal_version", np.zeros(time)))
+    label_version = np.asarray(episode.get("goal_label_version", np.zeros(time)))
+    error = np.asarray(episode.get("log_env_error", np.zeros(time)))
+    first = np.asarray(episode.get("is_first", np.arange(time)==0)).astype(bool)
+    actual_visible = np.asarray(episode.get("goal_visible_gt", np.zeros(time)))
+    actual_valid = np.asarray(episode.get("goal_visible_valid", np.zeros(time))) > .5
+    height, width = region.shape[-2:]
+    confirmed = False
+    for i in range(time-1):
+        if first[i]:
+            confirmed = False
+        if first[i+1] or error[i] or error[i+1] or version[i+1] != 1 or label_version[i] != 1:
+            continue
+        obs = context[i+1]
+        if not np.isfinite(obs).all() or obs[7] <= .5:
+            continue
+        trusted = obs[6] == 2
+        x = min(width-1, int((np.clip(obs[3],-1,1)+1)*.5*width))
+        y = min(height-1, int((np.clip(obs[4],-1,1)+1)*.5*height))
+        known_candidate = region_valid[i,y,x] > .5 and region[i,y,x] in (0,1)
+        if trusted and known_candidate:
+            target[i] = float(region[i,y,x] == 1 and not confirmed)
+            valid[i] = 1
+            confirmed |= bool(target[i])
+        elif not trusted and actual_valid[i] and actual_visible[i] in (0,1):
+            # No trusted recognition in this actual annotated frame.
+            valid[i] = 1
+    return target, valid
+
+
+def goal_transition_labels(data, context, h, device):
+    """Use real confirmation and sparse identities; missing rays stay unknown."""
+    shape = tuple(context.shape[:-1])
+    def field(key):
+        return torch.as_tensor(data.get(key, np.zeros(shape)), device=device)
+    visible = field("goal_visible_gt")
+    actual = (field("goal_visible_valid") > .5) & ((visible == 0) | (visible == 1))
+    actual &= field("goal_label_version") == 1
+    known_context = field("vnext_goal_context_valid") > .5
+    trusted = (context[..., 6] == 2) & (context[..., 7] > .5)
+    discovery, discovery_valid = _labels(data, ("first_discovery",), device)
+    discovery, discovery_valid = discovery.squeeze(-1), discovery_valid.squeeze(-1)
+    if "vnext_goal_discovery_valid" in data:
+        fact = field("vnext_goal_discovery_gt") > .5
+        observed = (field("vnext_goal_discovery_valid") > .5) & known_context
+    else:
+        observed = actual & known_context & discovery_valid
+        fact = trusted & (visible == 1) & (discovery > .5)
+    span = torch.stack([observed[:, j+1:shape[1]-h+j+1] for j in range(h)], -1)
+    positives = torch.stack([(fact & observed)[:, j+1:shape[1]-h+j+1] for j in range(h)], -1)
+    discovered = positives.any(-1)
+    discovery_known = discovered | span.all(-1)
+    reobserved = torch.zeros_like(discovered)
+    reobserve_known = torch.zeros_like(discovered)
+    identity = data.get("goal_instance_group")
+    region_valid = data.get("goal_region_valid")
+    if identity is not None and region_valid is not None:
+        identity = torch.as_tensor(identity, device=device).long()
+        region_valid = torch.as_tensor(region_valid, device=device)
+        if identity.ndim == 5 and identity.shape[-1] == 1:
+            identity, region_valid = identity[..., 0], region_valid[..., 0]
+        if identity.ndim != 4 or identity.shape[:2] != shape or identity.shape != region_valid.shape:
+            raise ValueError("Goal identity and region masks must align with observations")
+        height, width = identity.shape[-2:]
+        x = ((context[..., 3].clamp(-1, 1)+1)*.5*width).long().clamp(max=width-1)
+        y = ((context[..., 4].clamp(-1, 1)+1)*.5*height).long().clamp(max=height-1)
+        index = (y*width+x)[..., None]
+        ids = identity.flatten(-2).gather(-1,index).squeeze(-1)
+        labels_known = region_valid.flatten(-2).gather(-1,index).squeeze(-1) > .5
+        labels_known &= known_context & (field("goal_label_version") == 1)
+        labels_known &= (context[..., 6] > 0) & (context[..., 7] > .5)
+        reobserve_known = labels_known[:, :-h] & labels_known[:, h:] & (ids[:, :-h] > 0)
+        reobserved = reobserve_known & (ids[:, :-h] == ids[:, h:])
+    return (torch.stack((discovered, reobserved), -1).float(),
+            torch.stack((discovery_known, reobserve_known), -1))
+
 META_DIM = 8
 DEFAULTS = dict(
     vnext_memory_enabled=True, vnext_memory_dim=128, vnext_slots=16,
@@ -289,11 +412,16 @@ class OutcomeHeads(nn.Module):
         dim = int(cfg(config,"vnext_memory_dim"))
         hidden = int(cfg(config,"vnext_hidden"))
         self.heads = int(cfg(config,"vnext_bootstrap_heads"))
+        self.goal_search = bool(getattr(config, "goal_search_enabled", False))
+        self.future_events = (*FUTURE_EVENTS, *GOAL_FUTURE_EVENTS) if self.goal_search else FUTURE_EVENTS
+        event_count = len(self.future_events)
+        if self.goal_search:
+            self.goal_adapter = GoalContextAdapter(dim)
         self.current_trunk = nn.Sequential(nn.LayerNorm(feature_dim+dim),nn.Linear(feature_dim+dim,hidden),nn.SiLU())
         self.current_heads = nn.ModuleList([nn.Linear(hidden,len(CURRENT_EVENTS)) for _ in range(self.heads)])
         self.trunk = nn.Sequential(nn.Linear(hidden+8*9+3+4+2,hidden),nn.LayerNorm(hidden),nn.SiLU(),
                                    nn.Linear(hidden,hidden),nn.SiLU())
-        self.events = nn.ModuleList([nn.Linear(hidden,len(FUTURE_EVENTS)) for _ in range(self.heads)])
+        self.events = nn.ModuleList([nn.Linear(hidden,event_count) for _ in range(self.heads)])
         future = int(cfg(config,"vnext_future_dim"))
         self.future = nn.ModuleList([nn.Linear(hidden,future) for _ in range(self.heads)])
         generator = torch.Generator().manual_seed(9187+feature_dim)
@@ -304,15 +432,15 @@ class OutcomeHeads(nn.Module):
         self.register_buffer("current_cal_counts",torch.zeros(5))
         self.register_buffer("current_cal_positives",torch.zeros(5))
         self.register_buffer("current_cal_errors",torch.zeros(5))
-        self.register_buffer("support_counts",torch.zeros(9,12,4,7))
-        self.register_buffer("support_positives",torch.zeros(9,12,4,7))
-        self.register_buffer("cal_counts",torch.zeros(9,12,4,7))
-        self.register_buffer("cal_positives",torch.zeros(9,12,4,7))
-        self.register_buffer("cal_errors",torch.zeros(9,12,4,7))
+        self.register_buffer("support_counts",torch.zeros(9,12,4,event_count))
+        self.register_buffer("support_positives",torch.zeros(9,12,4,event_count))
+        self.register_buffer("cal_counts",torch.zeros(9,12,4,event_count))
+        self.register_buffer("cal_positives",torch.zeros(9,12,4,event_count))
+        self.register_buffer("cal_errors",torch.zeros(9,12,4,event_count))
         self.register_buffer("cal_identity",torch.full((9,65536),-1,dtype=torch.long))
-        self.register_buffer("cal_valid",torch.zeros(9,65536,7,dtype=torch.bool))
-        self.register_buffer("cal_label",torch.zeros(9,65536,7))
-        self.register_buffer("cal_error",torch.zeros(9,65536,7))
+        self.register_buffer("cal_valid",torch.zeros(9,65536,event_count,dtype=torch.bool))
+        self.register_buffer("cal_label",torch.zeros(9,65536,event_count))
+        self.register_buffer("cal_error",torch.zeros(9,65536,event_count))
         self.register_buffer("cal_option",torch.full((9,65536),-1,dtype=torch.long))
         self.register_buffer("cal_phase",torch.full((9,65536),-1,dtype=torch.long))
         self.register_buffer("updates",torch.zeros((),dtype=torch.long))
@@ -374,7 +502,9 @@ class OutcomeHeads(nn.Module):
         self._current_operating_cache = (key,result)
         return result
 
-    def current_logits(self,feat,memory):
+    def current_logits(self,feat,memory,goal_context=None):
+        if self.goal_search:
+            memory = self.goal_adapter(memory, goal_context)
         x = self.current_trunk(torch.cat((feat.detach().float(),memory.float()),-1))
         return torch.stack([head(x) for head in self.current_heads],-2),x
 
@@ -417,8 +547,8 @@ class OutcomeHeads(nn.Module):
         supported &= stats["precision_lower"][3]>.5
         return supported, stats["precision_lower"][3]
 
-    def forward(self,feat,memory,controls,actuator,lengths,phase,remaining):
-        logits,x = self.current_logits(feat,memory)
+    def forward(self,feat,memory,controls,actuator,lengths,phase,remaining,goal_context=None):
+        logits,x = self.current_logits(feat,memory,goal_context)
         lead = controls.shape[:-2]
         k = controls.shape[-2]
         if not 1<=k<=8 or controls.shape[-1]!=9:
@@ -468,6 +598,9 @@ class SearchVNext(nn.Module):
             self.b = SpatialMapMemory(feature_dim, config)
         else:
             self.b = SlotMemory(feature_dim,config)
+        self.goal_search = bool(getattr(config, "goal_search_enabled", False))
+        if self.goal_search and not self.guidance_fix:
+            raise ValueError("Goal search requires spatial fix3")
         self.a = OutcomeHeads(feature_dim,config)
         self._a_opt = torch.optim.Adam(self.a.parameters(),lr=cfg(config,"vnext_lr"))
         self._b_opt = torch.optim.Adam(self.b.parameters(),lr=cfg(config,"vnext_lr"))
@@ -481,10 +614,10 @@ class SearchVNext(nn.Module):
         return self.b.batch(features.detach(),data)[0]
 
     @torch.no_grad()
-    def online_memory(self,feat,image,heatmap,state=None,is_first=None,previous_control=None,reward=None,camera_pitch=None):
+    def online_memory(self,feat,image,heatmap,state=None,is_first=None,previous_control=None,reward=None,camera_pitch=None,goal_context=None,goal_peak_rejected=None):
         if self.spatial:
             context,state,info = self.b.online(feat,image,heatmap,state,is_first,previous_control,reward,
-                camera_pitch=camera_pitch)
+                camera_pitch=camera_pitch,goal_context=goal_context,goal_peak_rejected=goal_peak_rejected)
         else:
             context,state,info = self.b.online(feat,image,heatmap,state,is_first,previous_control,reward)
         if not cfg(self.config,"vnext_memory_enabled"):
@@ -492,9 +625,12 @@ class SearchVNext(nn.Module):
         return context,state,info
 
     @torch.no_grad()
-    def online(self,feat,image,heatmap,memory_state=None,is_first=None,previous_control=None,reward=None,camera_pitch=None):
-        memory,state,info = self.online_memory(feat,image,heatmap,memory_state,is_first,previous_control,reward,camera_pitch)
-        current = self.current(feat,memory)
+    def online(self,feat,image,heatmap,memory_state=None,is_first=None,previous_control=None,reward=None,camera_pitch=None,goal_context=None,goal_peak_rejected=None):
+        memory,state,info = self.online_memory(feat,image,heatmap,memory_state,is_first,previous_control,reward,
+            camera_pitch,goal_context=goal_context,goal_peak_rejected=goal_peak_rejected)
+        current = self.current(feat,memory,goal_context=goal_context)
+        if self.goal_search:
+            current["goal_context"] = goal_context_tensor(goal_context, feat)
         if self.current_fix:
             direction, valid, strength = self.visual_direction(heatmap,camera_pitch,feat)
             valid &= current["ready"]["visible"] & (current["visible"]>=float(getattr(self.config,"vnext_visible_high",.7)))
@@ -550,9 +686,9 @@ class SearchVNext(nn.Module):
         return direction.clamp(-1,1),valid,contrast
 
     @torch.no_grad()
-    def current(self,feat,memory=None):
+    def current(self,feat,memory=None,goal_context=None):
         memory = self.zero_memory(feat) if memory is None else memory
-        logits,_ = self.a.current_logits(feat,memory)
+        logits,_ = self.a.current_logits(feat,memory,goal_context)
         probs = logits.sigmoid()
         mean = probs.mean(-2)
         ready = self.a.ready_current().expand(*mean.shape[:-1],5)
@@ -585,7 +721,7 @@ class SearchVNext(nn.Module):
         return result
 
     @torch.no_grad()
-    def predict(self,feat,memory,controls,start_actuator,lengths=None,phase=None,remaining=None,option_ids=None):
+    def predict(self,feat,memory,controls,start_actuator,lengths=None,phase=None,remaining=None,option_ids=None,goal_context=None):
         batch,num,k,_ = controls.shape
         device = feat.device
         memory = self.zero_memory(feat) if memory is None else memory
@@ -599,7 +735,9 @@ class SearchVNext(nn.Module):
         actuator = expand(start_actuator,(3,))
         features = feat[:,None].expand(-1,num,-1)
         memories = memory[:,None].expand(-1,num,-1)
-        output = self.a(features,memories,controls,actuator,lengths,phase,remaining)
+        goal = expand(goal_context_tensor(goal_context, feat), (GOAL_CONTEXT_DIM,)) if self.goal_search else None
+        goal_inputs = {"goal_context": goal} if self.goal_search else {}
+        output = self.a(features,memories,controls,actuator,lengths,phase,remaining,**goal_inputs)
         draws = output["logits"].sigmoid()
         probs = draws.mean(-2)
         uncertainty = draws.std(-2,unbiased=False)
@@ -626,10 +764,15 @@ class SearchVNext(nn.Module):
             # requiring target-discovery positives would disable useful retreat
             # or clearance options in exactly the target-absent states they fix.
             support |= (ph==3)&supported[...,6]
+        if self.goal_search:
+            support |= supported[..., 7:].any(-1)
+        base_probs, base_uncertainty, base_supported = probs[..., :7], uncertainty[..., :7], supported[..., :7]
         cv=output["current_logits"].sigmoid().mean(-2)[...,0]
-        descriptor=torch.cat((probs,uncertainty.mean(-1,keepdim=True),supported.float().mean(-1,keepdim=True),
-            lengths.float()[...,None]/8,cv[...,None],uncertainty.max(-1,keepdim=True).values),-1)
+        descriptor=torch.cat((base_probs,base_uncertainty.mean(-1,keepdim=True),base_supported.float().mean(-1,keepdim=True),
+            lengths.float()[...,None]/8,cv[...,None],base_uncertainty.max(-1,keepdim=True).values),-1)
         weights = probs.new_tensor([1., 2., .5, -.5, 1., 2., -.5])
+        if self.goal_search:
+            weights = torch.cat((weights, probs.new_tensor([2., .5, .5])))
         if self.guidance_fix:
             # Positive consequences use a pessimistic ensemble estimate; costs
             # use the optimistic one. Held-out skill scales each event rather
@@ -641,15 +784,19 @@ class SearchVNext(nn.Module):
             score = (probs * weights * supported.float()).sum(-1)
         score -= lengths.float() * float(getattr(self.config,"vnext_score_cost",.01))
         score -= uncertainty.mean(-1) * float(getattr(self.config,"vnext_score_uncertainty",.2))
-        return dict(probs=probs,events=probs,uncertainty=uncertainty,disagreement=uncertainty,
+        result = dict(probs=base_probs,events=base_probs,uncertainty=base_uncertainty,disagreement=base_uncertainty,
             score=score, score_supported=support,
             supported=supported,support=support,descriptor=descriptor,future=output["future"].mean(-2),
-            forecast_skill=skill)
+            forecast_skill=skill[..., :7])
+        if self.goal_search:
+            result.update(goal_events=probs[..., 7:9], goal_supported=supported[..., 7:9],
+                new_area=probs[...,9], new_area_supported=supported[...,9])
+        return result
 
     predict_candidates = predict
 
     @staticmethod
-    def matched_option_windows(data,act,controls,h):
+    def matched_option_windows(data,act,controls,h,goal_search=False):
         """Eligibility evidence requires an actually executed saved plan.
 
         Factual A losses still learn all real sequences. A window that changes
@@ -675,7 +822,10 @@ class SearchVNext(nn.Module):
         requested=value("log_requested_action" if "log_requested_action" in data else "log_vnext_requested").long()
         good=start&(horizon>=h)
         initial_version=version[:,1:n+1]
-        good &= (initial_version==1)|(initial_version==2)
+        if goal_search:
+            good &= initial_version==3
+        else:
+            good &= (initial_version==1)|(initial_version==2)
         for j in range(h):
             r=slice(j+1,j+n+1)
             good&=(version[:,r]==initial_version)&(ids[:,r]==ids[:,1:n+1])
@@ -715,8 +865,14 @@ class SearchVNext(nn.Module):
                 raise ValueError("A qualification history validity must have shape [batch,time]")
             qualification_context=torch.isfinite(marker)&(marker>.5)
             qualification_context &= torch.as_tensor(details["valid"],device=device).bool()
+        goal = None
+        if self.goal_search:
+            goal = goal_context_tensor(data.get("vnext_goal_context"), features)
+            if bool(getattr(self.config, "goal_ref_enabled", False)):
+                context_present = torch.as_tensor(data.get("vnext_goal_context_valid", np.zeros((b,t))), device=device) > .5
+                qualification_context &= context_present
         current_y,current_k=_labels(data,CURRENT_EVENTS,device)
-        current_logits,_=self.a.current_logits(features,memory)
+        current_logits,_=self.a.current_logits(features,memory,goal)
         # Independent heads use deterministic frame-identity bootstrap masks;
         # this preserves natural sampling rates without positive oversampling.
         frameid=torch.as_tensor(data.get("vnext_frame_id",np.zeros((b,t))),device=device).long()
@@ -756,7 +912,8 @@ class SearchVNext(nn.Module):
         first=torch.as_tensor(data["is_first"],device=device).bool()
         last=torch.as_tensor(data.get("is_last",np.zeros((b,t))),device=device).bool()
         terminal=torch.as_tensor(data.get("is_terminal",np.zeros((b,t))),device=device).bool()
-        fy,fk=_labels(data,FUTURE_EVENTS,device)
+        future_names = (*FUTURE_EVENTS, "new_area") if self.goal_search else FUTURE_EVENTS
+        fy,fk=_labels(data,future_names,device)
         env_error=torch.as_tensor(data.get("log_env_error",np.zeros((b,t))),device=device)
         error_known=torch.isfinite(env_error)&(env_error<=.5)
         future_loss=features.sum()*0
@@ -783,12 +940,21 @@ class SearchVNext(nn.Module):
                 # invalidate this factual endpoint obstruction measurement.
                 target[...,6]=fy[:,h:,6]
                 known_window[...,6]=fk[:,h:,6]
+            if self.goal_search:
+                goal_y, goal_valid = goal_transition_labels(data, goal, h, device)
+                target = torch.cat((target[..., :7], goal_y, target[..., 7:]), -1)
+                known_window = torch.cat((known_window[..., :7], goal_valid, known_window[..., 7:]), -1)
             lengths=torch.full((b,n),h,device=device)
             remain=torch.as_tensor(data.get("log_vnext_remaining",np.full((b,t),1000)),device=device).float()[:,1:n+1]
             valid &= torch.isfinite(remain)
             remain=remain.nan_to_num(nan=0.,posinf=0.,neginf=0.)
             mask=known_window&valid[...,None]
-            pred=self.a(features[:,:n],memory[:,:n],seq,act[:,:n],lengths,phase[:,1:n+1],remain)
+            goal_inputs = {"goal_context": goal[:,:n]} if self.goal_search else {}
+            pred=self.a(features[:,:n],memory[:,:n],seq,act[:,:n],lengths,phase[:,1:n+1],remain,**goal_inputs)
+            if self.goal_search:
+                metrics["A/H%d/verified_discovery_labels"%h] = (mask[..., 7]&train[:,:n]).sum().detach()
+                metrics["A/H%d/reobserve_labels"%h] = (mask[..., 8]&train[:,:n]).sum().detach()
+                metrics["A/H%d/new_area_labels"%h] = (mask[..., 9]&train[:,:n]).sum().detach()
             hloss=features.sum()*0
             future_target=F.layer_norm(features[:,h:],(features.shape[-1],))@self.a.projection
             for head in range(self.a.heads):
@@ -800,7 +966,8 @@ class SearchVNext(nn.Module):
                 hloss+=(ferr*vm).sum()/vm.sum().clamp_min(1)/self.a.heads
             future_loss=future_loss+hloss/len(horizons)
             metrics["A/H%d/prediction_loss"%h]=hloss.detach()
-            verified=valid&qualification_context[:,:n]&self.matched_option_windows(data,act,controls,h)
+            verified=valid&qualification_context[:,:n]&self.matched_option_windows(
+                data,act,controls,h,goal_search=self.goal_search)
             supervised=valid&train[:,:n]
             labelled=mask&train[:,:n,None]
             future_windows+=supervised.sum()

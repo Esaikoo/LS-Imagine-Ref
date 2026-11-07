@@ -7,6 +7,7 @@ from torch.nn import functional as F
 
 VERSION = 1
 SPATIAL_VERSION = 2
+GOAL_SEARCH_VERSION = 3
 ACTOR = 0
 SEARCH, ALIGN, INTERACT, RECOVERY = range(4)
 OPTION_NAMES = ("actor","left","right","forward","left_forward","right_forward",
@@ -60,6 +61,9 @@ FIELDS.update(context=(CONTEXT_DIM,),mask=(N_OPTIONS,),prediction=(N_OPTIONS,PRE
               score_supported=(N_OPTIONS,),empirical_support=(N_OPTIONS,),
               actuator_before=(3,),actuator_after=(3,),applied=(9,),plan_commands=(3,),actor_plan=(3,))
 FIELDS = {"log_vnext_"+k:v for k,v in FIELDS.items()}
+GOAL_FIELDS = dict(log_goal_context=(8,), log_goal_forecast=(N_OPTIONS,2),
+    log_goal_direction_novelty=(N_OPTIONS,), log_goal_verify_used=(), log_goal_reject_used=(),
+    log_goal_search_eligible=(), log_goal_search_learned_used=(), log_goal_search_probe_used=())
 
 
 def cfg(config,key):
@@ -118,6 +122,29 @@ def factual_search_rewards(data, config):
               +float(cfg(config,"vnext_reward_progress"))*progress
               -float(cfg(config,"vnext_reward_revisit"))*revisit
               -float(cfg(config,"vnext_reward_cost")))
+    if bool(getattr(config, "goal_search_enabled", False)):
+        goal_known = (array(data,"goal_label_version",shape)==1)
+        outcome = array(data,"goal_interaction_outcome",shape)
+        valid_outcome = goal_known & (array(data,"goal_interaction_valid",shape)>.5)
+        valid_outcome &= np.isfinite(outcome) & (outcome >= 0) & (outcome <= 1)
+        observed = np.where(valid_outcome, outcome, 0)
+        reward += float(cfg(config,"vnext_reward_progress"))*np.maximum(observed-progress,0)
+        # Row r stores the control from r-1 to r. Only penalize pursuit
+        # where training oracle coverage on that starting view is valid.
+        center_valid = array(data,"search_center_target_valid",shape)>.5
+        center = array(data,"search_center_target",shape)
+        center_valid &= array(data,"search_label_version",shape)==3
+        negative = np.zeros(shape,bool)
+        negative[...,1:] = center_valid[...,:-1] & (center[...,:-1]==0)
+        context = array(data,"log_goal_context",(*shape,8))
+        peak_rejected = array(data,"log_goal_peak_rejected",shape) > .5
+        conflict = peak_rejected | (context[...,5]>.5)
+        chasing = (interacting | (controls[...,7]<0)) & conflict
+        chasing &= (context[...,6]==0) & (context[...,7]>.5)
+        reward -= .04*negative*chasing
+        confirmed = array(data,"vnext_goal_discovery_gt",shape) > .5
+        confirmed &= array(data,"vnext_goal_discovery_valid",shape) > .5
+        reward += .15*confirmed
     return np.clip(reward,-1.,1.).astype(np.float32)
 
 
@@ -137,9 +164,11 @@ def build_transitions(data,max_duration=3):
     remaining=array(data,"log_vnext_remaining_after",shape,-1)
     success=array(data,"success",shape)>.5
     env_error=array(data,"log_env_error",shape)>.5
+    goal_contexts = array(data,"log_goal_context",(*shape,8))
+    direction_novelty = array(data,"log_goal_direction_novelty",(*shape,N_OPTIONS))
     result=[]
     for b in range(shape[0]):
-        for r in np.flatnonzero(starts[b]&np.isin(version[b],(VERSION,SPATIAL_VERSION))):
+        for r in np.flatnonzero(starts[b]&np.isin(version[b],(VERSION,SPATIAL_VERSION,GOAL_SEARCH_VERSION))):
             if r==0 or first[b,r] or last[b,r-1]:
                 continue
             a=int(choice[b,r])
@@ -173,6 +202,12 @@ def build_transitions(data,max_duration=3):
                 success=float(success[b,r:end+1].any()),terminal=terminal,
                 context=contexts[b,r].copy(),mask=masks[b,r].copy(),
                 next_context=nc,next_mask=nm))
+            if version[b,r] == GOAL_SEARCH_VERSION:
+                result[-1].update(
+                    goal_context=goal_contexts[b,r].copy(),
+                    next_goal_context=(np.zeros(8,np.float32) if terminal else goal_contexts[b,end+1].copy()),
+                    next_direction_novelty=(np.zeros(N_OPTIONS,np.float32) if terminal
+                                            else direction_novelty[b,end+1].copy()))
     return result
 
 
@@ -185,7 +220,17 @@ class VNextController(nn.Module):
         self.spatial_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 1
         self.interaction_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 2
         self.guidance_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 3
-        self.version = SPATIAL_VERSION if self.spatial else VERSION
+        self.goal_search = bool(getattr(config, "goal_search_enabled", False))
+        self.version = GOAL_SEARCH_VERSION if self.goal_search else SPATIAL_VERSION if self.spatial else VERSION
+        if self.goal_search:
+            if not self.guidance_fix:
+                raise ValueError("Goal search requires spatial fix3")
+            search_fraction = float(getattr(config, "goal_search_absent_fraction", .3))
+            total_fraction = float(getattr(config, "goal_total_absent_fraction", .4))
+            if not 0 <= search_fraction <= total_fraction <= 1:
+                raise ValueError("Goal search budget fractions must satisfy 0 <= search <= total <= 1")
+            if int(getattr(config, "goal_verify_max_trials", 3)) < 1:
+                raise ValueError("Goal VERIFY requires a positive trial bound")
         if self.spatial:
             if not 0 < float(cfg(config,"vnext_c_discount")) <= 1:
                 raise ValueError("High-level search discount must be in (0,1]")
@@ -209,6 +254,8 @@ class VNextController(nn.Module):
         if int(cfg(config,"vnext_commit_steps"))!=3:
             raise ValueError("vNext protocol commits at most K3")
         size=self.feature_dim+self.memory_dim+CONTEXT_DIM+N_OPTIONS*PREDICTION_DIM
+        if self.goal_search:
+            size += 8 + N_OPTIONS*2
         def network():
             hidden=int(cfg(config,"vnext_c_hidden"))
             n=nn.Sequential(nn.Linear(size,hidden),nn.LayerNorm(hidden),nn.SiLU(),
@@ -254,7 +301,7 @@ class VNextController(nn.Module):
     def initial(self,batch,device):
         from apm.actuator import initial_state
         z=lambda *dims:torch.zeros(batch,*dims,device=device)
-        return dict(actuator=torch.as_tensor(initial_state((batch,)),device=device),
+        state = dict(actuator=torch.as_tensor(initial_state((batch,)),device=device),
             previous_control=z(9),phase=z().long(),age=z().long(),
             history=z(int(cfg(self.config,"vnext_budget_window"))).long(),
             cursor=z().long(),active=torch.full((batch,),-1,device=device,dtype=torch.long),
@@ -275,6 +322,11 @@ class VNextController(nn.Module):
             trial_phase=z().long(),trial_positive=z().bool(),trial_feedback=z().long(),
             last_option=torch.full((batch,),-1,device=device,dtype=torch.long),
             episode_phase_coverage=z(4,N_OPTIONS).long())
+        if self.goal_search:
+            state.update(goal_absent_run=z().long(), goal_conflict_run=z().long(),
+                goal_verify_trials=z().long(), goal_verify_cooldown=z().long(),
+                goal_verify_active=z().bool(), goal_reject_active=z().bool())
+        return state
 
     def independent_progress(self, state, image):
         """Small, causal same-view appearance memory, independent of PoseNet.
@@ -344,15 +396,22 @@ class VNextController(nn.Module):
         val=r.get(name,False) if isinstance(r,dict) else r[...,names.index(name)]
         return torch.as_tensor(val,device=reference.device).bool().expand(len(reference))
 
-    def input(self,feat,memory,prediction,context):
+    def input(self,feat,memory,prediction,context,goal_context=None,goal_prediction=None):
         if memory is None:memory=feat.new_zeros(len(feat),self.memory_dim)
         if prediction.shape!=(len(feat),N_OPTIONS,PREDICTION_DIM):
             raise ValueError("vNext candidate descriptor shape mismatch")
-        return torch.cat((F.layer_norm(feat.detach().float(),(self.feature_dim,)),
-            memory.detach().float(),prediction.detach().float().flatten(1),context.detach().float()),-1)
+        parts = [F.layer_norm(feat.detach().float(),(self.feature_dim,)),
+            memory.detach().float(),prediction.detach().float().flatten(1),context.detach().float()]
+        if self.goal_search:
+            from apm.outcome import goal_context_tensor
+            goal_context = goal_context_tensor(goal_context, feat)
+            if goal_prediction is None:
+                goal_prediction = feat.new_zeros(len(feat),N_OPTIONS,2)
+            parts.extend((goal_context.detach(), goal_prediction.detach().float().flatten(1)))
+        return torch.cat(parts,-1)
 
-    def values(self,feat,memory,prediction,context,target=False):
-        x=self.input(feat,memory,prediction,context)
+    def values(self,feat,memory,prediction,context,target=False,goal_context=None,goal_prediction=None):
+        x=self.input(feat,memory,prediction,context,goal_context,goal_prediction)
         a,b=(self.target_q1,self.target_q2) if target else (self.q1,self.q2)
         task=torch.minimum(a(x).sigmoid(),b(x).sigmoid())
         if not self.spatial:return task
@@ -672,10 +731,48 @@ class VNextController(nn.Module):
         high=(visible>=float(cfg(self.config,"vnext_visible_high")))&self.ready(current,"visible",feat)
         low=visible<float(cfg(self.config,"vnext_visible_low"))
         act=(actionable>=float(cfg(self.config,"vnext_interactable_high")))&self.ready(current,"center_interactable",feat)
+        goal_context = None
+        goal_verify = goal_reject = goal_trusted = torch.zeros_like(high)
+        goal_novelty = feat.new_zeros(batch,N_OPTIONS)
+        if self.goal_search:
+            from apm.outcome import goal_context_tensor
+            goal_context = goal_context_tensor(current.get("goal_context"), feat)
+            goal_novelty = torch.as_tensor(obs.get("goal_direction_novelty", goal_novelty),device=device).float()
+            if goal_novelty.shape != (batch,N_OPTIONS):
+                raise ValueError("Goal search needs one directional novelty score per option")
+            goal_novelty = goal_novelty.nan_to_num().clamp(0,1)
+            evidence = goal_context[:,7]>.5
+            goal_trusted = evidence & (goal_context[:,6]==2)
+            uncertain = evidence & (goal_context[:,6]==1)
+            state["goal_verify_cooldown"] = (state["goal_verify_cooldown"]-1).clamp_min(0)
+            # A later, genuinely changed viewpoint can start a new bounded
+            # verification attempt after the previous one has cooled down.
+            reset_verify = moving_progress & (state["goal_verify_cooldown"]==0)
+            state["goal_verify_trials"][reset_verify|goal_trusted] = 0
+            goal_verify = uncertain & (state["goal_verify_trials"]<int(getattr(self.config,"goal_verify_max_trials",3)))
+            goal_verify &= state["goal_verify_cooldown"]==0
+            peak_rejected = torch.as_tensor(obs.get("goal_peak_rejected", goal_context[:,5]>.5),
+                device=device).bool().reshape(batch)
+            sky = evidence & (goal_context[:,6]==0) & peak_rejected & (state["actuator"][:,2]<=-30)
+            state["goal_conflict_run"] = torch.where(sky,state["goal_conflict_run"]+1,
+                torch.zeros_like(state["goal_conflict_run"]))
+            upward_or_attack = (proposed==2)|(proposed==1)|(proposed==11)
+            goal_reject = sky & (state["goal_conflict_run"]>=2) & upward_or_attack & ~progress
+            high = torch.where(evidence,goal_trusted,high)
+            low = torch.where(evidence,~goal_trusted,low)
+            state["goal_absent_run"] = torch.where(~high&~uncertain,
+                state["goal_absent_run"]+1, torch.zeros_like(state["goal_absent_run"]))
+            # D visible confidence never authorizes attack/reach on its own.
+            interaction_valid = torch.as_tensor(obs.get("goal_interaction_valid", False),device=device).bool().expand(batch)
+            interaction_prob = torch.as_tensor(obs.get("goal_interaction_probability", 0.),device=device).reshape(-1).expand(batch)
+            interaction_allowed = (~evidence|goal_trusted) & (~interaction_valid|(interaction_prob>=.5))
+            act &= interaction_allowed
         interaction_probe=torch.zeros_like(act)
         if self.guidance_fix:
             interaction_probe=torch.as_tensor(current.get("interaction_probe_ready",False),device=device).bool().expand(batch).clone()
             interaction_probe &= high&~act
+            if self.goal_search:
+                interaction_probe &= interaction_allowed
             interaction_probe &= state["interaction_probe_trials"]<int(cfg(self.config,"vnext_interaction_probe_limit"))
             act |= interaction_probe
         for key,condition in (("visible_run",high),("invisible_run",low),("actionable_run",act),("not_actionable_run",~act)):
@@ -718,7 +815,13 @@ class VNextController(nn.Module):
             released=failed&~progress&~executing_interaction
             phase[released]=torch.where(high[released],
                 torch.full_like(phase[released],ALIGN),torch.full_like(phase[released],SEARCH))
+        if self.goal_search:
+            phase[goal_trusted & ~act & ~progress] = ALIGN
+            phase[goal_verify & ~act & ~progress & ~recovery_lease] = ALIGN
+            phase[goal_reject] = RECOVERY
         emergency=(phase==RECOVERY)&(state["actuator"][:,2].abs()>=60)&bounded_dead&~act&~progress
+        if self.goal_search:
+            emergency |= goal_reject
         if not self.spatial:emergency&=~high
         already_correcting=((state["actuator"][:,2]<0)&(proposed==3))|((state["actuator"][:,2]>0)&(proposed==2))
         emergency&=~already_correcting
@@ -730,6 +833,8 @@ class VNextController(nn.Module):
         interact=(proposed==1)|(proposed==11)
         state["interaction_run"]=torch.where(interact,state["interaction_run"]+1,torch.zeros_like(state["interaction_run"]))
         protect=interact&((state["interaction_run"]<=int(cfg(self.config,"vnext_interaction_protect")))|progress)
+        if self.goal_search:
+            protect &= ~goal_reject
 
         history=state["history"];rows=torch.arange(batch,device=device)
         history[rows,state["cursor"]]=0
@@ -740,8 +845,15 @@ class VNextController(nn.Module):
         fraction=float(cfg(self.config,"vnext_search_initial")) if step<int(cfg(self.config,"vnext_full_step")) else float(cfg(self.config,"vnext_search_fraction"))
         fraction=min(fraction,float(cfg(self.config,"vnext_search_max")))
         span=(state["age"]+1).clamp(max=window).float()
+        extra_fraction = float(cfg(self.config,"vnext_total_fraction"))
+        if self.goal_search and bool(getattr(self.config,"goal_search_adaptive_budget",True)):
+            absent = ((state["goal_absent_run"]-3)/20.).clamp(0,1)
+            search_max = max(fraction,float(getattr(self.config,"goal_search_absent_fraction",.3)))
+            total_max = max(extra_fraction,float(getattr(self.config,"goal_total_absent_fraction",.4)))
+            fraction = fraction+(search_max-fraction)*absent
+            extra_fraction = extra_fraction+(total_max-extra_fraction)*absent
         search_limit=torch.floor(span*fraction).clamp_min(3)
-        extra_limit=torch.floor(span*float(cfg(self.config,"vnext_total_fraction"))).clamp_min(3)
+        extra_limit=torch.floor(span*extra_fraction).clamp_min(3)
         remaining=(self.max_steps()-state["age"]).clamp_min(0)
         commands,lengths=self.templates(state["actuator"],remaining,phase)
         context=self.context(state,current,remaining,search_used,extra_used,settle_used)
@@ -754,8 +866,11 @@ class VNextController(nn.Module):
             mask[:,o]=allowed&(phase==SEARCH)&total_ok[:,o]&search_ok[:,o]
         mask[:,3]|=allowed&(phase==ALIGN)&total_ok[:,3]
         if self.interaction_fix:
-            for o in (1,2):mask[:,o]|=allowed&(phase==ALIGN)&high&total_ok[:,o]
+            for o in (1,2):mask[:,o]|=allowed&(phase==ALIGN)&(high|goal_verify)&total_ok[:,o]
         direction=current.get("direction")
+        if self.goal_search:
+            existing_direction = feat.new_zeros(batch,2) if direction is None else direction
+            direction = torch.where((goal_trusted|goal_verify)[:,None],goal_context[:,3:5],existing_direction)
         if direction is not None:
             direction=torch.as_tensor(direction,device=device).float()
             if direction.shape != (batch,2) or not bool(torch.isfinite(direction).all()):
@@ -763,6 +878,8 @@ class VNextController(nn.Module):
             mask[:,6]=allowed&(phase==ALIGN)&(direction[:,1]<-.1)&total_ok[:,6]
             mask[:,7]=allowed&(phase==ALIGN)&(direction[:,1]>.1)&total_ok[:,7]
         direction_ready=torch.as_tensor(current.get("direction_ready",False),device=device).bool().expand(batch)
+        if self.goal_search:
+            direction_ready = direction_ready | goal_trusted
         if self.spatial:
             mask[:,6]=allowed&((phase==SEARCH)|(phase==RECOVERY))&total_ok[:,6]
             mask[:,6]&=(phase!=SEARCH)|search_ok[:,6]
@@ -773,7 +890,7 @@ class VNextController(nn.Module):
             mask[:,7]&=state["clear_attempts"]<int(cfg(self.config,"vnext_clearance_attempts"))
             if not bool(cfg(self.config,"vnext_clearance_enabled")):mask[:,7]=False
             if self.interaction_fix:
-                for o in (6,7):mask[:,o]|=allowed&(phase==ALIGN)&high&total_ok[:,o]
+                for o in (6,7):mask[:,o]|=allowed&(phase==ALIGN)&(high|goal_verify)&total_ok[:,o]
         if bool(cfg(self.config,"vnext_interaction")):
             mask[:,8]=allowed&(phase==INTERACT)&act&(state["actuator"][:,1]==0)&(state["cooldown"]==0)&~failed&total_ok[:,8]
             if self.interaction_fix:mask[:,8]&=~state["pending_interact"]
@@ -832,6 +949,9 @@ class VNextController(nn.Module):
         new=state["active"]<0
         info={key:feat.new_zeros(batch,*dims) for key,dims in FIELDS.items()}
         info["log_vnext_version"].fill_(self.version)
+        goal_forecast = feat.new_zeros(batch,N_OPTIONS,2)
+        if self.goal_search:
+            info["log_goal_search_eligible"] = ((phase==SEARCH)&mask[:,1:7].any(-1)).float()
         info.update(log_vnext_actor_action=proposed,log_vnext_phase=phase,
             log_vnext_phase_reason=changed.float()+2*stalled.float()+4*(state["limit_run"]>=3).float(),
             log_vnext_remaining=remaining,log_vnext_remaining_after=(remaining-1).clamp_min(0),
@@ -867,6 +987,9 @@ class VNextController(nn.Module):
             starts=new.nonzero().squeeze(-1)
             if self.guidance_fix:self.complete_trial(state,starts,training)
             state["source"][starts]=0
+            if self.goal_search:
+                state["goal_verify_active"][starts]=False
+                state["goal_reject_active"][starts]=False
             # Explicit actuator recovery is a small, logged safety experiment,
             # not evidence of learned exploration. It needs no uncalibrated A
             # prediction and never bypasses protection, phase or budget limits.
@@ -874,6 +997,8 @@ class VNextController(nn.Module):
             if len(recover):
                 selected[recover]=11
                 state["source"][recover]=3
+                if self.goal_search:
+                    state["goal_reject_active"][recover] = goal_reject[recover]
                 mask[recover]=False
                 mask[recover,ACTOR]=True
                 mask[recover,11]=True
@@ -889,11 +1014,17 @@ class VNextController(nn.Module):
                     commands[calculate,ACTOR]=seq
                     actor_plan[calculate]=seq
                 controls,end_actuator=self.controls(commands,state["actuator"],lengths)
+                goal_inputs = {"goal_context": goal_context[calculate]} if self.goal_search else {}
                 result=ab.predict_candidates(feat[calculate].detach(),
                     memory[calculate] if memory is not None else None,controls[calculate],
                     state["actuator"][calculate],lengths=lengths[calculate],
                     phase=phase[calculate],remaining=remaining[calculate],
-                    option_ids=torch.arange(N_OPTIONS,device=device))
+                    option_ids=torch.arange(N_OPTIONS,device=device),**goal_inputs)
+                if self.goal_search:
+                    goal_forecast[calculate] = result.get("goal_events", goal_forecast[calculate]).detach()
+                    goal_q_inputs = dict(goal_context=goal_context[calculate],goal_prediction=goal_forecast[calculate])
+                else:
+                    goal_q_inputs = {}
                 descriptor[calculate]=result["descriptor"].detach()
                 if self.spatial:
                     a_score[calculate],score_supported[calculate]=self.prediction_score(result,descriptor[calculate])
@@ -925,9 +1056,9 @@ class VNextController(nn.Module):
                     local_mask[:,9]=mask[calculate,9]
                 q[calculate]=self.values(feat[calculate],
                     memory[calculate] if memory is not None else None,
-                    descriptor[calculate],context[calculate])
+                    descriptor[calculate],context[calculate],**goal_q_inputs)
                 x=self.input(feat[calculate],memory[calculate] if memory is not None else None,
-                             descriptor[calculate],context[calculate])
+                             descriptor[calculate],context[calculate],**goal_q_inputs)
                 task_q[calculate]=torch.minimum(self.q1(x).sigmoid(),self.q2(x).sigmoid())
                 if self.guidance_fix:
                     disagreement=(self.q1(x).sigmoid()-self.q2(x).sigmoid()).abs()
@@ -941,6 +1072,8 @@ class VNextController(nn.Module):
                 if self.spatial:
                     search_q[calculate]=torch.minimum(self.search_q1(x),self.search_q2(x))
                     q[calculate]+=float(cfg(self.config,"vnext_a_score_weight"))*a_score[calculate]
+                if self.goal_search:
+                    q[calculate] += .025*goal_novelty[calculate]*(phase[calculate]==SEARCH)[:,None]
                 values=q[calculate].masked_fill(~local_mask,-torch.inf)
                 greedy=values.argmax(-1)
                 gain=values.gather(-1,greedy[:,None]).squeeze(-1)-values[:,ACTOR]
@@ -989,6 +1122,24 @@ class VNextController(nn.Module):
                         source[which]=7
                         local_mask[which,align_option[which]]=True
                         info["log_vnext_alignment_probe"][calculate[which]]=1
+                if self.goal_search:
+                    bearing = goal_context[calculate,3:5]
+                    horizontal = bearing[:,0].abs()>=bearing[:,1].abs()
+                    verify_option = torch.where(horizontal,torch.where(bearing[:,0]<0,1,2),
+                        torch.where(bearing[:,1]<0,6,7))
+                    centered = bearing.abs().amax(-1)<=float(cfg(self.config,"vnext_align_deadzone"))
+                    verify_option = torch.where(centered,1+(state["goal_verify_trials"][calculate]%2),verify_option)
+                    verify = goal_verify[calculate] & (phase[calculate]==ALIGN) & ~test & ~settle
+                    verify &= mask[calculate,verify_option]
+                    same = (controls[calculate,verify_option]-controls[calculate,ACTOR]).abs().sum((-1,-2))==0
+                    same &= lengths[calculate,verify_option]==lengths[calculate,ACTOR]
+                    verify &= ~same
+                    j = verify.nonzero().squeeze(-1)
+                    if len(j):
+                        best[j] = verify_option[j]
+                        source[j] = 7
+                        local_mask[j,verify_option[j]] = True
+                        state["goal_verify_active"][calculate[j]] = True
                 if self.guidance_fix:
                     # B's uncertain position is not a reason to suppress all
                     # information gathering. These bounded trials are NOT learned
@@ -1010,7 +1161,11 @@ class VNextController(nn.Module):
                         counts=state["episode_phase_coverage"][row,SEARCH,possible]
                         # Priority begins with a short observation sweep; local
                         # balancing prevents eval from repeating the same option.
-                        option=possible[int(counts.argmin())]
+                        index = counts.argmin()
+                        if self.goal_search:
+                            novelty = goal_novelty[row,possible]
+                            index = novelty.masked_fill(counts!=counts.min(),-1.).argmax()
+                        option=possible[int(index)]
                         best[j]=option;source[j]=9;local_mask[j,option]=True
                         info["log_vnext_search_probe"][row]=1
                 if self.spatial_fix:
@@ -1094,6 +1249,14 @@ class VNextController(nn.Module):
                 search_rows=starts[state["source"][starts]==9]
                 state["search_probe_trials"][search_rows]+=1
                 state["search_probe_cooldown"][search_rows]=int(cfg(self.config,"vnext_search_probe_every"))
+                if self.goal_search:
+                    sustained = search_rows[state["goal_absent_run"][search_rows]>=12]
+                    state["search_probe_cooldown"][sustained] = state["search_probe_cooldown"][sustained].clamp(max=8)
+                    verify_rows = starts[state["goal_verify_active"][starts]]
+                    state["goal_verify_trials"][verify_rows] += 1
+                    state["goal_verify_cooldown"][verify_rows] = 6
+                    exhausted = verify_rows[state["goal_verify_trials"][verify_rows]>=int(getattr(self.config,"goal_verify_max_trials",3))]
+                    state["goal_verify_cooldown"][exhausted] = 48
             if self.spatial_fix:
                 probes=starts[torch.isin(state["source"][starts],torch.tensor([3,6],device=device))]
                 state["recovery_trials"][probes]+=1
@@ -1153,6 +1316,13 @@ class VNextController(nn.Module):
             log_vnext_actor_plan=actor_plan,
             log_vnext_recovery_exception=((option==11)&(emergency|recovery_lease)).float())
         state["cursor"]=(state["cursor"]+1)%window;state["age"]+=1
+        if self.goal_search:
+            info.update(log_goal_context=goal_context,log_goal_forecast=goal_forecast,
+                log_goal_direction_novelty=goal_novelty,
+                log_goal_verify_used=(state["goal_verify_active"]&extra).float(),
+                log_goal_reject_used=(state["goal_reject_active"]&extra).float(),
+                log_goal_search_learned_used=((phase==SEARCH)&(state["source"]==1)&extra).float(),
+                log_goal_search_probe_used=((phase==SEARCH)&(state["source"]==9)&extra).float())
         return F.one_hot(command,12).to(actor_action.dtype),state,info
 
 
@@ -1170,11 +1340,12 @@ class VNextController(nn.Module):
         sm=memory[batches,starts].detach() if memory is not None else None
         nm=memory[batches,ends].detach() if memory is not None else None
         context,ncontext=tensor("context").float(),tensor("next_context").float()
-        def predict(features,mem,ctx,mask,obs_indices):
+        def predict(features,mem,ctx,mask,obs_indices,goal):
+            goal_prediction = features.new_zeros(len(features),N_OPTIONS,2)
             output=features.new_zeros(len(features),N_OPTIONS,PREDICTION_DIM)
             score=features.new_zeros(len(features),N_OPTIONS)
             use=mask[:,1:].bool().any(-1)
-            if not use.any():return output,score
+            if not use.any():return output,score,goal_prediction
             rows=use.nonzero().squeeze(-1)
             a=ctx[rows].new_zeros(len(rows),3)
             a[:,0]=ctx[rows,9]*10;a[:,1]=ctx[rows,8]*10;a[:,2]=ctx[rows,10]*70
@@ -1190,16 +1361,21 @@ class VNextController(nn.Module):
                 commands[:,ACTOR]=plans[batches[rows],indices].long()
             controls,_=self.controls(commands,a,lengths)
             with torch.no_grad():
+                goal_inputs = {"goal_context": goal[rows]} if self.goal_search else {}
                 pred=ab.predict_candidates(features[rows],mem[rows] if mem is not None else None,
                     controls,a,lengths=lengths,phase=ctx[rows,1:5].argmax(-1),
-                    remaining=remaining,option_ids=torch.arange(N_OPTIONS,device=device))
+                    remaining=remaining,option_ids=torch.arange(N_OPTIONS,device=device),**goal_inputs)
+            if self.goal_search:
+                goal_prediction[rows] = pred.get("goal_events",goal_prediction[rows]).detach()
             output[rows]=pred["descriptor"].detach()
             if self.spatial:score[rows]=self.prediction_score(pred,output[rows])[0]
-            return output,score
+            return output,score,goal_prediction
         mask,nmask=tensor("mask").bool(),tensor("next_mask").bool()
-        desc,_=predict(sf,sm,context,mask,starts)
-        ndesc,next_score=predict(nf,nm,ncontext,nmask,ends)
-        x=self.input(sf,sm,desc,context);nx=self.input(nf,nm,ndesc,ncontext)
+        goal = tensor("goal_context").float() if self.goal_search else None
+        ngoal = tensor("next_goal_context").float() if self.goal_search else None
+        desc,_,gdesc=predict(sf,sm,context,mask,starts,goal)
+        ndesc,next_score,ngdesc=predict(nf,nm,ncontext,nmask,ends,ngoal)
+        x=self.input(sf,sm,desc,context,goal,gdesc);nx=self.input(nf,nm,ndesc,ncontext,ngoal,ngdesc)
         search_target=None
         with torch.no_grad():
             online=torch.minimum(self.q1(nx).sigmoid(),self.q2(nx).sigmoid())
@@ -1208,6 +1384,9 @@ class VNextController(nn.Module):
                 online+=float(cfg(self.config,"vnext_search_value_weight"))*torch.minimum(
                     self.search_q1(nx),self.search_q2(nx)).clamp(-clip,clip)/clip
                 online+=float(cfg(self.config,"vnext_a_score_weight"))*next_score
+            if self.goal_search:
+                novelty = tensor("next_direction_novelty").float().nan_to_num().clamp(0,1)
+                online += .025*novelty*(ncontext[:,1:5].argmax(-1)==SEARCH)[:,None]
             na=online.masked_fill(~nmask,-torch.inf).argmax(-1)
             tv=torch.minimum(self.target_q1(nx).sigmoid(),self.target_q2(nx).sigmoid()).gather(-1,na[:,None]).squeeze(-1)
             target=torch.where(tensor("terminal").bool(),torch.zeros_like(tv),tv)

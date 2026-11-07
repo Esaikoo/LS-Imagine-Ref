@@ -57,7 +57,7 @@ class WorldModel(nn.Module):
         shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()
                   if not k.startswith("search_") and not (
                       getattr(config, "search_vnext_enabled", False)
-                      and k.startswith(("log_", "vnext_")))}
+                      and k.startswith(("log_", "vnext_", "goal_")))}
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
         self.embed_size = self.encoder.outdim
         self.dynamics = networks.RSSM(
@@ -536,12 +536,12 @@ class WorldModel(nn.Module):
             # Replay-only memory banks, oracle labels and actuator logs are not
             # original world-model observations; avoid duplicate auxiliary H2D.
             obs = {key: value for key, value in obs.items()
-                   if not key.startswith(("vnext_", "log_", "search_"))}
+                   if not key.startswith(("vnext_", "log_", "search_", "goal_"))}
         obs = {k:v for k,v in obs.items() if not (zoomed and k.startswith("search_b_"))}
 
         if not zoomed:
             obs["image"] = torch.Tensor(obs["image"]) / 255.0
-            obs["heatmap"] = torch.Tensor(obs["heatmap"]).unsqueeze(-1) / 255.0
+            obs["heatmap"] = torch.as_tensor(obs["heatmap"]).float().unsqueeze(-1) / 255.0
             if "action" in obs:
                 original_action = obs["action"]
                 zeros_array = np.zeros((original_action.shape[0], original_action.shape[1], 1), dtype=original_action.dtype)
@@ -552,7 +552,7 @@ class WorldModel(nn.Module):
             obs["is_zoomed"] = np.zeros_like(obs["is_zoomed"])
             obs["jump"] = np.zeros_like(obs["jump"])
             obs["image"] = torch.Tensor(obs["zoomed_image"]) / 255.0
-            obs["heatmap"] = torch.Tensor(obs["heatmap_on_zoomed"]).unsqueeze(-1) / 255.0
+            obs["heatmap"] = torch.as_tensor(obs["heatmap_on_zoomed"]).float().unsqueeze(-1) / 255.0
             obs["reward"] = obs["reward_on_zoomed"]
             obs['intrinsic'] = obs['intrinsic_on_zoomed']
             

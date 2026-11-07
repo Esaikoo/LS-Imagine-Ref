@@ -32,6 +32,9 @@ python tests/test_spatial_integration.py
 python tests/test_spatial_evidence.py
 python tests/test_runtime.py
 python tests/test_search_visualization.py
+python tests/test_goal_reference.py
+python tests/test_goal_guidance.py
+python tests/test_goal_search_integration.py
 python -m py_compile apm/actuator.py apm/outcome.py apm/control.py apm/odometry.py apm/spatial_memory.py apm/replay.py apm/diagnostics.py apm/visualization.py training_state.py envs/recovery.py envs/runtime.py networks.py apm/legacy/observation.py apm/legacy/control.py apm/legacy/feedback.py apm/legacy/branches.py apm/legacy/memory.py apm/evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
   envs/tasks/minedojo/__init__.py envs/tasks/minedojo/wrappers.py envs/tasks/base/ls_imagine_wrapper.py
 bash -n scripts/test_a.sh
@@ -54,7 +57,7 @@ if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "-
       --search_branch_every 64 --search_branch_count 2 --search_branch_prefix 2
       --eval_every 32)
   fi
-  if [[ "$1" == "--minedojo-vnext" ]]; then
+  if [[ "$1" == "--minedojo-vnext" || "$1" == "--minedojo-vnext4" ]]; then
     MODE=vnext
     PREFILL=40
     CONFIGS=(minedojo apm_vnext apm_a_smoke)
@@ -64,12 +67,18 @@ if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "-
       --vnext_probe_probability 1 --eval_every 32 --eval_episode_num 3
       --vnext_visual_every 32 --vnext_pose_min_samples 8)
   fi
+  if [[ "$1" == "--minedojo-vnext4" ]]; then
+    MODE=vnext4
+    CONFIGS=(minedojo apm_vnext apm_vnext4 apm_a_smoke)
+    EXTRA+=(--goal_ref_bank_root "${GOAL_REF_BANK_ROOT:?Set GOAL_REF_BANK_ROOT to a real sand reference bank}"
+      --goal_ref_train_every 1 --eval_every 48 --vnext_visual_every 48 --vnext_visual_strict True)
+  fi
   if [[ "$1" == "--minedojo-off" ]]; then
     MODE=off
     EXTRA=(--search_a_enabled False)
   fi
   # Fresh run root prevents stale checkpoints from satisfying verification.
-  RUN_ROOT="./logs/test_apm_a_v4/${MODE}_$(date +%Y%m%dT%H%M%S)_$$"
+  RUN_ROOT="${APM_SMOKE_ROOT:-./logs/test_apm_a_v4}/${MODE}_$(date +%Y%m%dT%H%M%S)_$$"
   export MINEDOJO_HEADLESS=1 PYTHONUNBUFFERED=1
   echo "[APM] MineDojo $MODE: 96 train steps including $PREFILL prefill; short eval."
   python expr.py \
@@ -103,13 +112,13 @@ known = 0
 for episode in episodes:
     with np.load(episode) as data:
         assert len({len(data[k]) for k in data.files}) == 1, episode
-        if (episode.parent.name == 'eval_eps' and mode not in ('complete','vnext')) or mode == 'off':
+        if (episode.parent.name == 'eval_eps' and mode not in ('complete','vnext','vnext4')) or mode == 'off':
             assert all(not data[k].any() for k in data.files if k.startswith('search_') and k.endswith('_valid'))
         else:
             known += data['search_visible_valid'].sum()
         if episode.parent.name == 'train_eps' and 'log_search_override' in data.files:
             override += data['log_search_override'].sum()
-if mode == 'vnext':
+if mode in ('vnext', 'vnext4'):
     from apm.outcome import check_vnext_checkpoint
     check_vnext_checkpoint(checkpoint, True)
     assert checkpoint['search_vnext_version'] == 2
@@ -132,7 +141,7 @@ if mode == 'vnext':
         with np.load(path) as d:
             assert len({len(d[k]) for k in d.files}) == 1
             if 'log_vnext_applied' in d:
-                active=d['log_vnext_version']==2
+                active=d['log_vnext_version']==(3 if mode=='vnext4' else 2)
                 np.testing.assert_allclose(d['log_vnext_applied'][active],d['log_applied_control'][active])
             if path.parent.name == 'eval_eps' and 'search_pose_valid' in d:
                 assert not d['search_pose_valid'].any()
@@ -144,6 +153,17 @@ if mode == 'vnext':
                 for t,refs in enumerate(d['log_vnext_memory_refs']):
                     if not d['is_first'][t]:
                         assert np.all(refs[refs>=0]<t), (path,t,refs)
+    if mode == 'vnext4':
+        assert checkpoint['goal_ref_version'] == 1
+        assert checkpoint['goal_controller_version'] == 3
+        assert checkpoint['goal_reference_fingerprint']
+        assert any(row.get('D/updates', 0) > 0 for row in rows)
+        for path in episodes:
+            if path.parent.name == 'eval_eps':
+                with np.load(path) as d:
+                    assert not any(d[key].any() for key in d.files
+                                   if key.startswith(('goal_', 'search_')) and key.endswith('_valid')
+                                   and key != 'goal_image_valid')
 elif mode in ('full', 'abc', 'complete'):
     assert checkpoint['search_a_version'] == (5 if mode == 'complete' else 4)
     for key in ('A/future_loss','A/prediction_loss','A/new_loss','A/discovery_loss','A/revisit_loss','A/current_visible_loss','A/future_visible_loss','A/shared_grad_scale'):
@@ -177,6 +197,6 @@ print('[APM] Verified model, real labels, eval isolation, replay and mode:', mod
 CHECK
   echo "[APM] MineDojo $MODE: PASS"
 elif [[ -n "${1:-}" ]]; then
-  echo 'Usage: bash scripts/test_a.sh [--minedojo|--minedojo-off|--minedojo-abc|--minedojo-full|--minedojo-vnext|--audit-replay ...|--branch-checkpoint ...|--startup-replay ...|--minedojo-recovery --output ...]' >&2
+  echo 'Usage: bash scripts/test_a.sh [--minedojo|--minedojo-off|--minedojo-abc|--minedojo-full|--minedojo-vnext|--minedojo-vnext4|--audit-replay ...|--branch-checkpoint ...|--startup-replay ...|--minedojo-recovery --output ...]' >&2
   exit 2
 fi

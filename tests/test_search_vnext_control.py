@@ -80,6 +80,54 @@ class VNextControlTests(unittest.TestCase):
             F.one_hot(torch.full((batch,),proposal),12).float(),state,
             torch.full((batch,),first),step,training)
 
+    def test_goal_search_rejects_sustained_sky_attack_with_local_evidence(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,vnext_probe_probability=0.))
+        state = controller.initial(1,torch.device("cpu"))
+        state["actuator"][:,2] = -40
+        state["age"][:] = 100
+        cur = current(visible=.8,joint=.0)
+        # A's uncertain/global visibility is not a license to follow a locally
+        # rejected bright region. The second corroborated frame is required.
+        cur["goal_context"] = torch.tensor([[.45,.8,.2,0.,-.6,.4,0.,1.]])
+        action,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,
+            proposal=1,cur=cur,training=False,obs={"goal_peak_rejected":torch.tensor([True])})
+        self.assertEqual(action.argmax(-1).item(),1)
+        action,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,
+            proposal=1,cur=cur,training=False,obs={"goal_peak_rejected":torch.tensor([True])})
+        self.assertEqual(action.argmax(-1).item(),3)
+        self.assertEqual(info["log_goal_reject_used"].item(),1)
+        self.assertEqual(info["log_vnext_source"].item(),3)
+        self.assertEqual(info["log_vnext_version"].item(),3)
+        self.assertEqual(info["log_vnext_applied"][0,0].item(),0)
+
+    def test_goal_verify_is_bounded_and_d_visibility_does_not_authorize_attack(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,goal_verify_max_trials=1,vnext_probe_probability=0.))
+        cur = current(visible=.8,joint=.99)
+        cur["goal_context"] = torch.tensor([[.6,.7,.2,.65,0.,0.,1.,1.]])
+        action,state,info = self.run_step(controller,UnsupportedSpatialAB(),
+            proposal=0,cur=cur,training=False,first=True)
+        self.assertEqual(action.argmax(-1).item(),5)
+        self.assertEqual(info["log_goal_verify_used"].item(),1)
+        self.assertEqual(info["log_vnext_mask"][0,8].item(),0)
+        self.assertEqual(info["log_vnext_phase"].item(),ALIGN)
+        _,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,
+            proposal=0,cur=cur,training=False)
+        self.assertEqual(info["log_goal_verify_used"].item(),0)
+        self.assertEqual(state["goal_verify_trials"].item(),1)
+
+    def test_goal_search_probe_uses_local_novelty_without_forecast_qualification(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,vnext_probe_probability=0.))
+        novelty = F.one_hot(torch.tensor([2]),N_OPTIONS).float()
+        action,_,info = self.run_step(controller,UnsupportedSpatialAB(),
+            proposal=0,training=False,first=True,obs={"goal_direction_novelty":novelty})
+        self.assertEqual(action.argmax(-1).item(),5)
+        self.assertEqual(info["log_goal_search_probe_used"].item(),1)
+        self.assertEqual(info["log_goal_search_learned_used"].item(),0)
+        self.assertEqual(info["log_goal_search_eligible"].item(),1)
+
     def test_constructor_preserves_random_stream(self):
         torch.manual_seed(73);expected=torch.rand(4)
         torch.manual_seed(73);VNextController(8,config());actual=torch.rand(4)

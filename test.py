@@ -27,6 +27,8 @@ def configure_evaluation(config, checkpoint):
     runtime_vnext_interaction = getattr(config, "vnext_interaction", True)
     runtime_vnext_memory = getattr(config, "vnext_memory_enabled", True)
     restore_vnext_config(vars(config), checkpoint)
+    from training_state import validate_goal_checkpoint
+    validate_goal_checkpoint(checkpoint, vars(config), evaluation=True)
     if config.search_vnext_enabled:
         if not runtime_vnext_memory:
             config.vnext_memory_enabled = False
@@ -137,6 +139,7 @@ def main(config):
             config,
             logger,
             eval_dataset,
+            goal_bank=checkpoint.get("goal_reference_bank"),
         ).to(config.device)
 
         checkpoint_path = pathlib.Path(config.agent_checkpoint_dir) / "latest.pt"
@@ -145,6 +148,8 @@ def main(config):
         if checkpoint_path.exists():
             print("Loading checkpoint from", config.agent_checkpoint_dir)
             agent.load_state_dict(checkpoint["agent_state_dict"])
+            if config.goal_ref_enabled and agent._goal_reference.bank_fingerprint != checkpoint["goal_reference_fingerprint"]:
+                raise ValueError("Goal reference bank fingerprint mismatch")
             agent.requires_grad_(False)  # Optimizer state is unnecessary for evaluation.
             agent._should_pretrain._once = False
             if getattr(config, "search_a_enabled", False) and "step" not in checkpoint:
@@ -160,6 +165,8 @@ def main(config):
         visualizer = create_search_visualizer(config, logdir)
         if visualizer is not None:
             visualizer.set_step(logger.step)
+            if agent._goal_reference is not None:
+                visualizer.set_goal_bank(agent._goal_reference.export_bank()["pixels"])
             logger.search_visualizer = visualizer
 
         if config.eval_episode_num > 0:

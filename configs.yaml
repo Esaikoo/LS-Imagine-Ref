@@ -36,6 +36,28 @@ defaults:
   vnext_visual_audit: True
   vnext_visual_root: ''
   check_obs_enabled: True
+  goal_ref_enabled: False
+  goal_ref_use_raw_image: True
+  goal_ref_version: 1
+  goal_ref_bank_root: assets/goal_references
+  goal_ref_dim: 128
+  goal_ref_max_candidates: 8
+  goal_ref_max_references: 32
+  goal_ref_loss_weight: 1.0
+  goal_ref_lr: 0.0001
+  goal_ref_train_every: 4
+  goal_ref_batch_frames: 64
+  goal_ref_chunk: 64
+  goal_ref_hard_negative_enabled: True
+  goal_fusion_enabled: True
+  goal_fusion_max_gate: 0.8
+  goal_fusion_epsilon: 0.05
+  goal_fusion_overlap_weight: 0.5
+  goal_search_enabled: False
+  goal_verify_max_trials: 3
+  goal_search_adaptive_budget: True
+  goal_search_absent_fraction: 0.30
+  goal_total_absent_fraction: 0.40
   vnext_c_discount: 0.97
   vnext_c_min_option_trials: 16
   vnext_c_min_updates: 128
@@ -517,3 +539,21 @@ apm_vnext:
   search_c_enabled: False
   search_branch_enabled: False
   search_eval_evidence: True
+
+# Standalone preset, using the spatial fix3 backbone.
+apm_vnext4:
+  compile: False
+  search_vnext_enabled: True
+  vnext_spatial_enabled: True
+  vnext_spatial_fix_version: 3
+  vnext_visual_enabled: True
+  search_a_enabled: False
+  search_b_enabled: False
+  search_c_enabled: False
+  search_branch_enabled: False
+  goal_ref_enabled: True
+  goal_search_enabled: True
+  search_eval_evidence: False
+  vnext_visual_audit: False
+  video_pred_log: False
+  check_obs_enabled: False

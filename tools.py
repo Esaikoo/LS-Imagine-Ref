@@ -108,6 +108,7 @@ class Logger:
         # Legacy option name retained for CLI/checkpoint compatibility.
         # This controls console verbosity only; all scalars are always saved.
         self._verbose_console = getattr(config, "log_all_metrics", False)
+        self._goal_console = bool(getattr(config, "goal_ref_enabled", False))
         self._logdir = logdir
         self._last_step = None
         self._last_time = None
@@ -140,20 +141,59 @@ class Logger:
     def video(self, name, value):
         self._videos[name] = np.array(value)
 
+    @staticmethod
+    def _goal_console_summary(scalars):
+        """One line for an eval round or the latest training update interval."""
+        metrics = dict(scalars)
+        if "eval_success" in metrics:
+            fields = [f"eval_success {metrics['eval_success']:.1%}"]
+            for name, label, fmt in (
+                    ("eval_first_success_step", "first_success_step", ".4g"),
+                    ("eval_goal_search_learned_used_mean", "SEARCH learned", ".1%"),
+                    ("eval_goal_search_probe_used_mean", "SEARCH probe", ".1%"),
+                    ("eval_goal_gate_mean", "D/gate", ".1%")):
+                if name in metrics:
+                    fields.append(f"{label} {metrics[name]:{fmt}}")
+            return fields
+
+        fields = []
+        if metrics.get("fps", 0.) > 0:
+            fields.append(f"{metrics['fps']:.1f} steps/s")
+        if "A/future_valid_labels" in metrics:
+            labels = metrics["A/future_valid_labels"]
+            if labels > 0 and "A/future_prediction_loss" in metrics:
+                fields.append(f"A/future {metrics['A/future_prediction_loss']:.4g} ({labels:,.0f} labels)")
+            else:
+                fields.append("A/future waiting for valid labels")
+        if "B/history_valid" in metrics:
+            fields.append(f"B/history valid {metrics['B/history_valid']:.1%}")
+        if "C/transitions" in metrics:
+            fields.append(f"C/replay options {metrics['C/transitions']:.4g}")
+        if "D/region_cal_reliability" in metrics:
+            region_labels = metrics.get("D/region_labels", 0.)
+            positives = metrics.get("D/positive_regions", 0.)
+            info = f"pos {positives:.4g}/{region_labels:.4g}, cal {metrics['D/region_cal_reliability']:.1%}"
+            if region_labels > 0 and "D/region_loss" in metrics:
+                fields.append(f"D/region {metrics['D/region_loss']:.4g} ({info})")
+            else:
+                fields.append(f"D/region ({info})")
+        return fields
+
     def write(self, fps=False, step=False):
         if not step:
             step = self.step
         scalars = list(self._scalars.items())
         if fps:
             scalars.append(("fps", self._compute_fps(step)))
-        visible = scalars if self._verbose_console else [
-            (name, value) for name, value in scalars if name in self.KEY_METRICS]
-        if visible:
-            def display(name, value):
-                if name in ("eval_success", "eval_search_rate"):
-                    return f"{name} {value:.1%}"
-                return f"{name} {value:.4g}"
-            print(f"[{step}]", " / ".join(display(k, v) for k, v in visible))
+        if self._goal_console and not self._verbose_console:
+            fields = self._goal_console_summary(scalars)
+        else:
+            visible = scalars if self._verbose_console else [
+                (name, value) for name, value in scalars if name in self.KEY_METRICS]
+            fields = [f"{name} {value:.1%}" if name in ("eval_success", "eval_search_rate")
+                      else f"{name} {value:.4g}" for name, value in visible]
+        if fields:
+            print(f"[{step}]", " / ".join(fields))
         if scalars:
             with (self._logdir / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
@@ -539,15 +579,18 @@ def simulate(
                 if "log_spatial_version" in cache[envs[i].id]:
                     from apm.diagnostics import spatial_episode_diagnostics
                     a_diagnostics.update(spatial_episode_diagnostics(cache[envs[i].id]))
+                if "log_goal_version" in cache[envs[i].id]:
+                    from apm.diagnostics import goal_episode_diagnostics
+                    a_diagnostics.update(goal_episode_diagnostics(cache[envs[i].id]))
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
-                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_goal_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
                         # Keep search traces intact until this episode is evicted.
                         # Replay excludes log_*; C uses separate numeric search_c_*.
-                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_goal_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             cache[envs[i].id].pop(key)
 
                 if not is_eval:
@@ -595,7 +638,8 @@ def simulate(
                     else:
                         first_success_step = max_steps
 
-                    logger.video(f"eval_policy", np.array(video)[None])
+                    if "log_goal_version" not in cache[envs[i].id]:
+                        logger.video(f"eval_policy", np.array(video)[None])
 
                     if len(eval_scores) >= episodes and not eval_done:
                         logger.scalar(f"eval_return", score)

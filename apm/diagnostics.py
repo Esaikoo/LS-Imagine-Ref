@@ -142,3 +142,33 @@ def spatial_episode_diagnostics(episode):
         spatial_ate_rmse=float(np.sqrt(np.mean(position_error[pairs]**2))),
         spatial_heading_error_deg=float(np.rad2deg(heading_error[pairs]).mean()))
     return result
+
+
+def goal_episode_diagnostics(episode):
+    """Report predictions separately from the sparse train-only observations."""
+    version = np.asarray(episode.get("log_goal_version", []))
+    if version.ndim != 1 or len(version) < 2:
+        return {}
+    valid = version[1:] == 1
+    if not valid.any():
+        return {}
+    states = np.asarray(episode["log_goal_state"])[1:][valid]
+    result = {"goal_trusted_rate": float(np.mean(states == 2)),
+              "goal_uncertain_rate": float(np.mean(states == 1)),
+              "goal_untrusted_rate": float(np.mean(states == 0))}
+    for name in ("gate", "conflict", "peak_rejected", "interaction_probability", "interaction_valid",
+                 "verify_used", "reject_used",
+                 "search_eligible", "search_learned_used", "search_probe_used"):
+        values = np.asarray(episode.get("log_goal_" + name, []))
+        if values.shape == version.shape:
+            result["goal_" + name + "_mean"] = float(values[1:][valid].mean())
+    trusted = np.flatnonzero(valid & (np.asarray(episode["log_goal_state"])[1:] == 2))
+    if len(trusted):
+        result["goal_first_trusted_step"] = int(trusted[0])
+    labels = np.asarray(episode.get("goal_visible_gt", []))
+    known = np.asarray(episode.get("goal_visible_valid", []))
+    if labels.shape == known.shape == version.shape:
+        observed = np.flatnonzero((labels > .5) & (known > .5))
+        if len(observed):
+            result["goal_first_observed_positive_step"] = int(observed[0])
+    return result

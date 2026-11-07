@@ -8,7 +8,9 @@ from collections import OrderedDict
 import copy
 import uuid
 from apm.evidence import (SEARCH_LABEL_KEYS, VNEXT_LABEL_KEYS, empty_labels,
-                          SPATIAL_LABEL_SHAPES, empty_spatial_labels)
+                          SPATIAL_LABEL_SHAPES, empty_spatial_labels,
+                          GOAL_LABEL_SHAPES, GOAL_LABEL_DTYPES, GOAL_IMAGE_SIZE,
+                          empty_goal_labels)
 from apm.actuator import CONTROL_KEYS, CONTROL_DIM, STATE_DIM, apply_command, world_group_id
 
 BASIC_ACTIONS = {
@@ -57,11 +59,13 @@ NOOP_ACTION = {
 
 class LSImagineWrapper(Wrapper, ABC):
     def __init__(self, env, repeat=1, sticky_attack=0, sticky_jump=10, pitch_limit=(-70, 70), vnext=False,
-                 vnext_world_seed=None, spatial=False):
+                 vnext_world_seed=None, spatial=False, goal_reference=False, goal_use_raw_image=True):
         super().__init__(env)
         self.wrapper_name = "LSImagineWrapper"
         self._vnext = bool(vnext)
         self._spatial = bool(spatial)
+        self._goal_reference = bool(goal_reference)
+        self._goal_use_raw_image = bool(goal_use_raw_image)
         self._fixed_world_seed = None if vnext_world_seed is None else str(vnext_world_seed)
         if self._fixed_world_seed is not None:
             try:
@@ -126,6 +130,15 @@ class LSImagineWrapper(Wrapper, ABC):
         if self._spatial:
             for key, shape in SPATIAL_LABEL_SHAPES.items():
                 self.observation_space.spaces[key] = spaces.Box(-np.inf, np.inf, shape, dtype=np.float32)
+        if self._goal_reference:
+            for key, shape in GOAL_LABEL_SHAPES.items():
+                dtype = GOAL_LABEL_DTYPES[key]
+                high = np.iinfo(dtype).max if key == "goal_instance_group" else 1
+                self.observation_space.spaces[key] = spaces.Box(0, high, shape, dtype=dtype)
+            if self._goal_use_raw_image:
+                self.observation_space.spaces["goal_image"] = spaces.Box(
+                    0, 255, (GOAL_IMAGE_SIZE, GOAL_IMAGE_SIZE, 3), dtype=np.uint8)
+                self.observation_space.spaces["goal_image_valid"] = spaces.Box(0, 1, (), dtype=np.uint8)
         self.action_space.discrete = True
         self._repeat = repeat
         self._sticky_attack_length = sticky_attack
@@ -215,8 +228,19 @@ class LSImagineWrapper(Wrapper, ABC):
         if self._spatial:
             evidence.update({key: np.asarray(obs.get(key, value), np.float32).copy()
                              for key, value in empty_spatial_labels().items()})
+        if self._goal_reference:
+            evidence.update({key: np.asarray(obs.get(key, value), GOAL_LABEL_DTYPES[key]).copy()
+                             for key, value in empty_goal_labels().items()})
+            if evidence["goal_label_version"]:
+                from apm.replay import identity
+                evidence["goal_holdout"] = np.uint8(identity(str(self._world_group)) % 5 == 0)
         image = obs['rgb'] # 3 * H * W
         image = image.transpose(1, 2, 0).astype(np.uint8) # H * W * 3
+        if self._goal_reference and self._goal_use_raw_image:
+            native = min(image.shape[:2]) >= GOAL_IMAGE_SIZE
+            evidence["goal_image_valid"] = np.uint8(native)
+            evidence["goal_image"] = (cv2.resize(image, (GOAL_IMAGE_SIZE, GOAL_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+                                      if native else np.zeros((GOAL_IMAGE_SIZE, GOAL_IMAGE_SIZE, 3), np.uint8))
         image = cv2.resize(image, (64, 64)) # 64 * 64 * 3
 
         if 'zoomed_image' in obs:

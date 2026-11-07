@@ -263,6 +263,8 @@ def configure_search_checkpoint(config, checkpoint):
     if config.get("search_vnext_enabled"):
         # Audit rays are labels/logs only, and were enabled by the saved preset.
         config["search_eval_evidence"] = bool(saved.get("search_eval_evidence", False))
+    from training_state import validate_goal_checkpoint
+    validate_goal_checkpoint(checkpoint, config, evaluation=True)
     has_a = any('.search_a.' in k for k in state)
     has_b = any('.search_b.' in k for k in state)
     has_c = any(k.startswith('_search_c.') for k in state)
@@ -318,7 +320,7 @@ def reference_specification(specification, simulator):
     if "search_evidence_specs" in spec:
         ignored["task"]["search_evidence_specs"] = spec.pop("search_evidence_specs")
     implementation = spec.get("LS_Imagine_specs", {})
-    for key in ("vnext", "vnext_world_seed"):
+    for key in ("vnext", "vnext_world_seed", "goal_reference", "goal_use_raw_image"):
         if key in implementation:
             value = implementation.pop(key)
             if key == "vnext_world_seed" and value is not None:
@@ -333,7 +335,7 @@ def reference_specification(specification, simulator):
 
 def physical_policy_keys(keys):
     """Auxiliary supervision/log fields are stripped before learned policy inputs."""
-    return sorted(key for key in keys if not key.startswith(("search_", "log_", "vnext_")))
+    return sorted(key for key in keys if not key.startswith(("search_", "log_", "vnext_", "goal_")))
 
 
 def checkpoint_fingerprint(path):
@@ -369,7 +371,7 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
                'minedojo_gradle_offline'}
     different = [key for key, value in saved['config'].items()
                  if key not in runtime and not key.startswith(('search_a_', 'search_b_', 'search_c_'))
-                 and key != 'search_vnext_enabled' and not key.startswith('vnext_')
+                 and key != 'search_vnext_enabled' and not key.startswith(('vnext_', 'goal_'))
                  and config.get(key) != value]
     if has_control_override(args):
         if getattr(args, 'a_control', 'checkpoint') != 'checkpoint':
@@ -1049,6 +1051,9 @@ def worker(args, manifest):
         task_specs['minedojo_gradle_offline'] = True
     if config.search_vnext_enabled:
         task_specs["LS_Imagine_specs"] = dict(task_specs["LS_Imagine_specs"], vnext=True)
+        if config.goal_ref_enabled:
+            task_specs["LS_Imagine_specs"].update(
+                goal_reference=True, goal_use_raw_image=config.goal_ref_use_raw_image)
         task_specs["search_evidence_specs"] = dict(
             enabled=bool(config.search_eval_evidence), target=config.target_item, version=3,
             distance=config.search_a_ray_distance, cell_size=config.search_a_cell_size,
@@ -1078,6 +1083,8 @@ def worker(args, manifest):
                search_a_control_version=config.search_a_control_version,
                search_b_version=checkpoint.get('search_b_version'),
                search_c_version=checkpoint.get('search_c_version'),
+               goal_ref_version=checkpoint.get('goal_ref_version'),
+               goal_reference_fingerprint=checkpoint.get('goal_reference_fingerprint'),
                reference_check=reference_check, max_steps=max_steps, heatmap_mode=args.heatmap_mode,
                initial_observation_check=getattr(args, "initial_observation_check", "exact"),
                seed_note=('Fresh world/client, explicit world/Java/mission seed; XML forces new world at time 6000.'
@@ -1137,7 +1144,10 @@ def worker(args, manifest):
             env = RewardObs(SelectAction(OneHotAction(env), 'action'))
             config.num_actions = env.action_space.shape[0]
             agent = LS_Imagine(env.observation_space, env.action_space, config,
-                               SimpleNamespace(step=0), None).to(args.device)
+                               SimpleNamespace(step=0), None,
+                               goal_bank=checkpoint.get("goal_reference_bank")).to(args.device)
+            if config.goal_ref_enabled and agent._goal_reference.bank_fingerprint != checkpoint["goal_reference_fingerprint"]:
+                raise ValueError("Goal reference bank fingerprint mismatch")
             # torch.compile checkpoints add this component to module names.
             state_dict = {k.replace('._orig_mod.', '.'): v
                           for k, v in checkpoint['agent_state_dict'].items()}
@@ -1164,6 +1174,8 @@ def worker(args, manifest):
             visualizer = create_search_visualizer(config, folder)
             if visualizer is not None:
                 visualizer.set_step(agent._logger.step)
+                if agent._goal_reference is not None:
+                    visualizer.set_goal_bank(agent._goal_reference.export_bank()["pixels"])
             print('Loaded checkpoint strictly:', checkpoint_path, flush=True)
             episode_indices = [args.worker_episode] if args.worker_episode is not None else range(args.episodes)
             for episode in episode_indices:

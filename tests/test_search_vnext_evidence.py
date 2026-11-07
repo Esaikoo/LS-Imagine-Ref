@@ -6,6 +6,10 @@ import pathlib
 import sys
 import unittest
 import copy
+import json
+from types import SimpleNamespace
+import tempfile
+from unittest import mock
 import numpy as np
 import torch
 import gym
@@ -14,7 +18,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from apm.actuator import (initial_state, apply_command, apply_command_torch,
     rollout_commands, candidate_mask, CONTROL_KEYS, world_group_id)
-from apm.evidence import SearchEvidence, SearchEvidenceWrapper, empty_labels, VNEXT_LABEL_KEYS
+from apm.evidence import (SearchEvidence, SearchEvidenceWrapper, empty_labels,
+                          VNEXT_LABEL_KEYS, GOAL_LABEL_SHAPES, lidar_rays, goal_ray_cells)
 
 
 def load_wrapper():
@@ -54,6 +59,157 @@ class FakeEnv(gym.Env):
     def step(self, action):
         self.applied.append(copy.deepcopy(action))
         return copy.deepcopy(self.current), self.reward, False, {"real_done": False}
+
+
+def goal_observation(block="sand"):
+    obs = observation(block="air", distance=32.)
+    obs["rgb"] = np.zeros((3, 160, 256), np.uint8)
+    obs["rgb"][0] = 53
+    rays = obs["rays"]
+    offsets = np.asarray(lidar_rays())
+    rays["ray_pitch"], rays["ray_yaw"] = offsets[:, 0], offsets[:, 1]
+    rays["block_name"][22] = block
+    rays["block_distance"][22] = 2.
+    rays["traced_block_y"][22] = 65
+    rays["traced_block_z"][22] = 2
+    rays["is_solid"] = np.ones(45, bool)
+    obs["inventory"] = dict(name=np.array(["sand"]), quantity=np.array([0]))
+    return obs
+
+
+class GoalEvidenceTests(unittest.TestCase):
+    def test_only_projected_rays_supervise_sparse_regions(self):
+        obs = goal_observation()
+        target = SearchEvidence("sand", version=3, goal_supervision=True)
+        labels = target.observe(obs, initial=True)
+        self.assertEqual(int(labels["goal_region_valid"].sum()), 1)
+        self.assertEqual(int(labels["goal_region_gt"][8,8,0]), 1)
+        self.assertEqual(int(labels["goal_visible_gt"]), 1)
+        self.assertEqual(int(labels["goal_visible_valid"]), 1)
+        self.assertEqual(int(labels["goal_instance_group"][8,8,0]), 1)
+        # The same block can be viewed from different positions.
+        obs["location_stats"]["pos"][0] += .25
+        self.assertEqual(int(target.observe(obs)["goal_instance_group"][8,8,0]), 1)
+        obs["rays"]["traced_block_x"][22] = 1
+        self.assertEqual(int(target.observe(obs)["goal_instance_group"][8,8,0]), 2)
+
+    def test_miss_does_not_teach_absence_and_opaque_first_hit_teaches_region_only(self):
+        target = SearchEvidence("sand", version=3, goal_supervision=True)
+        for block in ("air", "glass"):
+            labels = target.observe(goal_observation(block))
+            self.assertFalse(labels["goal_region_valid"].any())
+            self.assertFalse(labels["goal_visible_valid"])
+        stone = target.observe(goal_observation("stone"))
+        self.assertTrue(stone["goal_region_valid"][8,8,0])
+        self.assertFalse(stone["goal_region_gt"].any())
+        self.assertFalse(stone["goal_visible_valid"])
+        fabricated = goal_observation()
+        fabricated["rays"]["traced_block_z"][22] = 32
+        fabricated["rays"]["block_distance"][22] = 31.
+        self.assertFalse(target.observe(fabricated)["goal_region_valid"].any())
+
+    def test_projection_uses_native_aspect_and_yaw_sign(self):
+        obs = goal_observation()
+        cells = goal_ray_cells(obs,45)
+        np.testing.assert_array_equal(cells[22], [8,8])
+        self.assertLess(cells[23,1], 8)
+        self.assertGreater(cells[21,1], 8)
+        self.assertTrue((goal_ray_cells({"rgb": obs["rgb"]}, 45) == -1).all())
+
+    def test_target_categories_and_sheep_do_not_fabricate_instance_identity(self):
+        for target, block in (("sand","red_sand"),("log","birch_log"),
+                              ("water_bucket","water"),("iron_ore","iron_ore")):
+            labels = SearchEvidence(target, version=3, goal_supervision=True).observe(goal_observation(block))
+            self.assertTrue(labels["goal_visible_gt"], target)
+        obs = goal_observation("stone")
+        obs["rays"]["entity_name"] = obs["rays"]["entity_name"].astype("<U24")
+        obs["rays"]["entity_name"][22] = "sheep"
+        obs["rays"]["entity_distance"][22] = 1.
+        labels = SearchEvidence("wool", version=3, goal_supervision=True).observe(obs)
+        self.assertTrue(labels["goal_visible_gt"])
+        self.assertFalse(labels["goal_instance_group"].any())
+
+    def test_training_only_wrapper_image_fold_and_actual_outcomes(self):
+        from apm.replay import identity
+        env = FakeEnv()
+        env.current = goal_observation()
+        wrapper = load_wrapper()(SearchEvidenceWrapper(env, target="sand", enabled=True,
+            version=3, goal_supervision=True), vnext=True, goal_reference=True, vnext_world_seed=15)
+        initial = wrapper.reset()
+        self.assertEqual(initial["goal_image"].shape, (96,96,3))
+        self.assertTrue(initial["goal_image_valid"])
+        self.assertTrue((initial["goal_image"][...,0] == 53).all())
+        self.assertEqual(initial["goal_holdout"], identity(str(wrapper._world_group))%5 == 0)
+        self.assertFalse(initial["goal_interaction_valid"])
+        missed, _, _, _ = wrapper.step(1)
+        self.assertTrue(missed["goal_interaction_valid"])
+        self.assertFalse(missed["goal_interaction_outcome"])
+        env.current["inventory"]["quantity"][0] = 1
+        picked_up, _, _, _ = wrapper.step(6)
+        self.assertTrue(picked_up["goal_interaction_valid"])
+        self.assertTrue(picked_up["goal_interaction_outcome"])
+        self.assertEqual(picked_up["goal_holdout"], initial["goal_holdout"])
+        env.current["goal_visible_gt"] = 1
+        eval_wrapper = load_wrapper()(SearchEvidenceWrapper(env, target="sand", enabled=False,
+            version=3), vnext=True, goal_reference=True)
+        evaluation = eval_wrapper.reset()
+        for key in GOAL_LABEL_SHAPES:
+            self.assertFalse(evaluation[key].any(), key)
+        self.assertNotIn("rays", evaluation)
+        self.assertNotIn("location_stats", evaluation)
+
+    def test_reference_capture_and_build_preserve_training_provenance(self):
+        from scripts import build_goal_references as refs
+
+        class CaptureEnv:
+            def __init__(self, config):
+                self.env = FakeEnv()
+                self.env.current = goal_observation()
+                self.env.current["rgb"][0] = 40 if config.env_seed == 50101 else 140
+                self.wrapper = load_wrapper()(SearchEvidenceWrapper(self.env, target="sand", enabled=True,
+                    version=3, goal_supervision=True), vnext=True, goal_reference=True,
+                    vnext_world_seed=config.env_seed)
+
+            def reset(self):
+                return self.wrapper.reset()
+
+            def step(self, action):
+                return self.wrapper.step(int(np.argmax(action["action"])))
+
+            def close(self):
+                pass
+
+        def make_env(config, mode, index):
+            self.assertEqual(mode, "train")
+            self.assertEqual(index, 0)
+            self.assertTrue(config.goal_ref_enabled)
+            return CaptureEnv(config)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            capture = root/"capture"
+            with mock.patch("expr.make_env", side_effect=make_env):
+                refs.collect(SimpleNamespace(task="harvest_sand", collect_world_seeds=[50101,50102],
+                    output=capture, capture_commands=[6], capture_steps=2, minedojo_gradle_offline=True))
+            paths = list((capture/"train_eps").glob("*.npz"))
+            self.assertEqual(len(paths), 2)
+            for path in paths:
+                with np.load(path, allow_pickle=False) as data:
+                    self.assertEqual(data["goal_image"].shape, (3,96,96,3))
+                    self.assertEqual(len({len(data[key]) for key in data.files}), 1)
+                    self.assertEqual(data["log_actuator_valid"].tolist(), [0,1,1])
+            bank = root/"bank"
+            refs.build(SimpleNamespace(task="harvest_sand", train_replay=[capture/"train_eps"],
+                verified_train_archive=[], annotations=None, world_seeds=None, count=2, min_worlds=2, output=bank))
+            entries = json.loads((bank/"manifest.json").read_text())["entries"]
+            self.assertEqual({entry["world_seed"] for entry in entries}, {50101,50102})
+            self.assertTrue(all(entry["split"] == "train" for entry in entries))
+            self.assertTrue(all(refs.file_sha(bank/entry["path"]) == entry["sha256"] for entry in entries))
+            (root/"eval_eps").mkdir()
+            invalid = root/"eval_eps"/"bad.npz"
+            invalid.touch()
+            with self.assertRaisesRegex(ValueError, "Evaluation"):
+                refs.sources_from_args([], [invalid], "harvest_sand")
 
 
 class ActuatorTests(unittest.TestCase):

@@ -48,7 +48,7 @@ def _actual_control_valid(episode, index):
     return True
 
 
-def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slots=16):
+def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slots=16, goal_enabled=False, goal_use_raw_image=False):
     """Preserve original LS episode/window sampling; align outgoing map logs.
 
     Cache row i contains observation i and logs of the decision at i-1. Thus
@@ -76,6 +76,26 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
         log_actuator_before=(3,), log_actuator_after=(3,),
         log_applied_control=(9,), log_env_error=(), log_actuator_valid=(),
         log_search_override=(), log_search_decision=(), log_vnext_world_group=())
+    goal_dtypes = {}
+    discovery_cache = {}
+    if goal_enabled:
+        from .evidence import GOAL_LABEL_SHAPES, GOAL_LABEL_DTYPES
+        from .outcome import goal_discovery_labels
+        shapes.update(GOAL_LABEL_SHAPES)
+        goal_dtypes.update(GOAL_LABEL_DTYPES)
+        shapes.update(
+            log_goal_version=(), log_goal_model_update=(), log_goal_context=(8,), log_goal_state=(), log_goal_gate=(),
+            log_goal_conflict=(), log_goal_peak_rejected=(), log_goal_interaction_probability=(),
+            log_goal_interaction_valid=(), log_goal_boxes=(8,4), log_goal_candidate_scores=(8,),
+            log_goal_candidate_sources=(8,), log_goal_ref_map=(64,64),
+            log_goal_heatmap_policy=(64,64), log_goal_memory=(6,), log_goal_forecast=(12,2),
+            log_goal_direction_novelty=(12,),
+            log_goal_verify_used=(), log_goal_reject_used=(), log_goal_search_eligible=(),
+            log_goal_search_learned_used=(), log_goal_search_probe_used=())
+        goal_dtypes.update(log_goal_ref_map=np.uint8, log_goal_heatmap_policy=np.uint8)
+        if goal_use_raw_image:
+            shapes.update(goal_image=(96,96,3), goal_image_valid=())
+            goal_dtypes.update(goal_image=np.uint8, goal_image_valid=np.uint8)
     while True:
         candidates = [(str(key), ep) for key, ep in episodes.items() if len(ep["reward"]) >= 2]
         if not candidates:
@@ -102,7 +122,10 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
                 if example is None:
                     shape = ((64,64,3) if name == "zoomed_image" else
                              (64,64) if name == "heatmap_on_zoomed" else shapes.get(name, ()))
-                    example = np.zeros(shape, np.uint8 if name in ("zoomed_image", "heatmap_on_zoomed", "log_spatial_patch", "log_spatial_history_frames") else np.float32)
+                    dtype = goal_dtypes.get(name, np.uint8 if name in (
+                        "zoomed_image", "heatmap_on_zoomed", "log_spatial_patch",
+                        "log_spatial_history_frames") else np.float32)
+                    example = np.zeros(shape, dtype)
                 templates[name] = np.zeros_like(example)
             fill = templates[name]
             result[name] = np.asarray([fill if value is None else value
@@ -127,9 +150,23 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
         frameids = np.zeros(length, np.int64)
         realfirst = np.zeros(length, bool)
         observations = np.zeros(length, np.int64)
+        goal_context = np.zeros((length,8), np.float32)
+        goal_memory = np.zeros((length,6), np.float32)
+        goal_valid = np.zeros(length, np.float32)
+        goal_discovery = np.zeros(length, np.float32)
+        goal_discovery_valid = np.zeros(length, np.float32)
+        if len(discovery_cache) > len(episodes) + 32:
+            discovery_cache = {key: value for key, value in discovery_cache.items() if key in episodes}
         row = 0
         for key, ep, start, count in segments:
             total = len(ep["reward"])
+            if goal_enabled:
+                cached = discovery_cache.get(key)
+                if cached is None or cached[0] != total:
+                    cached = (total, *goal_discovery_labels(ep))
+                    discovery_cache[key] = cached
+                goal_discovery[row:row+count] = cached[1][start:start+count]
+                goal_discovery_valid[row:row+count] = cached[2][start:start+count]
             group = ep.get("log_vnext_world_group")
             groupkey = str(np.asarray(group).reshape(-1)[0]) if group is not None else key
             holdout = identity(groupkey) % 5 == 0
@@ -140,6 +177,16 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
                 frameids[row] = identity(key+":"+str(i))
                 observations[row] = i
                 actuator_valid[row] = _actual_control_valid(ep, i)
+                if goal_enabled and i+1 < total and "log_goal_context" in ep:
+                    version = ep.get("log_goal_version", np.zeros(total))[i+1]
+                    context = np.asarray(ep["log_goal_context"][i+1])
+                    if version == 1 and context.shape == (8,) and np.isfinite(context).all():
+                        goal_context[row] = context
+                        goal_valid[row] = 1.
+                        if "log_goal_memory" in ep:
+                            memory = np.asarray(ep["log_goal_memory"][i+1])
+                            if memory.shape == (6,) and np.isfinite(memory).all():
+                                goal_memory[row] = memory
                 if i+1 < total and "log_spatial_patch" in ep:
                     version = ep.get("log_spatial_version", np.zeros(total))
                     if int(np.asarray(version[i+1])) == 2:
@@ -206,4 +253,9 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
         result["log_actuator_valid"] = actuator_valid
         for name in ("log_applied_control", "log_actuator_before", "log_actuator_after"):
             result[name] = np.nan_to_num(result[name], nan=0., posinf=0., neginf=0.)
+        if goal_enabled:
+            result.update(vnext_goal_context=goal_context, vnext_goal_context_valid=goal_valid,
+                          vnext_goal_memory=goal_memory,
+                          vnext_goal_discovery_gt=goal_discovery,
+                          vnext_goal_discovery_valid=goal_discovery_valid)
         yield result

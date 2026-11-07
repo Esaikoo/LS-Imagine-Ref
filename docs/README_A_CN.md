@@ -1513,3 +1513,80 @@ fix2虽然恢复了A未来损失和梯度，但一帧未知运动就关闭余下
     sh ./scripts/train.sh harvest_sand --resume_from <fix2检查点或运行目录> --resume_upgrade_spatial True
 
 该参数仅支持2→3一次。保留兼容主干、Actor、A/Pose和对应Adam状态；初始化新B历史融合与C分阶段经验，清空旧A资格，重新积累新上下文可靠性。新建续训目录并保存lineage，不覆盖源，预算按已消耗交互继续到1M，跳过重复prefill/pretrain。再次从升级后的fix3续训时只用普通--resume_from，不重复升级参数。用户需先自行结束旧进程并同步代码，不同时训练同一实验；本地改动不影响已在服务器内存中运行的进程。升级是混合版本续训，不是从头fix3严格消融，也不保证接回同一个世界位置。
+
+
+## 27. APM-vNext4 可靠目标验证与主动空间搜索（2026-11-07）
+
+工作基线是 `esaiko-apm` 的 `c144bad`（spatial fix3）。新增 `apm_vnext4` 与 `A_MODE=vnext4`，历史 `A_MODE=vnext`、fix2→fix3 显式恢复及旧评测继续按原协议。vNext4 的 A/B/C 在同一套模块内使用独立版本分支。检查点记录 `goal_ref_version=1`、目标控制协议 3、参考库指纹和数据。fix3 与 vNext4 分别从各自检查点恢复，跨架构需新建训练；没有自动重解释旧资格缓冲。
+
+### 参考库和真实训练数据
+
+默认采沙库已随项目保存于 `assets/goal_references/harvest_sand`，含来自三个真实训练世界的24 张复核正图和 9 张复核难例。新采沙实验可直接使用默认 `BANK=assets/goal_references`。其余四个任务可按下述方式准备各自的库。
+
+每个任务使用固定类别库，包含可采目标的多实例、多视角 RGB 与可选困难负样本。任务映射为原木、场景水面、沙子、铁矿和羊。训练中 D 可从同一原始相机帧取得 96×96 图像，老 Replay 或不可用帧回退到 64×64。水和羊的视觉存在与交互结果分别监督。
+
+用仓库原环境和 12 动作执行器采集训练源。示例用两张训练地图，用户可改成与正式评测不同的训练种子。采集步数受命令上限约束，每次写新目录：
+
+```bash
+python scripts/build_goal_references.py --task harvest_sand \
+  --collect-world-seeds 50101 50102 --capture-steps 256 --output ./logs/ref_capture_sand
+python scripts/build_goal_references.py --task harvest_sand \
+  --train-replay ./logs/ref_capture_sand/train_eps --count 16 --min-worlds 2 \
+  --output ./logs/ref_bank_sand_candidate
+```
+
+示例把候选库写入新目录以便复核。若要试用它，显式指定 `--goal_ref_bank_root ./logs/ref_bank_sand_candidate`。采集支持 `--capture-commands` 给定真实动作序列。也可用已有训练 NPZ，通过 `--train-replay` 或对已核验训练副本使用 `--verified-train-archive`。自动挑选中心射线确认的目标画面，随后人工复查裁剪中的主体、遮挡和多样性。用 `--annotations` 指定经过复查的样本，JSON 为对象列表，每项含 `source`（NPZ 文件名）、`frame`、归一化 `roi=[x0,y0,x1,y1]`、`role=positive|negative`、`note`，负样本另外有 `distractor_type`。可补天空、砂岩、浅色岩石和水面反光等难例。工具会检查数量、世界组、来源、裁剪及 SHA256。样本不足时需要补采或人工标注。每类正式库建议 16–32 张正图，尽量跨不同训练世界；其他任务替换任务名并使用各自训练源。
+
+训练专用的稀疏 LiDAR 标签投影到 16×16 采样网格。一个格子的有效位代表已采样点，未覆盖处保持 unknown。拒绝遮挡歧义、无法投影及模拟器远端假命中。全帧可见性只使用有支持的标签，稀疏射线未命中没有全帧负标签。静态方块按可核验同一方块建立实例组。当前 MineDojo 射线不提供羊的实例 ID，羊使用类别和观测时序，地图线索较快衰减。交互标签来自实际 attack/use 和下一观测物品变化或任务结果，单独对齐到发起时的图像。
+
+留出组按真实世界组散列划分，D 校准排除参考库中的世界。默认 `env_seed=-1` 保留真实任务的周期换图。固定单一世界种子的短测可能全在同一折，融合门控会保持冷启动或低可靠状态。正式评估用预留的新世界及显式 world/mission/Java/policy 种子，沿用 `evaluate_checkpoints.py` 的配对评测和初始渲染审计。训练内 101×3 评测是跨 checkpoint 曲线。
+
+### 在线、训练和保存
+
+1. D 编码任务参考库与当前 RGB，从 U-Net 热区、独立 RGB 匹配特征及困难区域共提最多 8 个候选。区域、可见性和交互分头训练，独立校准。短时跟踪使用上一实际动作、区域中心和匹配特征，遮挡或 reset 后允许丢失匹配。
+2. 原 U-Net 热图保存在 `heatmap`。D 生成帧局部融合图后才执行 Encoder → RSSM → Actor。Replay 使用当前 D 重算同一融合公式，zoomed 分支使用同一算法，融合张量与 D 梯度隔离。原奖励和 13 维想象动作输入保持原定义。
+3. A 接收 8 维 D 证据与 B 记忆。原预测事件顺序保留，并学习实际执行 H1/H2/H3/H8 后的可信首次确认、同实例重观察、真实新区。目标确认由 D 证据与同帧真实有效采样点共同支持，未执行候选不写真值。
+4. B 持续保留 fix3 观察历史及可信局部段，增加候选、已验证、被拒绝线索及确认次数。定位未知时只更新观察历史，不拼接断开的坐标。C 使用可信/待验证/无可信目标状态选择原有 option，有界 VERIFY、不确定时的规则探测、经验证的预测/经验搜索分别记日志。默认无可信目标搜索/额外动作上限 30%/40%，逐步升至上限。持续向上且 D 拒绝高热区域时可纠正镜头，交互仍需原独立资格。实际进展和真实反馈进入独立搜索 Q，主任务优化器继续使用原任务奖励。
+5. NPZ 中 `goal_region_gt/valid`、`goal_instance_group`、`goal_visible_gt/valid`、`goal_interaction_outcome/valid` 属于训练监督。动作结果行存实际控制与上一观察的 `log_goal_context`、候选、D 图、`log_goal_heatmap_policy`、资格及控制来源。Replay 只对齐已执行前缀，旧数据的缺失标签用 valid=0。96×96 RGB 每步约 27 KiB，另有两个 64×64 的 uint8 引导图。可用 `--goal_ref_use_raw_image False` 减少 Replay 内存与磁盘开销，训练和评测随 checkpoint 使用同一配置。
+6. D 用独立 AdamW。checkpoint 封装参考图、manifest、校准样本与温度、D/A/B/C、优化器、随机数与已消耗步数。正常 resume 在新目录追加训练，继续读历史 Replay。D 的校准世界数量诊断在恢复后重新累积。评测不运行辅助优化器，目标与位姿标签有效位均关闭。配对工具的环境一致性审计独立于策略输入。
+7. 默认每 10k 保存最近完整训练局，每轮三次 eval 保存第三局，正式 1M 的评估点为 0、10k、…、1M。保留 B_map、A1、A2、C1、C2，新增一张 G_goal_verification，最多 10 张，含稀疏日志、融合和决策来源。A2 展示候选预测数值。B 图只绘制当前可信局部段，旧段标签保存在 trace 中。默认 check_obs 关闭，vNext4 关闭周期评测视频和 open-loop 视频，原标量及新标量继续记录。
+
+### 启动和恢复
+
+```bash
+TASK=harvest_sand
+mkdir -p "logs/train/$TASK"
+LOG_FILE="logs/train/$TASK/train_$(date +%Y%m%d_%H%M%S).log"
+nohup env A_MODE=vnext4 NTFY_TOPIC="$NTFY_TOPIC" TRAIN_LOG_FILE="$LOG_FILE" \
+  sh ./scripts/train.sh "$TASK" > "$LOG_FILE" 2>&1 &
+```
+
+启动前将 `NTFY_TOPIC` 设为手机订阅的主题。训练结束或报错退出时，统一入口发送通知，收到后可在算力平台关闭实例。默认图库根目录是 `assets/goal_references`，采沙库已随代码提供。其他任务需先准备自己的库，也可用 `--goal_ref_bank_root` 指定单任务 manifest 目录或任务库根目录。脚本默认 1M、训练种子 0。同版本恢复用相同入口追加 `--resume_from /path/to/vnext4/latest.pt`，检查点内置的参考库可移植；已用交互预算继续累计。两组从头训练消融入口为 `A_MODE=vnext4_d_only`（D 融合、关闭高层控制）和 `A_MODE=vnext4_search_only`（保留 D 证据供搜索，关闭 Actor 热图融合）。
+
+### 终端输出
+
+启动时在原 Encoder 和主干优化器信息后追加 A、B、C、D 各优化器实际管理的参数数量、C 的目标网络副本数量，以及本次加载的正图和难例数量。默认训练每 1000 步输出一行。包含步速、A 未来损失及有效标签、B 历史有效率、C 真实 Replay 选项数、D 区域损失、正样本和校准可靠度。A 没有有效标签时显示等待，D 没有有效区域标签时省略区域损失。评估行展示成功率、原口径首次成功步数、学习型 SEARCH、规则试探和实际融合门控。所有标量完整写入原日志后端，`--log_all_metrics True` 可查看完整终端输出。
+
+### 文件索引
+
+- `apm/goal_reference.py`、`goal_guidance.py`：库校验、RGB/热图候选、监督与校准、帧局部融合和因果追踪。
+- `apm/evidence.py`、`envs/tasks/base/ls_imagine_wrapper.py`、`scripts/build_goal_references.py`：训练专用采集、投影、同帧 RGB、人工标注及建库。
+- `apm/outcome.py`、`spatial_memory.py`、`control.py`：目标上下文、实际后果、观察/局部空间线索、搜索和验证。沿用 `apm/actuator.py`。
+- `apm/replay.py`、`expr.py`、`models.py`、`training_state.py`：数据对齐、原主干入口、训练、版本和恢复。
+- `apm/diagnostics.py`、`visualization.py`、`tools.py`：指标、保留窗口、候选与控制可视化。
+- `configs.yaml`、`scripts/train.sh`、`test.py`、`evaluate_checkpoints.py`：正式预设、统一启动、两种评测入口。
+- `tests/test_goal_reference.py`、`test_goal_guidance.py`、`test_goal_search_integration.py` 与 `test_search_vnext_control.py`、`test_search_vnext_evidence.py`、`test_search_vnext_models.py`、`test_spatial_memory.py`：专项及历史回归。可用 `bash scripts/test_a.sh` 运行，真实短测入口为 `GOAL_REF_BANK_ROOT=/path/to/sand_bank bash scripts/test_a.sh --minedojo-vnext4`。
+
+
+### 实际验证与已知边界
+
+- 最终 `bash scripts/test_a.sh` 通过 418 项 CPU 测试，Python、Shell 和 diff 检查通过。受控测试固定 D 的已校准局部负证据，验证原热图保留、Actor/RSSM 实际消费融合图，持续抬头攻击的提议切换为实际向下转动，输出攻击量为 0。目标待验证时交互选项仍需独立安全资格。注入评测 oracle 字段没有改变输出。
+- RTX 2060 上使用小模型和真实 MineDojo 从头到 72 步，随后用内嵌参考库恢复到 96 步。评估点分别为 0/36/72 和 72/96，每轮三局，每局最多 24 步。七个优化器均继续更新，原 checkpoint 和 Replay 哈希一致。原始 NPZ 字段等长，实执行控制与策略日志一致，评测标签有效位均为 0。可视化每轮仅第三局，选中局最多 10 图。36 步时尚无完整策略训练局，首套训练图在 72 步导出。
+- 正式辅助形状 16×32×5120、128 维记忆和 16 槽，在 GPU 上使用真实 RGB、实际控制与有效标签，D/A/B/C 均完成更新，共享 RSSM 特征无辅助梯度。峰值分配约 601 MiB，辅助测试耗时 1.64 秒。RSSM 特征是形状测试输入，统计范围为辅助链。
+- 真实采集入口在训练世界 50101 完成 4 次真实动作。短测库来源为一个已核验的历史采沙训练世界，含 14 张沙子正图和 9 张人工复核难例。资产在 `D:/RL_TrainData/ls/analysis/vnext4_20261107/goal_refs_smoke`，正式训练可用脚本另建多世界类别库。
+- 早期 96 步开发短测使用 9 个 A 事件头，最终版补入真实新区预测后为 10 个，严格恢复拒绝早期开发权重。最终版独立短训及恢复通过。
+- 最终真实短测 15 局 24 步 eval 均未完成采沙。实际记录到有界 SEARCH 试探，D 的真实正区域与独立世界校准样本不足，融合门控保持 0。真实环境中由学得的 D 触发的天空纠正、跨视角泛化、学习型搜索收益、其余四任务和 1M 正式结果仍待验证。羊的真值实例跟踪在现有传感器接口中不可用。
+
+可复核记录位于 `D:/RL_TrainData/ls/analysis/vnext4_20261107`，核心文件为 `cpu_delivery_status.json`、`formal_goal_aux_gpu.json`、`native_verification.json` 与 `native_reference_capture/capture.json`。
+
+中文提交备注：`feat: 接入参考图目标验证与可信热图并完善主动空间搜索闭环`

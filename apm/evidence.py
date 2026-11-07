@@ -20,6 +20,26 @@ VNEXT_EVENTS = ("center_target", "reachable", "center_interactable", "return", "
 VNEXT_LABEL_KEYS = SEARCH_LABEL_KEYS + tuple(
     key for event in VNEXT_EVENTS for key in ("search_" + event, "search_" + event + "_valid")
 )
+GOAL_LABEL_VERSION = 1
+GOAL_GRID = 16
+GOAL_IMAGE_SIZE = 96
+GOAL_LABEL_SHAPES = {
+    "goal_region_gt": (GOAL_GRID, GOAL_GRID, 1),
+    "goal_region_valid": (GOAL_GRID, GOAL_GRID, 1),
+    "goal_instance_group": (GOAL_GRID, GOAL_GRID, 1),
+    "goal_visible_gt": (), "goal_visible_valid": (),
+    "goal_interaction_outcome": (), "goal_interaction_valid": (),
+    "goal_label_version": (), "goal_holdout": (),
+}
+GOAL_LABEL_DTYPES = dict.fromkeys(GOAL_LABEL_SHAPES, np.uint8)
+GOAL_LABEL_DTYPES["goal_instance_group"] = np.int32
+
+
+def empty_goal_labels():
+    return {key: np.zeros(shape, GOAL_LABEL_DTYPES[key])
+            for key, shape in GOAL_LABEL_SHAPES.items()}
+
+
 SPATIAL_LABEL_SHAPES = {"search_pose_delta": (3,), "search_pose_valid": ()}
 for _event in ("new_area", "area_revisit", "new_view", "view_revisit"):
     SPATIAL_LABEL_SHAPES["search_" + _event] = ()
@@ -63,7 +83,7 @@ class SpatialEvidenceWrapper(gym.Wrapper):
     def annotate(self, obs, initial=False, error=False):
         result = obs.copy()
         labels = empty_spatial_labels()
-        current = None if error else self.pose(obs)
+        current = self.pose(obs) if not error and (self.supervision or self.audit) else None
         if current is not None and self.audit:
             labels["log_spatial_gt_pose"] = current.astype(np.float32)
             labels["log_spatial_gt_valid"] = np.float32(1)
@@ -126,6 +146,48 @@ def lidar_rays(distance=32.0):
     return [(float(p), float(y), float(distance)) for p in RAY_PITCHES for y in RAY_YAWS]
 
 
+def goal_ray_cells(obs, count):
+    """Conservative projection from MineDojo's first-person rich lidar.
+
+    The ray implementation adds elevation, clips at +/-89 degrees, then rotates
+    about world up. Its positive yaw offset points to camera-left. Use the
+    native framebuffer aspect before the policy's square resize. Keep only rays
+    that occupy one grid cell across the default client's FOV variation. A ray
+    supervises its sampled point in that cell, never all pixels in a patch.
+    """
+    unknown = np.full((count, 2), -1, np.int16)
+    rays = obs.get("rays", {})
+    try:
+        image = np.asarray(obs["rgb"])
+        pitch = np.asarray(rays["ray_pitch"], float).reshape(count)
+        yaw = np.asarray(rays["ray_yaw"], float).reshape(count)
+        elevation = -np.deg2rad(float(np.asarray(obs["location_stats"]["pitch"]).item()))
+    except (KeyError, TypeError, ValueError):
+        return unknown
+    if image.ndim != 3 or image.shape[0] != 3 or min(image.shape[1:]) <= 0:
+        return unknown
+    if not np.isfinite(elevation) or not np.isfinite(pitch).all() or not np.isfinite(yaw).all():
+        return unknown
+    ray_elevation = np.clip(elevation + pitch, -np.deg2rad(89), np.deg2rad(89))
+    horizontal = np.cos(ray_elevation)
+    forward = np.sin(elevation)*np.sin(ray_elevation) + np.cos(elevation)*horizontal*np.cos(yaw)
+    right = -horizontal*np.sin(yaw)
+    up = np.cos(elevation)*np.sin(ray_elevation) - np.sin(elevation)*horizontal*np.cos(yaw)
+    aspect = image.shape[2]/image.shape[1]
+    projected = []
+    for fov in (58., 80.):
+        scale = 2*np.maximum(forward, 1e-6)*np.tan(np.deg2rad(fov/2))
+        row = .5 - up/scale
+        col = .5 + right/(scale*aspect)
+        projected.append(np.floor(GOAL_GRID*np.stack((row, col), axis=-1)).astype(np.int32))
+    a, b = projected
+    stable = (forward > 0) & (a == b).all(-1) & (a >= 0).all(-1) & (a < GOAL_GRID).all(-1)
+    unknown[stable] = a[stable]
+    center = (np.abs(pitch) < 1e-7) & (np.abs(yaw) < 1e-7) & (abs(elevation) <= np.deg2rad(89))
+    unknown[center] = GOAL_GRID//2
+    return unknown
+
+
 def empty_labels(version=LABEL_VERSION):
     labels = {key: np.float32(0) for key in (VNEXT_LABEL_KEYS if version >= 3 else SEARCH_LABEL_KEYS)}
     labels["search_label_version"] = np.float32(version)
@@ -161,7 +223,7 @@ ENTITY_TARGETS = {"wool": {"sheep"}}
 class SearchEvidence:
     def __init__(self, target, distance=32.0, cell_size=2.0, revisit_gap=6,
                  new_fraction=0.25, revisit_fraction=0.8, expected_rays=45, version=2,
-                 reach_distance=3.0):
+                 reach_distance=3.0, goal_supervision=False):
         if target not in BLOCK_TARGETS and target not in ENTITY_TARGETS:
             raise ValueError("No verified A label mapping for target: " + str(target))
         if distance <= 0 or cell_size <= 0 or revisit_gap < 1:
@@ -173,6 +235,9 @@ class SearchEvidence:
         self.revisit_gap = revisit_gap
         self.new_fraction, self.revisit_fraction = new_fraction, revisit_fraction
         self.expected_rays = expected_rays
+        self.goal_supervision = bool(goal_supervision)
+        if self.goal_supervision and self.version < 3:
+            raise ValueError("D supervision requires vNext first-hit evidence")
         self.reset()
 
     def reset(self):
@@ -186,6 +251,7 @@ class SearchEvidence:
         self.ever_visible = False
         self.history_known = True
         self.step = 0
+        self.goal_instances = {}
 
     def observe(self, obs, initial=False):
         if initial:
@@ -193,6 +259,8 @@ class SearchEvidence:
         else:
             self.step += 1
         result = empty_labels(self.version)
+        if self.goal_supervision:
+            result.update(empty_goal_labels())
         # Opaque within-episode place/view IDs are targets, never policy inputs.
         location = obs.get("location_stats", {})
         position = location.get("pos")
@@ -229,8 +297,11 @@ class SearchEvidence:
             unoccluded = ~valid_block | (ed <= bd)
         entity_hit = (~np.isin(entities, ["null", "none", ""])) & (ed >= 0) & (ed < self.distance) & unoccluded
         block_hit = (~np.isin(blocks, ["air", "null", "none", ""])) & (bd >= 0) & (bd < self.distance - 0.1) & ~entity_hit
-        visible = bool(np.any(block_hit & np.isin(blocks, list(BLOCK_TARGETS.get(self.target, ()))))
-                       or np.any(entity_hit & np.isin(entities, list(ENTITY_TARGETS.get(self.target, ())))))
+        goal_blocks = block_hit & np.isin(blocks, list(BLOCK_TARGETS.get(self.target, ())))
+        goal_entities = entity_hit & np.isin(entities, list(ENTITY_TARGETS.get(self.target, ())))
+        visible = bool(goal_blocks.any() or goal_entities.any())
+        if self.goal_supervision:
+            self._goal_regions(obs, result, arrays, blocks, block_hit, goal_blocks, goal_entities)
         result["search_visible"] = np.float32(visible)
         result["search_visible_valid"] = np.float32(1)
         # Distinct from legacy discovery (reacquisition). Never pay repeatedly
@@ -259,6 +330,56 @@ class SearchEvidence:
         if self.version >= 3:
             self._vnext_geometry(obs, result, arrays, block_hit, entity_hit, cells, initial)
         return result
+
+    def _goal_regions(self, obs, result, arrays, blocks, block_hit, goal_blocks, goal_entities):
+        # A D cell represents one or more sampled rays, not a filled mask.
+        # Rich lidar can miss distant rendered objects. Neither air nor an
+        # empty ray scan supplies a negative full-frame label.
+        cells = goal_ray_cells(obs, len(block_hit))
+        # MineDojo fills miss coordinates at the end of a ray. Its synthetic
+        # miss distance is unreliable, so independently require real hit
+        # coordinates to be interior to the ray and consistent with distance.
+        location = obs.get("location_stats", {})
+        try:
+            eye = np.asarray(location["pos"], float).reshape(3) + [0, 1.62, 0]
+        except (KeyError, TypeError, ValueError):
+            eye = np.full(3, np.nan)
+        points = np.stack([arrays["traced_block_" + axis] for axis in "xyz"], axis=-1).astype(float)+.5
+        distance = np.linalg.norm(points-eye, axis=-1)
+        confirmed_block = (block_hit & (distance < self.distance-1.5)
+                           & (np.abs(distance-arrays["block_distance"]) < 1.3))
+        rays = obs.get("rays", {})
+        solid = np.asarray(rays.get("is_solid", np.zeros(len(block_hit)))).reshape(-1)
+        if solid.shape != block_hit.shape:
+            solid = np.zeros_like(block_hit)
+        transparent = np.array([any(name in block for name in
+                            ("glass", "ice", "leaf", "leaves", "fence", "pane", "door", "slime"))
+                            for block in blocks])
+        targets = (confirmed_block & goal_blocks) | goal_entities
+        first_hits = targets | (confirmed_block & ~goal_blocks & (solid == 1) & ~transparent)
+        labels = result["goal_region_gt"][..., 0]
+        valid = result["goal_region_valid"][..., 0]
+        instances = result["goal_instance_group"][..., 0]
+        conflicts = set()
+        for index in np.flatnonzero(first_hits & (cells[:, 0] >= 0)):
+            cell = tuple(cells[index])
+            if cell in conflicts:
+                continue
+            target = bool(targets[index])
+            instance = 0
+            if confirmed_block[index] and goal_blocks[index]:
+                coord = tuple(int(arrays["traced_block_" + axis][index]) for axis in "xyz")
+                # Episode-local IDs are opaque. No geometry reaches the model.
+                instance = self.goal_instances.setdefault(coord, len(self.goal_instances)+1)
+            if valid[cell] and bool(labels[cell]) != target:
+                valid[cell] = labels[cell] = instances[cell] = 0
+                conflicts.add(cell)
+            else:
+                instances[cell] = 0 if valid[cell] and instances[cell] != instance else instance
+                labels[cell] = target
+                valid[cell] = 1
+        result["goal_label_version"] = np.uint8(GOAL_LABEL_VERSION)
+        result["goal_visible_gt"] = result["goal_visible_valid"] = np.uint8(labels.any())
 
     def _unknown_geometry(self):
         self.previous_visible = None
@@ -332,10 +453,16 @@ class SearchEvidenceWrapper(gym.Wrapper):
         super().__init__(env)
         self.version = int(kwargs.get("version", LABEL_VERSION))
         self.evidence = SearchEvidence(target, **kwargs) if enabled else None
+        self.goal_supervision = self.evidence is not None and self.evidence.goal_supervision
+        self._target = target
         self._last_position = None
+        self._last_goal_quantity = None
+        self._goal_succeeded = False
 
     def _annotate(self, obs, initial=False):
         obs = obs.copy()
+        for key in GOAL_LABEL_SHAPES:
+            obs.pop(key, None)
         obs.update(self.evidence.observe(obs, initial) if self.evidence else empty_labels(self.version))
         return obs
 
@@ -347,22 +474,55 @@ class SearchEvidenceWrapper(gym.Wrapper):
         value = np.asarray(value, float).reshape(-1)
         return value.copy() if value.shape == (3,) and np.isfinite(value).all() else None
 
+    def _goal_quantity(self, obs):
+        inventory = obs.get("inventory", {})
+        try:
+            names = np.asarray(inventory["name"]).reshape(-1)
+            quantities = np.asarray(inventory["quantity"], float).reshape(names.shape)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not np.isfinite(quantities).all() or (quantities < 0).any():
+            return None
+        acceptable = BLOCK_TARGETS[self._target] if self._target == "log" else {self._target}
+        return float(sum(q for n, q in zip(names, quantities) if _name(n) in acceptable))
+
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
-        self._last_position = self._position(obs)
+        self._last_position = self._position(obs) if self.evidence is not None else None
+        self._last_goal_quantity = self._goal_quantity(obs) if self.goal_supervision else None
+        self._goal_succeeded = False
         return self._annotate(obs, initial=True)
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         if self.version >= 3 and info.get("error"):
             labels = obs.copy()
+            for key in GOAL_LABEL_SHAPES:
+                labels.pop(key, None)
             labels.update(empty_labels(self.version))
+            if self.goal_supervision:
+                labels.update(empty_goal_labels())
+                self._last_goal_quantity = None
             if self.evidence is not None:
                 self.evidence._unknown_geometry()
             self._last_position = None
             return labels, reward, done, info
-        position = self._position(obs)
+        position = self._position(obs) if self.evidence is not None else None
         labels = self._annotate(obs)
+        if self.goal_supervision:
+            quantity = self._goal_quantity(obs)
+            known_inventory = quantity is not None and self._last_goal_quantity is not None
+            gain = known_inventory and quantity > self._last_goal_quantity
+            succeeded = bool(info.get("success", False))
+            success_now = succeeded and not self._goal_succeeded
+            interact = isinstance(action, dict) and any(bool(np.asarray(action.get(k, 0)).any())
+                                                         for k in ("attack", "use"))
+            labels["goal_interaction_outcome"] = np.uint8(gain or success_now)
+            labels["goal_interaction_valid"] = np.uint8(gain or success_now or (interact and known_inventory))
+            if labels["goal_interaction_valid"]:
+                labels["goal_label_version"] = np.uint8(GOAL_LABEL_VERSION)
+            self._goal_succeeded = succeeded or self._goal_succeeded
+            self._last_goal_quantity = quantity
         if self.version >= 3 and self.evidence is not None:
             finite_reward = bool(np.isfinite(reward))
             labels["search_progress"] = np.float32(finite_reward and (float(reward) > 0 or bool(info.get("success", False))))

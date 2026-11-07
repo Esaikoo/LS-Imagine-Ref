@@ -10,7 +10,8 @@ import torch
 
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 from apm.outcome import (SearchVNext,SlotMemory,sample_episodes_vnext,CURRENT_EVENTS,
-                         FUTURE_EVENTS,check_vnext_checkpoint,restore_vnext_config)
+                         FUTURE_EVENTS,check_vnext_checkpoint,restore_vnext_config,
+                         goal_discovery_labels,goal_transition_labels)
 
 
 def config():
@@ -54,6 +55,34 @@ class VNextModelsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
+
+    def test_first_verified_discovery_is_same_frame_sparse_evidence(self):
+        length = 6
+        ep = dict(reward=np.zeros(length),is_first=np.arange(length)==0,
+            goal_label_version=np.ones(length),log_goal_version=np.ones(length),
+            log_goal_context=np.zeros((length,8),np.float32),
+            goal_region_gt=np.zeros((length,16,16,1),np.uint8),
+            goal_region_valid=np.zeros((length,16,16,1),np.uint8),
+            goal_visible_gt=np.ones(length),goal_visible_valid=np.ones(length))
+        ep["log_goal_context"][1:,7] = 1
+        ep["log_goal_context"][2,6] = 2  # observation 1, unknown sparse center
+        ep["log_goal_context"][3:5,6] = 2
+        ep["goal_region_gt"][2:4,8,8,0] = 1
+        ep["goal_region_valid"][2:4,8,8,0] = 1
+        y,known = goal_discovery_labels(ep)
+        np.testing.assert_array_equal(y,[0,0,1,0,0,0])
+        np.testing.assert_array_equal(known,[1,0,1,1,1,0])
+        context = torch.from_numpy(np.concatenate((ep["log_goal_context"][1:],np.zeros((1,8),np.float32)))[None])
+        training = {k:v[None] for k,v in ep.items()}
+        training.update(vnext_goal_discovery_gt=y[None],vnext_goal_discovery_valid=known[None],
+            vnext_goal_context_valid=np.array([[1,1,1,1,1,0]],np.float32),
+            goal_instance_group=(ep["goal_region_gt"].astype(np.int64)*17)[None])
+        targets,valid = goal_transition_labels(training,context,1,context.device)
+        self.assertTrue(valid[0,1,0])
+        self.assertEqual(targets[0,1,0].item(),1)
+        self.assertTrue(valid[0,2,1])
+        self.assertEqual(targets[0,2,1].item(),1)
+        self.assertFalse(valid[0,0,1])
 
     def test_stitched_success_is_real_not_padding(self):
         a=episode(3,offset=1);b=episode(4,offset=2)
