@@ -418,7 +418,7 @@ class GoalReference(nn.Module):
         positive_logits = similarity[valid & labels]
         negative_logits = similarity[valid & ~labels]
         loss_reference_assets, reference_assets = self._reference_crop_loss(references)
-        loss_negative_assets = similarity.new_zeros(())
+        loss_negative_assets = loss_negative_asset_peaks = similarity.new_zeros(())
         if self.hard_negatives and len(self.negative_pixels):
             assets = (torch.arange(min(4, len(self.negative_pixels)), device=self.device)
                       + self.updates).remainder(len(self.negative_pixels))
@@ -427,7 +427,12 @@ class GoalReference(nn.Module):
                                   mode="bilinear", align_corners=False)
             distractors = self._match(crops, references)
             center = GRID//2
-            loss_negative_assets = F.softplus(distractors["ensemble"][:, :, center, center]).mean()
+            negative_ensemble = distractors["ensemble"]
+            loss_negative_assets = F.softplus(negative_ensemble[:, :, center, center]).mean()
+            # An annotated negative ROI is target-free throughout the crop.
+            # Train its worst off-center matches too: D can propose anywhere.
+            hardest = negative_ensemble.flatten(2).topk(4, dim=-1).values
+            loss_negative_asset_peaks = F.softplus(hardest).mean()
             neg = distractors["similarities"][:, :, center, center] / .15
             negative_logits = torch.cat((negative_logits, neg.logsumexp(1)-np.log(len(references))))
         contrast = similarity.new_zeros(())
@@ -436,13 +441,14 @@ class GoalReference(nn.Module):
             contrast = F.softplus(negative_mass - positive_logits).mean()
         crossview, temporal, pairs = self._paired_loss(data, indices, result, labels, valid)
         loss = self.loss_weight * (loss_visible + loss_region + .5 * loss_interact
-                                   + .5 * loss_candidate + .25 * (loss_negative_assets + loss_reference_assets)
+                                   + .5 * loss_candidate + .25 * loss_reference_assets
+                                   + .125 * (loss_negative_assets + loss_negative_asset_peaks)
                                    + .2 * contrast + .2 * crossview + .1 * temporal + .1 * brier)
         metrics = {"D/update": 1., "D/loss": loss, "D/region_loss": loss_region,
                    "D/visible_loss": loss_visible, "D/interact_loss": loss_interact,
                    "D/contrast_loss": contrast, "D/crossview_loss": crossview,
                    "D/candidate_loss": loss_candidate, "D/candidate_labels": candidate_valid.sum(),
-                   "D/negative_asset_loss": loss_negative_assets,
+                   "D/negative_asset_loss": loss_negative_assets, "D/negative_asset_peak_loss": loss_negative_asset_peaks,
                    "D/reference_asset_loss": loss_reference_assets, "D/reference_assets": reference_assets,
                    "D/temporal_loss": temporal, "D/brier_loss": brier,
                    "D/train_frames": len(indices), "D/region_labels": valid.sum(),

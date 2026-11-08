@@ -103,23 +103,26 @@ class VisualizationTests(unittest.TestCase):
     def test_fix3_renders_earlier_segment_when_current_has_no_path(self):
         with tempfile.TemporaryDirectory() as directory:
             viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
-            for i in range(3):
+            for i in range(5):
                 obs, output = fixture(i)
+                if i >= 2:
+                    output["log_spatial_pose"][:2] = [(.01 if i == 3 else 0.), 0.]
                 output.update(log_spatial_trajectory_valid=float(i < 2),
-                              log_spatial_segment=int(i == 2), log_spatial_local_valid=1.)
+                              log_spatial_segment=i//2, log_spatial_local_valid=1.)
                 viz.observe("eval", "prior_segment", obs, output, 100)
             state = dict(grid=np.zeros((9,9,6)), pose=[0.,0.,0.,.1], resolution=1.,
                          tracking_ready=False, local_tracking_ready=False, trajectory_valid=False,
-                         active_segment=1, pose_gap_count=2, first_gap_step=2)
+                         active_segment=2, pose_gap_count=2, first_gap_step=2)
             with mock.patch.object(viz, "_render") as render:
-                path = viz.episode_end("eval", "prior_segment", dict(reward=np.zeros(4)), 100,
+                path = viz.episode_end("eval", "prior_segment", dict(reward=np.zeros(6)), 100,
                                        eval_index=1, eval_total=1, map_state=state)
             summary = json.loads((path/"summary.json").read_text())
             self.assertEqual(summary["rendered_segment"],0)
             self.assertEqual(summary["rendered_segment_steps"],2)
+            np.testing.assert_allclose(summary["rendered_segment_extent_m"], [.2, .1])
             self.assertEqual(summary["pose_gap_count"],2)
             self.assertEqual(summary["first_pose_gap_step"],2)
-            self.assertAlmostEqual(summary["localized_fraction"],2/3)
+            self.assertAlmostEqual(summary["localized_fraction"],2/5)
             self.assertEqual(summary["local_tracking_fraction"],1.)
             self.assertIsNone(summary["estimated_trajectory_length"])
             with mock.patch.object(viz, "_save") as save:
@@ -128,6 +131,10 @@ class VisualizationTests(unittest.TestCase):
             self.assertIn("earlier qualified",ax.get_title())
             np.testing.assert_allclose(ax.lines[0].get_xdata()[:2],[0.,.2])
             self.assertTrue(np.isnan(ax.lines[0].get_xdata()[2:]).all())
+            detail, = save.call_args.args[0].axes[1].child_axes
+            self.assertIn("Route detail", detail.get_title())
+            self.assertLess(np.ptp(detail.get_xlim()), np.ptp(ax.get_xlim())/3.)
+            self.assertEqual(detail.get_aspect(), ax.get_aspect())
 
     def test_pose_gap_does_not_create_complete_path_and_align_names_match_phase(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -446,7 +453,9 @@ class VisualizationTests(unittest.TestCase):
             state = dict(grid=np.zeros((9, 9, 6)), pose=[0., 0., .5, 10.],
                          origin=[-4., -4.], resolution=1., tracking_ready=False)
             with mock.patch.object(viz, "_render") as render:
-                path = viz.episode_end("eval", "unlocalized", dict(reward=np.zeros(6)), 100,
+                path = viz.episode_end("eval", "unlocalized",
+                                       dict(reward=np.zeros(6), search_visible=np.zeros(6),
+                                            search_visible_valid=np.zeros(6)), 100,
                                        eval_index=1, eval_total=1, map_state=state)
             with mock.patch.object(viz, "_save") as save:
                 viz._render_map(render.call_args.args[0], path/"B_map.png")
@@ -460,6 +469,8 @@ class VisualizationTests(unittest.TestCase):
             self.assertFalse(summary["terminal_tracking_ready"])
             self.assertFalse(summary["trajectory_length_valid"])
             self.assertIsNone(summary["estimated_trajectory_length"])
+            self.assertIsNone(summary["first_target_step"])
+            self.assertEqual(summary["target_step_source"], "unavailable")
             self.assertEqual(summary["integrated_path_length"], 0.)
             self.assertIn("does not imply actual stillness", summary["localization_note"])
             with np.load(path/"episode_trace.npz") as data:

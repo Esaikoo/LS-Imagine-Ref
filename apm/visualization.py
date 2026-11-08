@@ -371,7 +371,7 @@ class SearchVisualizer:
         success = _array(episode.get("success"), [])
         visible = _array(episode.get("search_visible"), []).reshape(-1)
         valid = _array(episode.get("search_visible_valid"), []).reshape(-1).astype(bool)
-        known = len(visible) == len(valid) and len(visible) > 0
+        known = len(visible) == len(valid) and valid.any()
         hits = np.flatnonzero(valid & (visible > .5)) if known else np.array([], int)
         predicted = [r["step"] for r in ep.rows if r["visible"] >= .7]
         revision = int(_get(self.config, "vnext_spatial_fix_version", 0))
@@ -404,21 +404,29 @@ class SearchVisualizer:
         lengths = np.linalg.norm(np.diff(positions, axis=0), axis=-1)
         rendered_segment = None
         rendered_segment_steps = 0
+        rendered_segment_extent = None
         if revision >= 3:
-            # Select a contiguous, qualified estimate without joining unrelated origins.
+            # Select a qualified local estimate without joining unrelated origins.
+            local_available &= np.isfinite(positions).all(-1)
             moves = local_available[:-1] & local_available[1:] & (segments[:-1] == segments[1:])
-            moving_segments = segments[1:][moves & (lengths > 1.e-6)]
+            moving_segments = np.unique(segments[1:][moves & (lengths > 1.e-6)])
             available_segments = segments[local_available]
             if active_segment in moving_segments:
                 rendered_segment = active_segment
             elif len(moving_segments):
-                rendered_segment = int(moving_segments[-1])
+                # A late fragment may cover only centimetres. Show the widest
+                # earlier qualified segment when the current one has no route.
+                rendered_segment = max(map(int, moving_segments), key=lambda segment: (
+                    np.linalg.norm(np.ptp(positions[local_available & (segments == segment)], axis=0)),
+                    segment))
             elif active_segment in available_segments:
                 rendered_segment = active_segment
             elif len(available_segments):
                 rendered_segment = int(available_segments[-1])
             if rendered_segment is not None:
-                rendered_segment_steps = int(np.count_nonzero(local_available & (segments == rendered_segment)))
+                selected = local_available & (segments == rendered_segment)
+                rendered_segment_steps = int(selected.sum())
+                rendered_segment_extent = np.ptp(positions[selected], axis=0).tolist()
         if revision >= 2:
             same_path = available[:-1] & available[1:]
             if revision >= 3:
@@ -461,6 +469,7 @@ class SearchVisualizer:
             active_segment=active_segment,
             rendered_segment=rendered_segment,
             rendered_segment_steps=rendered_segment_steps,
+            rendered_segment_extent_m=rendered_segment_extent,
             local_tracking_ready=local_terminal,
             persistent_memory_available=bool(map_state.get("memory_available",False)) if map_state else False,
             history_slots_retained=(int(np.asarray(map_state.get("history_valid",[])).sum()) if map_state else 0),
@@ -637,9 +646,15 @@ class SearchVisualizer:
 
     def _render_map(self, snap, path):
         from matplotlib.lines import Line2D
+        from matplotlib import patheffects
         from matplotlib.collections import PatchCollection
         from matplotlib.patches import Rectangle
-        fig = self._figure((9, 7)); ax = fig.add_subplot(111)
+        fig = self._figure((11, 7))
+        layout = fig.add_gridspec(1, 2, width_ratios=(3., 1.), left=.10, right=.97,
+                                  top=.84, bottom=.20, wspace=.10)
+        ax = fig.add_subplot(layout[0])
+        sidebar = fig.add_subplot(layout[1])
+        sidebar.set_axis_off()
         ax.set_facecolor("#ecedef")
         state = snap["map_state"]
         summary = snap["summary"]
@@ -699,7 +714,7 @@ class SearchVisualizer:
                     if len(goal_evidence) == len(cells):
                         for index, color, marker, name in (
                                 (0, "#db8d2d", ".", "candidate viewpoint"),
-                                (1, "#198544", "o", "verified viewpoint"),
+                                (1, "#198544", "o", "model-trusted viewpoint"),
                                 (2, "#ab3b42", "x", "rejected viewpoint")):
                             show = goal_evidence[:, index] > .1
                             if show.any():
@@ -707,27 +722,46 @@ class SearchVisualizer:
             # NaN at unavailable steps also prevents a line across any gap.
             drawn = poses.copy()
             drawn[~available,:2] = np.nan
-            ax.plot(drawn[:, 0], drawn[:, 1], color="#284d7a", linewidth=1.4)
             first, last = poses[available][[0, -1]]
-            ax.scatter(first[0], first[1], marker="*", s=85, color="#bc5149", zorder=4)
-            xy = np.concatenate(bounds, axis=0)
-            scale = max(.4, float(np.ptp(poses[available,:2], axis=0).max())*.04)
             x, z, yaw = last[:3]
-            ax.arrow(x, z, -math.sin(yaw)*scale, math.cos(yaw)*scale,
-                     width=scale*.12, head_width=scale*.6, color="#1765b0", zorder=5)
-            margin = max(2.*resolution, float(np.ptp(xy, axis=0).max())*.08)
-            ax.set_xlim(xy[:,0].min()-margin, xy[:,0].max()+margin)
-            ax.set_ylim(xy[:,1].min()-margin, xy[:,1].max()+margin)
+
+            def draw_route(axis, extent, margin):
+                axis.plot(drawn[:, 0], drawn[:, 1], color="#284d7a", linewidth=1.5, zorder=3,
+                          path_effects=[patheffects.withStroke(linewidth=2.8, foreground="#edf4fa")])
+                axis.scatter(first[0], first[1], marker="*", s=46, color="#bc5149",
+                             edgecolors="white", linewidths=.4, zorder=4)
+                scale = (float(np.ptp(extent, axis=0).max()) + 2.*margin)*.045
+                axis.arrow(x, z, -math.sin(yaw)*scale, math.cos(yaw)*scale,
+                           width=scale*.08, head_width=scale*.50, color="#1765b0", zorder=5)
+                axis.set_xlim(extent[:, 0].min()-margin, extent[:, 0].max()+margin)
+                axis.set_ylim(extent[:, 1].min()-margin, extent[:, 1].max()+margin)
+                axis.set_aspect("equal", adjustable="box")
+
+            xy = np.concatenate(bounds, axis=0)
+            span = float(np.ptp(xy, axis=0).max())
+            route = poses[available, :2]
+            route_span = float(np.ptp(route, axis=0).max())
+            margin = max(.65*resolution, span*.10)
+            draw_route(ax, xy, margin)
             label_prefix = "Local-segment" if segmented else "Episode-relative"
             ax.set_xlabel(label_prefix+" x (estimated metres)")
             ax.set_ylabel(label_prefix+" z (estimated metres)")
-            ax.set_aspect("equal", adjustable="box")
+            if 1.e-6 < route_span < (span + 2.*margin)/3.:
+                detail = sidebar.inset_axes([.12, .30, .83, .35])
+                detail.set_facecolor("#ecedef")
+                detail.set_title("Route detail (metres)", fontsize=9, pad=6)
+                detail.tick_params(labelsize=7)
+                draw_route(detail, route, max(.015, route_span*.16))
             handles = [Line2D([], [], marker="s", linestyle="", color=c, label=t) for c, t in
                        (("#ecedef", "unknown"), ("#c0d3dd", "directional observation proxy"),
                         ("#486987", "visited"), ("#203e5a", "repeat visits"),
                         ("#3cad69", "ground-view heatmap cue" if summary["spatial_fix_version"]>=2 else "target-evidence viewpoint"))]
             goal_handles, _ = ax.get_legend_handles_labels()
-            ax.legend(handles=handles + goal_handles, loc="upper right", fontsize=7)
+            route_handles = [Line2D([], [], color="#284d7a", label="Estimated route"),
+                             Line2D([], [], marker="*", linestyle="", color="#bc5149", label="Route start"),
+                             Line2D([], [], marker=">", linestyle="", color="#1765b0", label="Last heading")]
+            sidebar.legend(handles=route_handles + handles + goal_handles, loc="upper left",
+                           fontsize=8, frameon=False, borderaxespad=0, labelspacing=.30)
         if not has_pose:
             tracking_status = "no qualified map pose"
         elif segmented:
@@ -737,8 +771,16 @@ class SearchVisualizer:
         if segmented:
             tracking_status += " | persistent visual history: " + (
                 "active" if summary["persistent_memory_available"] else "unavailable")
-        ax.set_title("B: estimated 2D search memory | %s | %d steps\n%s" %
-                     ("success" if summary["success"] else "failure", summary["total_steps"], tracking_status))
+        extent = summary.get("rendered_segment_extent_m")
+        detail_text = "" if extent is None else (
+            " | %.2f × %.2f m estimated span" % tuple(extent) if max(extent) > 1.e-6
+            else " | no estimated translation in this segment")
+        fig.text(.10, .945, "B · Estimated 2D search memory", fontsize=16,
+                 fontweight="bold", color="#17324d")
+        fig.text(.10, .895, "%s | %d steps | %s%s" %
+                 ("Success" if summary["success"] else "Failure", summary["total_steps"],
+                  tracking_status, detail_text), fontsize=10, color="#536477")
+        ax.set_title(tracking_status.split(" | ")[0], fontsize=10, color="#33475b")
         if summary["spatial_fix_version"]>=3 and state is not None:
             frames = np.asarray(state.get("history_frames",[]))
             valid = np.asarray(state.get("history_valid",[]),bool).reshape(-1)
@@ -748,11 +790,12 @@ class SearchVisualizer:
                     factor = 255. if selected.max(initial=0)<=1.01 else 1.
                     selected = np.clip(selected*factor,0,255).astype(np.uint8)
                 ribbon = np.concatenate(list(selected),axis=1)
-                preview=fig.add_axes([.65,.23,.27,.10])
-                preview.imshow(ribbon,interpolation="nearest")
-                preview.set_xticks([]);preview.set_yticks([])
-                preview.set_title("Persistent observed RGB tokens (%d slots)" % summary["history_slots_retained"],fontsize=7)
-        fig.subplots_adjust(bottom=.21)
+                preview = sidebar.inset_axes([0., .02, 1., .16])
+                preview.imshow(ribbon, interpolation="nearest")
+                preview.set_xticks([])
+                preview.set_yticks([])
+                preview.set_title("Observed RGB tokens (%d slots)" % summary["history_slots_retained"],
+                                  fontsize=8)
         if segmented:
             footer = ("Local tracking: %.1f%% | continuous episode-origin tracking: %.1f%%\n"
                       "Qualified local segments have separate origins.\n"

@@ -6,6 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -130,6 +131,27 @@ class ReferenceTests(unittest.TestCase):
         report = other_world.train_batch(labeled())
         self.assertEqual(report["D/reference_assets"], 2.)
         self.assertGreater(report["D/reference_asset_loss"], 0.)
+
+    def test_negative_asset_penalizes_off_center_high_score(self):
+        model = GoalReference(config(), bank())
+        model.negative_pixels = torch.full((1, 64, 64, 3), 255, dtype=torch.uint8)
+        edge_logit = torch.tensor(5., requires_grad=True)
+        original_match = model._match
+
+        def match(rgb, *args):
+            result = original_match(rgb, *args)
+            if bool((rgb > .99).all()):
+                ensemble = torch.full_like(result["ensemble"], -6.)
+                ensemble[:, :, 0, :4] = edge_logit
+                result["ensemble"] = ensemble
+            return result
+
+        with patch.object(model, "_match", side_effect=match):
+            loss, metrics = model.loss(labeled())
+        self.assertLess(metrics["D/negative_asset_loss"].item(), .01)
+        self.assertGreater(metrics["D/negative_asset_peak_loss"].item(), 5.)
+        gradient, = torch.autograd.grad(loss, (edge_logit,))
+        self.assertGreater(gradient.item(), .1)
 
     def test_interaction_feedback_aligns_to_actual_source(self):
         model = GoalReference(config(), bank())
