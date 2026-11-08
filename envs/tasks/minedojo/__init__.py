@@ -118,7 +118,8 @@ def make_minedojo(task_id: str, task_specs, sim_specs):
     # Eval/off modes explicitly disable the extra sensor.
     minedojo_specs["use_lidar"] = bool(evidence.get("enabled", False))
     if minedojo_specs["use_lidar"]:
-        minedojo_specs["lidar_rays"] = lidar_rays(evidence.get("distance", 32.0))
+        minedojo_specs["lidar_rays"] = lidar_rays(
+            evidence.get("distance", 32.0), goal=bool(evidence.get("goal_supervision", False)))
     if task_specs.get("simulator_seed") is not None:
         minedojo_specs["seed"] = task_specs["simulator_seed"]
         minedojo_specs["world_seed"] = task_specs["simulator_seed"]

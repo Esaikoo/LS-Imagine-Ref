@@ -62,7 +62,9 @@ FIELDS.update(context=(CONTEXT_DIM,),mask=(N_OPTIONS,),prediction=(N_OPTIONS,PRE
               actuator_before=(3,),actuator_after=(3,),applied=(9,),plan_commands=(3,),actor_plan=(3,))
 FIELDS = {"log_vnext_"+k:v for k,v in FIELDS.items()}
 GOAL_FIELDS = dict(log_goal_context=(8,), log_goal_forecast=(N_OPTIONS,2),
+    log_goal_new_area_forecast=(N_OPTIONS,),
     log_goal_direction_novelty=(N_OPTIONS,), log_goal_verify_used=(), log_goal_reject_used=(),
+    log_goal_absence_confirmed=(),
     log_goal_search_eligible=(), log_goal_search_learned_used=(), log_goal_search_probe_used=())
 
 
@@ -744,6 +746,9 @@ class VNextController(nn.Module):
             evidence = goal_context[:,7]>.5
             goal_trusted = evidence & (goal_context[:,6]==2)
             uncertain = evidence & (goal_context[:,6]==1)
+            absent = torch.as_tensor(obs.get("goal_absence_confirmed", False),
+                                     device=device).bool().expand(batch)
+            absent = absent & ~goal_trusted & ~uncertain
             state["goal_verify_cooldown"] = (state["goal_verify_cooldown"]-1).clamp_min(0)
             # A later, genuinely changed viewpoint can start a new bounded
             # verification attempt after the previous one has cooled down.
@@ -753,19 +758,20 @@ class VNextController(nn.Module):
             goal_verify &= state["goal_verify_cooldown"]==0
             peak_rejected = torch.as_tensor(obs.get("goal_peak_rejected", goal_context[:,5]>.5),
                 device=device).bool().reshape(batch)
-            sky = evidence & (goal_context[:,6]==0) & peak_rejected & (state["actuator"][:,2]<=-30)
+            sky = ~goal_trusted & ~uncertain & peak_rejected & (state["actuator"][:,2]<=-30)
             state["goal_conflict_run"] = torch.where(sky,state["goal_conflict_run"]+1,
                 torch.zeros_like(state["goal_conflict_run"]))
             upward_or_attack = (proposed==2)|(proposed==1)|(proposed==11)
             goal_reject = sky & (state["goal_conflict_run"]>=2) & upward_or_attack & ~progress
-            high = torch.where(evidence,goal_trusted,high)
-            low = torch.where(evidence,~goal_trusted,low)
-            state["goal_absent_run"] = torch.where(~high&~uncertain,
+            high = goal_trusted | (high & ~absent & ~sky)
+            low = absent | sky | (low & ~goal_trusted & ~uncertain)
+            state["goal_absent_run"] = torch.where(absent,
                 state["goal_absent_run"]+1, torch.zeros_like(state["goal_absent_run"]))
             # D visible confidence never authorizes attack/reach on its own.
             interaction_valid = torch.as_tensor(obs.get("goal_interaction_valid", False),device=device).bool().expand(batch)
             interaction_prob = torch.as_tensor(obs.get("goal_interaction_probability", 0.),device=device).reshape(-1).expand(batch)
-            interaction_allowed = (~evidence|goal_trusted) & (~interaction_valid|(interaction_prob>=.5))
+            interaction_allowed = ((~evidence | goal_trusted) & ~absent & ~sky
+                                   & (~interaction_valid | (interaction_prob >= .5)))
             act &= interaction_allowed
         interaction_probe=torch.zeros_like(act)
         if self.guidance_fix:
@@ -847,11 +853,11 @@ class VNextController(nn.Module):
         span=(state["age"]+1).clamp(max=window).float()
         extra_fraction = float(cfg(self.config,"vnext_total_fraction"))
         if self.goal_search and bool(getattr(self.config,"goal_search_adaptive_budget",True)):
-            absent = ((state["goal_absent_run"]-3)/20.).clamp(0,1)
+            absence_ramp = ((state["goal_absent_run"]-3)/20.).clamp(0,1)
             search_max = max(fraction,float(getattr(self.config,"goal_search_absent_fraction",.3)))
             total_max = max(extra_fraction,float(getattr(self.config,"goal_total_absent_fraction",.4)))
-            fraction = fraction+(search_max-fraction)*absent
-            extra_fraction = extra_fraction+(total_max-extra_fraction)*absent
+            fraction = fraction+(search_max-fraction)*absence_ramp
+            extra_fraction = extra_fraction+(total_max-extra_fraction)*absence_ramp
         search_limit=torch.floor(span*fraction).clamp_min(3)
         extra_limit=torch.floor(span*extra_fraction).clamp_min(3)
         remaining=(self.max_steps()-state["age"]).clamp_min(0)
@@ -950,6 +956,7 @@ class VNextController(nn.Module):
         info={key:feat.new_zeros(batch,*dims) for key,dims in FIELDS.items()}
         info["log_vnext_version"].fill_(self.version)
         goal_forecast = feat.new_zeros(batch,N_OPTIONS,2)
+        goal_new_area = feat.new_zeros(batch,N_OPTIONS) if self.goal_search else None
         if self.goal_search:
             info["log_goal_search_eligible"] = ((phase==SEARCH)&mask[:,1:7].any(-1)).float()
         info.update(log_vnext_actor_action=proposed,log_vnext_phase=phase,
@@ -1022,6 +1029,8 @@ class VNextController(nn.Module):
                     option_ids=torch.arange(N_OPTIONS,device=device),**goal_inputs)
                 if self.goal_search:
                     goal_forecast[calculate] = result.get("goal_events", goal_forecast[calculate]).detach()
+                    if "new_area" in result:
+                        goal_new_area[calculate] = result["new_area"].detach()
                     goal_q_inputs = dict(goal_context=goal_context[calculate],goal_prediction=goal_forecast[calculate])
                 else:
                     goal_q_inputs = {}
@@ -1318,6 +1327,8 @@ class VNextController(nn.Module):
         state["cursor"]=(state["cursor"]+1)%window;state["age"]+=1
         if self.goal_search:
             info.update(log_goal_context=goal_context,log_goal_forecast=goal_forecast,
+                log_goal_new_area_forecast=goal_new_area,
+                log_goal_absence_confirmed=absent.float(),
                 log_goal_direction_novelty=goal_novelty,
                 log_goal_verify_used=(state["goal_verify_active"]&extra).float(),
                 log_goal_reject_used=(state["goal_reject_active"]&extra).float(),

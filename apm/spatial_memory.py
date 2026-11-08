@@ -137,7 +137,8 @@ class SpatialMapMemory(nn.Module):
             min_calibration=int(cfg(config, "vnext_pose_min_calibration")),
             min_moving=int(cfg(config, "vnext_pose_min_moving")),
             calibration_ratio=float(cfg(config, "vnext_pose_calibration_ratio")),
-            cache_size=int(cfg(config, "vnext_pose_cache_size")), fix_version=min(self.fix_version, 1))
+            cache_size=int(cfg(config, "vnext_pose_cache_size")), fix_version=min(self.fix_version, 1),
+            loss_version=int(getattr(config, "vnext_pose_loss_version", 1)))
         self.encoder = MapEncoder(self.dim)
         self.event_head = nn.Linear(self.dim, 3)  # current evidence, new view, real progress
         if self.fix_version >= 3:

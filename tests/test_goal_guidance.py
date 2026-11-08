@@ -21,6 +21,7 @@ class MatchedRegions:
     def __init__(self):
         self.reliability = torch.tensor([1., 0., 0.])
         self.region = torch.full((1,16,16), .04)
+        self.visible = torch.tensor([.5])
 
     def observation_images(self, data):
         return data["image"]
@@ -29,7 +30,7 @@ class MatchedRegions:
         return dict(leading=(1,), probability=self.region, saliency=self.region,
                     heatmap=heatmap[:,None].float()/255.,
                     region_uncertainty=torch.zeros_like(self.region),
-                    visible_probability=torch.tensor([.5]),
+                    visible_probability=self.visible,
                     interaction_probability=torch.tensor([.5]),
                     embeddings=torch.nn.functional.normalize(torch.ones((1,8,16,16)), dim=1))
 
@@ -64,6 +65,19 @@ class GoalGuidanceTests(unittest.TestCase):
         self.assertLess(fused["heatmap"].float().mean().item(), 150.)
         self.assertGreater(fused["heatmap"].float().mean().item(), 0.)
         self.assertTrue(bool((raw["heatmap"] == 255).all()))
+
+    def test_low_visibility_requires_separate_frame_calibration_and_region_agreement(self):
+        model = MatchedRegions()
+        model.visible.fill_(.1)
+        _, evidence, _ = build_policy_observation(obs(255), model)
+        self.assertTrue(evidence["peak_rejected"].item())
+        self.assertFalse(evidence["absence_confirmed"].item())
+        model.reliability[1] = .3
+        _, evidence, _ = build_policy_observation(obs(0), model)
+        self.assertTrue(evidence["absence_confirmed"].item())
+        model.region[:, 11, 12] = .85
+        _, evidence, _ = build_policy_observation(obs(0), model)
+        self.assertFalse(evidence["absence_confirmed"].item())
 
     def test_rgb_only_match_can_supply_guidance_and_track(self):
         model = MatchedRegions()

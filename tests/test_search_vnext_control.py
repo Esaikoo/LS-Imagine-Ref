@@ -89,7 +89,7 @@ class VNextControlTests(unittest.TestCase):
         cur = current(visible=.8,joint=.0)
         # A's uncertain/global visibility is not a license to follow a locally
         # rejected bright region. The second corroborated frame is required.
-        cur["goal_context"] = torch.tensor([[.45,.8,.2,0.,-.6,.4,0.,1.]])
+        cur["goal_context"] = torch.tensor([[.45,.8,.2,0.,-.6,.4,0.,0.]])
         action,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,
             proposal=1,cur=cur,training=False,obs={"goal_peak_rejected":torch.tensor([True])})
         self.assertEqual(action.argmax(-1).item(),1)
@@ -116,6 +116,38 @@ class VNextControlTests(unittest.TestCase):
             proposal=0,cur=cur,training=False)
         self.assertEqual(info["log_goal_verify_used"].item(),0)
         self.assertEqual(state["goal_verify_trials"].item(),1)
+
+    def test_goal_budget_counts_only_calibrated_absence_and_resets_on_unknown(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,vnext_probe_probability=0.))
+        state = controller.initial(1,torch.device("cpu"))
+        state["age"][:] = 100
+        state["search_probe_cooldown"][:] = 100
+        cur = current(ready=False)
+        ab = UnsupportedSpatialAB()
+        for _ in range(26):
+            _,state,info = self.run_step(controller,ab,state,cur=cur,training=False)
+        self.assertEqual(state["goal_absent_run"].item(),0)
+        self.assertEqual(info["log_goal_absence_confirmed"].item(),0)
+        for _ in range(26):
+            _,state,info = self.run_step(controller,ab,state,cur=cur,training=False,
+                obs={"goal_absence_confirmed":torch.tensor([True])})
+        self.assertEqual(state["goal_absent_run"].item(),26)
+        self.assertEqual(info["log_goal_absence_confirmed"].item(),1)
+        _,state,_ = self.run_step(controller,ab,state,cur=cur,training=False)
+        self.assertEqual(state["goal_absent_run"].item(),0)
+
+    def test_goal_uncertain_evidence_does_not_erase_independent_a_visibility(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,vnext_probe_probability=0.))
+        cur = current(visible=.9,joint=.99)
+        cur["goal_context"] = torch.tensor([[.52,.25,.75,0.,0.,.15,0.,1.]])
+        state = controller.initial(1,torch.device("cpu"))
+        state["search_probe_cooldown"][:] = 100
+        for _ in range(4):
+            _,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,cur=cur,training=False)
+        self.assertEqual(info["log_vnext_phase"].item(),ALIGN)
+        self.assertEqual(info["log_vnext_mask"][0,8].item(),0)
 
     def test_goal_search_probe_uses_local_novelty_without_forecast_qualification(self):
         controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,

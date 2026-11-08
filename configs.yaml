@@ -29,6 +29,7 @@ defaults:
   vnext_pose_ready_error: 0.25
   vnext_pose_max_sigma: 1.0
   vnext_pose_loss_weight: 1.0
+  vnext_pose_loss_version: 1
   vnext_score_cost: 0.01
   vnext_score_uncertainty: 0.2
   vnext_visual_enabled: False
@@ -542,6 +543,7 @@ apm_vnext:
 
 # Standalone preset, using the spatial fix3 backbone.
 apm_vnext4:
+  vnext_pose_loss_version: 2
   compile: False
   search_vnext_enabled: True
   vnext_spatial_enabled: True
@@ -555,5 +557,5 @@ apm_vnext4:
   goal_search_enabled: True
   search_eval_evidence: False
   vnext_visual_audit: False
-  video_pred_log: False
+  video_pred_log: True
   check_obs_enabled: False

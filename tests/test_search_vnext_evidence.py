@@ -116,6 +116,46 @@ class GoalEvidenceTests(unittest.TestCase):
         self.assertGreater(cells[21,1], 8)
         self.assertTrue((goal_ray_cells({"rgb": obs["rgb"]}, 45) == -1).all())
 
+    def test_extra_train_rays_expand_projected_labels_without_changing_a(self):
+        original = goal_observation("stone")
+        obs = copy.deepcopy(original)
+        angles = np.asarray(lidar_rays(goal=True))
+        rays = obs["rays"]
+        count = len(angles)
+        self.assertEqual(count, 77)
+        self.assertEqual(lidar_rays(goal=True)[:45], lidar_rays())
+        for key, values in rays.items():
+            rays[key] = np.pad(values, (0, count-45), mode="edge")
+        rays["ray_pitch"], rays["ray_yaw"] = angles[:, 0], angles[:, 1]
+        cells = goal_ray_cells(obs, count)
+        self.assertGreaterEqual(len({tuple(cell) for cell in cells if cell[0] >= 0}), 12)
+        index = next(i for i in range(45, count) if cells[i, 0] >= 0)
+        rays["block_name"][index] = "sand"
+        rays["block_distance"][index] = 2.
+        rays["traced_block_y"][index] = 65
+        rays["traced_block_z"][index] = 2
+        target = SearchEvidence("sand", version=3, goal_supervision=True)
+        baseline = target.observe(original, initial=True)
+        result = target.observe(obs, initial=True)
+        for key in VNEXT_LABEL_KEYS:
+            np.testing.assert_equal(result[key], baseline[key], err_msg=key)
+        self.assertTrue(result["goal_visible_gt"])
+        self.assertTrue(result["goal_region_gt"][tuple(cells[index])][0])
+
+    def test_visibility_remains_known_when_projected_cell_varies_in_fov(self):
+        obs = goal_observation("air")
+        index = 13
+        self.assertTrue((goal_ray_cells(obs, 45)[index] < 0).all())
+        rays = obs["rays"]
+        rays["block_name"][index] = "sand"
+        rays["block_distance"][index] = 2.
+        rays["traced_block_y"][index] = 65
+        rays["traced_block_z"][index] = 2
+        result = SearchEvidence("sand", version=3, goal_supervision=True).observe(obs)
+        self.assertFalse(result["goal_region_valid"].any())
+        self.assertTrue(result["goal_visible_valid"])
+        self.assertTrue(result["goal_visible_gt"])
+
     def test_target_categories_and_sheep_do_not_fabricate_instance_identity(self):
         for target, block in (("sand","red_sand"),("log","birch_log"),
                               ("water_bucket","water"),("iron_ore","iron_ore")):
@@ -123,7 +163,7 @@ class GoalEvidenceTests(unittest.TestCase):
             self.assertTrue(labels["goal_visible_gt"], target)
         obs = goal_observation("stone")
         obs["rays"]["entity_name"] = obs["rays"]["entity_name"].astype("<U24")
-        obs["rays"]["entity_name"][22] = "sheep"
+        obs["rays"]["entity_name"][22] = "EntitySheep"
         obs["rays"]["entity_distance"][22] = 1.
         labels = SearchEvidence("wool", version=3, goal_supervision=True).observe(obs)
         self.assertTrue(labels["goal_visible_gt"])

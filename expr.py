@@ -157,7 +157,10 @@ class LS_Imagine(nn.Module):
             if self._should_log(step):
                 self.flush_metrics()
                 if self._config.video_pred_log:
-                    openl = self._wm.video_pred(self._goal_model_batch(next(self._dataset)))
+                    # vNext4 can reuse this step's replay window without
+                    # advancing the training sampler for a diagnostic.
+                    video_data = data if self._goal_reference is not None and steps else next(self._dataset)
+                    openl = self._video_prediction(video_data)
                     self._logger.video("train_openl", to_np(openl))
                 self._logger.write(fps=True)
 
@@ -345,6 +348,7 @@ class LS_Imagine(nn.Module):
             clean["goal_context"] = goal["context"]
             clean["goal_evidence_state"] = goal["state"]
             clean["goal_peak_rejected"] = goal["peak_rejected"]
+            clean["goal_absence_confirmed"] = goal["absence_confirmed"]
             clean["goal_interaction_probability"] = goal["interaction_probability"]
             clean["goal_interaction_valid"] = goal["interaction_valid"]
         embed = self._wm.encoder(clean)
@@ -409,6 +413,7 @@ class LS_Imagine(nn.Module):
                 log_goal_context=goal["context"].detach(),
                 log_goal_state=goal["state"].detach(),
                 log_goal_gate=goal["gate"].detach(),
+                log_goal_region_cal_reliability=self._goal_reference.reliability[0].expand_as(goal["gate"]),
                 log_goal_conflict=goal["conflict"].detach(),
                 log_goal_peak_rejected=goal["peak_rejected"].detach(),
                 log_goal_interaction_probability=goal["interaction_probability"].detach(),
@@ -438,6 +443,16 @@ class LS_Imagine(nn.Module):
             return raw
         model_data, _, _ = build_policy_observation(raw, self._goal_reference)
         return fuse_zoomed_observation(model_data, self._goal_reference)
+
+    def _video_prediction(self, raw):
+        if self._goal_reference is None:
+            return self._wm.video_pred(raw)
+        device = torch.device(self._config.device)
+        devices = [device] if device.type == "cuda" else []
+        # The original renderer displays at most six trajectories. Slice
+        # before D and the world model to avoid encoding the unused examples.
+        with torch.random.fork_rng(devices=devices):
+            return self._wm.video_pred(self._goal_model_batch({key: value[:6] for key, value in raw.items()}))
 
     def _train(self, data):
         metrics = {}
@@ -879,8 +894,9 @@ def main(config): # config is namespace
                     is_training=False,
                 )
                 if config.video_pred_log:
-                    video_pred = agent._wm.video_pred(agent._goal_model_batch(next(eval_dataset)))
+                    video_pred = agent._video_prediction(next(eval_dataset))
                     logger.video("eval_openl", to_np(video_pred))
+                    logger.write()
 
             if pending_prefill:
                 state = prefill_training()

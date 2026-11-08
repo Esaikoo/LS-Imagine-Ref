@@ -91,8 +91,54 @@ def goal_discovery_labels(episode):
     return target, valid
 
 
-def goal_transition_labels(data, context, h, device):
-    """Use real confirmation and sparse identities; missing rays stay unknown."""
+def goal_candidate_instances(data, context, device):
+    """Train-only exact instance IDs supported by the causal proposal shortlist."""
+    identity = data.get("goal_instance_group")
+    region_valid = data.get("goal_region_valid")
+    if identity is None or region_valid is None:
+        return None
+    shape = context.shape[:-1]
+    identity = torch.as_tensor(identity, device=device).long()
+    region_valid = torch.as_tensor(region_valid, device=device)
+    if identity.ndim == 5 and identity.shape[-1] == 1:
+        identity, region_valid = identity[..., 0], region_valid[..., 0]
+    if identity.ndim != 4 or identity.shape[:2] != shape or identity.shape != region_valid.shape:
+        raise ValueError("Goal identity and region masks must align with observations")
+    version = torch.as_tensor(data.get("goal_label_version", np.zeros(shape)), device=device)
+    known = torch.as_tensor(data.get("vnext_goal_context_valid", np.zeros(shape)), device=device)
+    known = (version == 1) & (known > .5)
+    height, width = identity.shape[-2:]
+    yy, xx = torch.meshgrid(
+        (torch.arange(height, device=device)+.5)/height,
+        (torch.arange(width, device=device)+.5)/width, indexing="ij")
+    # Legacy replay without box logs can only corroborate its exact selected
+    # center. Missing or invalid context never creates a candidate.
+    center_x = ((context[..., 3].clamp(-1, 1)+1)*.5*width).long().clamp(max=width-1)
+    center_y = ((context[..., 4].clamp(-1, 1)+1)*.5*height).long().clamp(max=height-1)
+    support = ((xx == (center_x[..., None, None]+.5)/width)
+               & (yy == (center_y[..., None, None]+.5)/height))
+    support &= ((context[..., 6] > 0) & (context[..., 7] > .5))[..., None, None]
+    boxes = data.get("vnext_goal_boxes")
+    if boxes is not None:
+        boxes = torch.as_tensor(boxes, device=device)
+        if boxes.shape != (*shape, 8, 4):
+            raise ValueError("Goal boxes need one causal shortlist per observation")
+        left, top, right, bottom = boxes.unbind(-1)
+        usable = (torch.isfinite(boxes).all(-1) & (boxes >= 0).all(-1)
+                  & (boxes <= 1).all(-1) & (left < right) & (top < bottom))
+        inside = ((xx >= left[..., None, None]) & (xx < right[..., None, None])
+                  & (yy >= top[..., None, None]) & (yy < bottom[..., None, None])
+                  & usable[..., None, None]).any(-3)
+        # A corroborating ray may land anywhere in the proposal. This does
+        # not promote the whole box to a verified target or require D to have
+        # calibrated already, which formerly created a circular prerequisite.
+        support = torch.where(usable.any(-1)[..., None, None], inside, support)
+    supported = known[..., None, None] & (region_valid > .5) & (identity > 0) & support
+    return torch.where(supported, identity, 0).flatten(-2).sort(dim=-1).values
+
+
+def goal_transition_labels(data, context, h, device, candidate_instances=None):
+    """Predict corroborated discoveries and repeat verification of sampled targets."""
     shape = tuple(context.shape[:-1])
     def field(key):
         return torch.as_tensor(data.get(key, np.zeros(shape)), device=device)
@@ -115,25 +161,19 @@ def goal_transition_labels(data, context, h, device):
     discovery_known = discovered | span.all(-1)
     reobserved = torch.zeros_like(discovered)
     reobserve_known = torch.zeros_like(discovered)
-    identity = data.get("goal_instance_group")
-    region_valid = data.get("goal_region_valid")
-    if identity is not None and region_valid is not None:
-        identity = torch.as_tensor(identity, device=device).long()
-        region_valid = torch.as_tensor(region_valid, device=device)
-        if identity.ndim == 5 and identity.shape[-1] == 1:
-            identity, region_valid = identity[..., 0], region_valid[..., 0]
-        if identity.ndim != 4 or identity.shape[:2] != shape or identity.shape != region_valid.shape:
-            raise ValueError("Goal identity and region masks must align with observations")
-        height, width = identity.shape[-2:]
-        x = ((context[..., 3].clamp(-1, 1)+1)*.5*width).long().clamp(max=width-1)
-        y = ((context[..., 4].clamp(-1, 1)+1)*.5*height).long().clamp(max=height-1)
-        index = (y*width+x)[..., None]
-        ids = identity.flatten(-2).gather(-1,index).squeeze(-1)
-        labels_known = region_valid.flatten(-2).gather(-1,index).squeeze(-1) > .5
-        labels_known &= known_context & (field("goal_label_version") == 1)
-        labels_known &= (context[..., 6] > 0) & (context[..., 7] > .5)
-        reobserve_known = labels_known[:, :-h] & labels_known[:, h:] & (ids[:, :-h] > 0)
-        reobserved = reobserve_known & (ids[:, :-h] == ids[:, h:])
+    if candidate_instances is None:
+        candidate_instances = goal_candidate_instances(data, context, device)
+    if candidate_instances is not None:
+        # Exact static block IDs are episode-local. Training masks crossed
+        # episode boundaries and invalid actual action windows separately.
+        before = candidate_instances[:, :-h].contiguous()
+        after = candidate_instances[:, h:].contiguous()
+        reobserve_known = (before[..., -1] > 0) & (after[..., -1] > 0)
+        index = torch.searchsorted(after, before).clamp(max=after.shape[-1]-1)
+        reobserved = ((before > 0) & (after.gather(-1, index) == before)).any(-1)
+        # Disjoint confirmed samples teach that the two shortlists verified
+        # different targets. A frame with no confirmed candidate is unknown;
+        # neither case claims an unscanned region was empty.
     return (torch.stack((discovered, reobserved), -1).float(),
             torch.stack((discovery_known, reobserve_known), -1))
 
@@ -865,9 +905,10 @@ class SearchVNext(nn.Module):
                 raise ValueError("A qualification history validity must have shape [batch,time]")
             qualification_context=torch.isfinite(marker)&(marker>.5)
             qualification_context &= torch.as_tensor(details["valid"],device=device).bool()
-        goal = None
+        goal = goal_instances = None
         if self.goal_search:
             goal = goal_context_tensor(data.get("vnext_goal_context"), features)
+            goal_instances = goal_candidate_instances(data, goal, device)
             if bool(getattr(self.config, "goal_ref_enabled", False)):
                 context_present = torch.as_tensor(data.get("vnext_goal_context_valid", np.zeros((b,t))), device=device) > .5
                 qualification_context &= context_present
@@ -941,7 +982,7 @@ class SearchVNext(nn.Module):
                 target[...,6]=fy[:,h:,6]
                 known_window[...,6]=fk[:,h:,6]
             if self.goal_search:
-                goal_y, goal_valid = goal_transition_labels(data, goal, h, device)
+                goal_y, goal_valid = goal_transition_labels(data, goal, h, device, goal_instances)
                 target = torch.cat((target[..., :7], goal_y, target[..., 7:]), -1)
                 known_window = torch.cat((known_window[..., :7], goal_valid, known_window[..., 7:]), -1)
             lengths=torch.full((b,n),h,device=device)
@@ -953,7 +994,9 @@ class SearchVNext(nn.Module):
             pred=self.a(features[:,:n],memory[:,:n],seq,act[:,:n],lengths,phase[:,1:n+1],remain,**goal_inputs)
             if self.goal_search:
                 metrics["A/H%d/verified_discovery_labels"%h] = (mask[..., 7]&train[:,:n]).sum().detach()
-                metrics["A/H%d/reobserve_labels"%h] = (mask[..., 8]&train[:,:n]).sum().detach()
+                observed_pair = mask[..., 8] & train[:, :n]
+                metrics["A/H%d/reobserve_labels"%h] = observed_pair.sum().detach()
+                metrics["A/H%d/reobserve_positive_labels"%h] = (observed_pair & (target[..., 8] > .5)).sum().detach()
                 metrics["A/H%d/new_area_labels"%h] = (mask[..., 9]&train[:,:n]).sum().detach()
             hloss=features.sum()*0
             future_target=F.layer_norm(features[:,h:],(features.shape[-1],))@self.a.projection
@@ -1258,6 +1301,7 @@ def restore_vnext_config(config,checkpoint):
         for key in checkpoint.get("agent_state_dict",{}))
     if config["vnext_spatial_enabled"]:
         config["vnext_spatial_fix_version"]=checkpoint.get("spatial_fix_version",0)
+        config["vnext_pose_loss_version"]=saved.get("vnext_pose_loss_version",1)
     config["search_a_enabled"]=False;config["search_b_enabled"]=False;config["search_c_enabled"]=False
     config["compile"]=False;config["search_branch_enabled"]=False
     check_vnext_checkpoint(checkpoint,True)

@@ -458,6 +458,53 @@ class SpatialMemoryTests(unittest.TestCase):
         self.assertLess(float(after['motion_probability'].mean()),.2)
         self.assertLess(float(after['delta'][:,:2].norm(dim=-1).mean()),float(before['delta'][:,:2].norm(dim=-1).mean()))
 
+    def test_pose_residual_separates_own_camera_turn_from_translation(self):
+        model = PoseNet(hidden=16, loss_version=2)
+        x = torch.linspace(0, 1, 64).view(1,1,64,1)
+        previous = x.expand(1,64,64,3)
+        control = torch.zeros(1,9)
+        control[:,8] = 10.
+        pixel_shift = math.tan(math.radians(10)) / math.tan(math.radians(35)) / (256./160.) * 32
+        current = (previous + pixel_shift / 63).clamp_max(1)
+        residual = model._camera_residual(previous,current,control)
+        self.assertLess(float(residual.abs().mean()),1e-6)
+        self.assertGreater(float((current-previous).abs().mean()),.05)
+        with torch.no_grad():
+            prediction = model(previous,current,control)
+        torch.testing.assert_close(prediction["visual_difference"],(current-previous).abs().mean((1,2,3)))
+        self.assertNotIn("camera_grid",model.state_dict())
+
+    def test_gated_pose_loss_trains_blocked_steps_and_inertial_motion_only_from_training(self):
+        model = PoseNet(hidden=16, loss_version=2)
+        image = torch.zeros(10,64,64,3)
+        after = torch.ones_like(image)
+        control = torch.zeros(10,9)
+        control[[4,5,6],1] = 1.
+        target = torch.zeros(10,3)
+        target[5:8,1] = .2
+        target[9,1] = .2
+        delta = target.clone()
+        delta[4,1] = .13  # rare false motion on a blocked walk
+        delta[8,1] = 1.0  # worst static case belongs to calibration
+        delta.requires_grad_()
+        logits = torch.tensor([-2.,-2.,-2.,-2.,3.,3.,3.,0.,3.,3.], requires_grad=True)
+        prediction = dict(delta=delta, log_std=torch.full_like(delta,-4.),
+                          sigma=torch.full_like(delta,.02), motion_logit=logits,
+                          motion_probability=logits.sigmoid())
+        train = torch.arange(10)<8
+        with mock.patch.object(model,'forward',return_value=prediction):
+            loss,metrics,_ = model.supervised_loss(image,after,control,target,train,
+                calibration_mask=~train,frame_ids=torch.arange(10))
+        self.assertGreater(float(metrics['B/pose_gated_static_tail_loss']),.06)
+        self.assertLess(float(metrics['B/pose_gated_static_tail_loss']),.09)
+        loss.backward()
+        self.assertGreater(float(logits.grad[4]),0.)
+        self.assertGreater(float(delta.grad[4,1]),0.)
+        self.assertLess(float(logits.grad[7]),0.)  # true movement without a new walk command
+        torch.testing.assert_close(logits.grad[8:], torch.zeros(2))
+        torch.testing.assert_close(delta.grad[8:], torch.zeros(2,3))
+        self.assertFalse(model.ready)
+
     def test_revision_zero_keeps_checkpoint_shape_and_original_motion_semantics(self):
         old=PoseNet(hidden=16,fix_version=0);new=PoseNet(hidden=16,fix_version=1)
         self.assertEqual({k:tuple(v.shape) for k,v in old.state_dict().items()},

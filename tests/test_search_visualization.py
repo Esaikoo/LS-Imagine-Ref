@@ -86,6 +86,9 @@ class VisualizationTests(unittest.TestCase):
             self.assertEqual(summary["history_slots_retained"],2)
             self.assertEqual(summary["estimated_visited_cells"],1)
             self.assertEqual(summary["active_segment"],1)
+            self.assertEqual(summary["rendered_segment"],1)
+            self.assertEqual(summary["local_tracking_fraction"],1.)
+            self.assertEqual(summary["localized_fraction"],0.)
             sources={x["source"] for x in summary["selected_keyframes_for_C"]}
             self.assertIn("bounded search probe",sources)
             self.assertTrue((path/"B_map.png").exists())
@@ -96,6 +99,35 @@ class VisualizationTests(unittest.TestCase):
                 np.testing.assert_array_equal(data["ledger_segments"],[0,1])
                 np.testing.assert_array_equal(data["history_frames"],state["history_frames"])
                 self.assertEqual(data["history_frames"].dtype,np.uint8)
+
+    def test_fix3_renders_earlier_segment_when_current_has_no_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
+            for i in range(3):
+                obs, output = fixture(i)
+                output.update(log_spatial_trajectory_valid=float(i < 2),
+                              log_spatial_segment=int(i == 2), log_spatial_local_valid=1.)
+                viz.observe("eval", "prior_segment", obs, output, 100)
+            state = dict(grid=np.zeros((9,9,6)), pose=[0.,0.,0.,.1], resolution=1.,
+                         tracking_ready=False, local_tracking_ready=False, trajectory_valid=False,
+                         active_segment=1, pose_gap_count=2, first_gap_step=2)
+            with mock.patch.object(viz, "_render") as render:
+                path = viz.episode_end("eval", "prior_segment", dict(reward=np.zeros(4)), 100,
+                                       eval_index=1, eval_total=1, map_state=state)
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertEqual(summary["rendered_segment"],0)
+            self.assertEqual(summary["rendered_segment_steps"],2)
+            self.assertEqual(summary["pose_gap_count"],2)
+            self.assertEqual(summary["first_pose_gap_step"],2)
+            self.assertAlmostEqual(summary["localized_fraction"],2/3)
+            self.assertEqual(summary["local_tracking_fraction"],1.)
+            self.assertIsNone(summary["estimated_trajectory_length"])
+            with mock.patch.object(viz, "_save") as save:
+                viz._render_map(render.call_args.args[0], path/"B_map.png")
+            ax = save.call_args.args[0].axes[0]
+            self.assertIn("earlier qualified",ax.get_title())
+            np.testing.assert_allclose(ax.lines[0].get_xdata()[:2],[0.,.2])
+            self.assertTrue(np.isnan(ax.lines[0].get_xdata()[2:]).all())
 
     def test_pose_gap_does_not_create_complete_path_and_align_names_match_phase(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -202,12 +234,15 @@ class VisualizationTests(unittest.TestCase):
         old = copy.deepcopy(obs)
         rgb = np.full((160, 256, 3), 55, np.uint8)
         heatmap = np.ones((160, 256, 1), np.float32)
-        result = dict(action=np.eye(12)[[0]], log_spatial_pose=np.array([[0., 0., .1, .2]]))
+        result = dict(action=np.eye(12)[[0]], log_spatial_pose=np.array([[0., 0., .1, .2]]),
+                      log_goal_version=np.array([1.]))
         record_search_visual_decision(visualizer, "ep", obs, result, 100, rgb, heatmap)
         args = visualizer.observe.call_args.args
         self.assertEqual(args[:2], ("eval", "ep"))
         self.assertIs(args[2]["image"], rgb)
         self.assertIs(args[2]["heatmap"], heatmap)
+        self.assertIs(args[2]["goal_original_heatmap"], obs["heatmap"])
+        self.assertIs(args[2]["goal_policy_rgb"], obs["image"])
         np.testing.assert_array_equal(args[3]["log_spatial_pose"], result["log_spatial_pose"][0])
         for key in obs: np.testing.assert_array_equal(obs[key], old[key])
         record_search_visual_decision(None, "no-op", None, None, 100)
@@ -256,6 +291,47 @@ class VisualizationTests(unittest.TestCase):
             self.assertTrue(all("predictions only" in s["unexecuted_candidates"]
                                 for s in summary["selected_keyframes_for_A"]))
             viz.close()
+
+    def test_goal_keyframe_prefers_actual_fusion_over_raw_heat_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", goal_ref_use_raw_image=True))
+            for i, (raw, effective, gate) in enumerate(((40, 40, 0), (200, 200, 0),
+                                                       (60, 64, .04), (230, 230, .2))):
+                obs, out = fixture(i)
+                obs.update(heatmap=np.full((64, 64), raw, np.uint8),
+                           goal_image=np.full((96, 96, 3), 80 + i, np.uint8),
+                           goal_image_valid=True)
+                out.update(log_goal_state=0, log_goal_gate=gate, log_goal_conflict=0.,
+                           log_goal_model_update=12, log_goal_region_cal_reliability=.125,
+                           log_goal_context=np.array([.5, .1, .9, 0., 0., 0., 0., 1.]),
+                           log_goal_heatmap_policy=np.full((64, 64), effective, np.uint8),
+                           log_goal_ref_map=np.full((64, 64), 100, np.uint8),
+                           log_goal_boxes=np.array([[.25, .25, .75, .75]]),
+                           log_goal_candidate_scores=np.array([.5]),
+                           log_goal_candidate_sources=np.array([1]),
+                           log_goal_new_area_forecast=np.full(12, .25))
+                viz.observe("eval", "goal", obs, out, 100)
+                viz.feedback("eval", "goal", 0., {})
+                if i == 1:
+                    keyframe = viz._active[("eval", "goal")].goal
+                    self.assertEqual(keyframe["row"]["step"], 1)
+                    self.assertEqual(keyframe["goal_selection_reason"],
+                                     "strongest original heat (fallback)")
+            keyframe = viz._active[("eval", "goal")].goal
+            self.assertEqual(keyframe["goal_rgb"].shape, (96, 96, 3))
+            self.assertTrue((keyframe["goal_rgb"] == 82).all())
+            path = viz.episode_end("eval", "goal", dict(reward=np.zeros(5)), 100,
+                                   eval_index=3, eval_total=3)
+            with Image.open(path/"G_goal_verification.png") as image:
+                image.verify()
+            summary = json.loads((path/"summary.json").read_text())
+            saved = summary["goal_keyframe"]
+            self.assertEqual(saved["step"], 2)
+            self.assertEqual(saved["goal_rgb_source"], "native D input")
+            self.assertEqual(saved["goal_selection_reason"], "largest applied heatmap change")
+            self.assertAlmostEqual(saved["goal_heat_delta_mean_max"][0], 4/255., places=6)
+            self.assertEqual(saved["goal_region_cal_reliability"], .125)
+            self.assertEqual(saved["goal_new_area_forecast"], [.25] * 12)
 
     def test_train_threshold_uses_latest_completed_before_threshold(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -307,7 +383,7 @@ class VisualizationTests(unittest.TestCase):
                 path = completed(viz, "eval", "no_prediction", 10, length=2,
                                  predicted=False, eval_index=1, eval_total=1)
                 outcomes.assert_not_called()
-            self.assertFalse(list(path.glob("A*.png")))
+            self.assertEqual([item.name for item in path.glob("A*.png")], ["A_status.png"])
             saved = json.loads((path/"summary.json").read_text())
             self.assertEqual(saved["selected_keyframes_for_A"], [])
             self.assertIn("No eligible", saved["candidate_prediction_note"])
@@ -369,9 +445,15 @@ class VisualizationTests(unittest.TestCase):
                 viz.feedback("eval", "unlocalized", 0., {})
             state = dict(grid=np.zeros((9, 9, 6)), pose=[0., 0., .5, 10.],
                          origin=[-4., -4.], resolution=1., tracking_ready=False)
-            with mock.patch.object(viz, "_render"):
+            with mock.patch.object(viz, "_render") as render:
                 path = viz.episode_end("eval", "unlocalized", dict(reward=np.zeros(6)), 100,
                                        eval_index=1, eval_total=1, map_state=state)
+            with mock.patch.object(viz, "_save") as save:
+                viz._render_map(render.call_args.args[0], path/"B_map.png")
+            ax = save.call_args.args[0].axes[0]
+            self.assertIn("UNLOCALIZED", [t.get_text() for t in ax.texts])
+            self.assertFalse(ax.get_xlabel())
+            self.assertEqual(len(ax.collections), 0)
             summary = json.loads((path/"summary.json").read_text())
             self.assertEqual(summary["localized_fraction"], 0.)
             self.assertEqual(summary["unlocalized_steps"], 5)

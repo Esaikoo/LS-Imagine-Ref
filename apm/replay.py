@@ -85,11 +85,13 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
         goal_dtypes.update(GOAL_LABEL_DTYPES)
         shapes.update(
             log_goal_version=(), log_goal_model_update=(), log_goal_context=(8,), log_goal_state=(), log_goal_gate=(),
-            log_goal_conflict=(), log_goal_peak_rejected=(), log_goal_interaction_probability=(),
+            log_goal_conflict=(), log_goal_peak_rejected=(), log_goal_region_cal_reliability=(),
+            log_goal_interaction_probability=(),
             log_goal_interaction_valid=(), log_goal_boxes=(8,4), log_goal_candidate_scores=(8,),
             log_goal_candidate_sources=(8,), log_goal_ref_map=(64,64),
             log_goal_heatmap_policy=(64,64), log_goal_memory=(6,), log_goal_forecast=(12,2),
-            log_goal_direction_novelty=(12,),
+            log_goal_direction_novelty=(12,), log_goal_absence_confirmed=(),
+            log_goal_new_area_forecast=(12,),
             log_goal_verify_used=(), log_goal_reject_used=(), log_goal_search_eligible=(),
             log_goal_search_learned_used=(), log_goal_search_probe_used=())
         goal_dtypes.update(log_goal_ref_map=np.uint8, log_goal_heatmap_policy=np.uint8)
@@ -151,6 +153,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
         realfirst = np.zeros(length, bool)
         observations = np.zeros(length, np.int64)
         goal_context = np.zeros((length,8), np.float32)
+        goal_boxes = np.zeros((length,8,4), np.float32)
         goal_memory = np.zeros((length,6), np.float32)
         goal_valid = np.zeros(length, np.float32)
         goal_discovery = np.zeros(length, np.float32)
@@ -183,6 +186,10 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
                     if version == 1 and context.shape == (8,) and np.isfinite(context).all():
                         goal_context[row] = context
                         goal_valid[row] = 1.
+                        if "log_goal_boxes" in ep:
+                            boxes = np.asarray(ep["log_goal_boxes"][i+1])
+                            if boxes.shape == (8,4) and np.isfinite(boxes).all():
+                                goal_boxes[row] = boxes
                         if "log_goal_memory" in ep:
                             memory = np.asarray(ep["log_goal_memory"][i+1])
                             if memory.shape == (6,) and np.isfinite(memory).all():
@@ -255,6 +262,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
             result[name] = np.nan_to_num(result[name], nan=0., posinf=0., neginf=0.)
         if goal_enabled:
             result.update(vnext_goal_context=goal_context, vnext_goal_context_valid=goal_valid,
+                          vnext_goal_boxes=goal_boxes,
                           vnext_goal_memory=goal_memory,
                           vnext_goal_discovery_gt=goal_discovery,
                           vnext_goal_discovery_valid=goal_discovery_valid)

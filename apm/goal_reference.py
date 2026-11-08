@@ -38,6 +38,20 @@ def _entry_ok(entry, task):
             and (entry.get("world_seed") is not None or entry.get("world_group") is not None))
 
 
+def _entry_worlds(entry):
+    groups = set()
+    if entry.get("world_group") is not None:
+        groups.add(int(entry["world_group"]))
+    if entry.get("world_seed") is not None:
+        seed = str(entry["world_seed"])
+        try:
+            seed = str(int(seed))
+        except ValueError:
+            pass
+        groups.add(world_group_id("fixed-world-seed:" + seed, 0))
+    return groups
+
+
 def load_reference_bank(root, task, max_references):
     """Load only training assets matching the fixed run category."""
     root = Path(root).resolve()
@@ -173,19 +187,13 @@ class GoalReference(nn.Module):
         self.bank_manifest = manifest
         self.bank_fingerprint = _sha(json.dumps(
             manifest, sort_keys=True, separators=(",", ":")).encode())
-        groups = set()
-        for entry in entries + negative_entries:
-            if entry.get("world_group") is not None:
-                groups.add(int(entry["world_group"]))
-            if entry.get("world_seed") is not None:
-                seed = str(entry["world_seed"])
-                try:
-                    seed = str(int(seed))
-                except ValueError:
-                    pass
-                groups.add(world_group_id("fixed-world-seed:" + seed, 0))
+        reference_worlds = [_entry_worlds(entry) for entry in entries]
+        groups = set().union(*reference_worlds, *map(_entry_worlds, negative_entries))
         self.register_buffer("bank_world_groups", torch.tensor(sorted(groups), dtype=torch.long),
                              persistent=False)
+        self.register_buffer("cross_world_references", torch.tensor([
+            [left.isdisjoint(right) for right in reference_worlds] for left in reference_worlds
+        ], dtype=torch.bool), persistent=False)
         self.register_buffer("bank_pixels", pixels.clone())
         self.register_buffer("negative_pixels", negatives.clone())
         self.register_buffer("reference_features", torch.empty(0), persistent=False)
@@ -275,13 +283,22 @@ class GoalReference(nn.Module):
             self.reference_features = self._reference()
         return self.reference_features
 
-    def _match(self, rgb, references):
+    def _match(self, rgb, references, valid_references=None):
         features = self._encode(rgb)
         embeddings = F.normalize(features, dim=1)
         similarities = torch.einsum("nchw,rc->nrhw", embeddings, references)
-        top = similarities.topk(min(4, len(references)), dim=1).values
-        stats = torch.cat((top[:, :1], top.mean(1, keepdim=True),
-                           top[:, :1] - top[:, -1:]), 1)
+        matches = similarities
+        if valid_references is not None:
+            matches = matches.masked_fill(~valid_references[..., None, None], -torch.inf)
+        top = matches.topk(min(4, len(references)), dim=1).values
+        best = top[:, :1]
+        if valid_references is None:
+            mean, worst = top.mean(1, keepdim=True), top[:, -1:]
+        else:
+            valid = torch.isfinite(top)
+            mean = top.masked_fill(~valid, 0.).sum(1, keepdim=True) / valid.sum(1, keepdim=True).clamp_min(1)
+            worst = torch.where(valid, top, best).amin(1, keepdim=True)
+        stats = torch.cat((best, mean, best - worst), 1)
         context = torch.cat((features, stats), 1)
         ensemble = self.match(context)
         return dict(region_logits=ensemble.mean(1), ensemble=ensemble, embeddings=embeddings,
@@ -400,6 +417,7 @@ class GoalReference(nn.Module):
         similarity = (result["similarities"] / .15).logsumexp(1) - np.log(len(self.bank_pixels))
         positive_logits = similarity[valid & labels]
         negative_logits = similarity[valid & ~labels]
+        loss_reference_assets, reference_assets = self._reference_crop_loss(references)
         loss_negative_assets = similarity.new_zeros(())
         if self.hard_negatives and len(self.negative_pixels):
             assets = (torch.arange(min(4, len(self.negative_pixels)), device=self.device)
@@ -418,19 +436,36 @@ class GoalReference(nn.Module):
             contrast = F.softplus(negative_mass - positive_logits).mean()
         crossview, temporal, pairs = self._paired_loss(data, indices, result, labels, valid)
         loss = self.loss_weight * (loss_visible + loss_region + .5 * loss_interact
-                                   + .5 * loss_candidate + .25 * loss_negative_assets
+                                   + .5 * loss_candidate + .25 * (loss_negative_assets + loss_reference_assets)
                                    + .2 * contrast + .2 * crossview + .1 * temporal + .1 * brier)
         metrics = {"D/update": 1., "D/loss": loss, "D/region_loss": loss_region,
                    "D/visible_loss": loss_visible, "D/interact_loss": loss_interact,
                    "D/contrast_loss": contrast, "D/crossview_loss": crossview,
                    "D/candidate_loss": loss_candidate, "D/candidate_labels": candidate_valid.sum(),
                    "D/negative_asset_loss": loss_negative_assets,
+                   "D/reference_asset_loss": loss_reference_assets, "D/reference_assets": reference_assets,
                    "D/temporal_loss": temporal, "D/brier_loss": brier,
                    "D/train_frames": len(indices), "D/region_labels": valid.sum(),
                    "D/positive_regions": (valid & labels).sum(), "D/visible_labels": visible[:, 1].sum(),
                    "D/interaction_labels": interact[:, 1].sum(),
                    "D/hard_negatives": hard.sum(), "D/crossview_pairs": pairs}
         return loss, metrics
+
+    def _reference_crop_loss(self, references):
+        """Use verified positive crops with other-world references and no pixel labels."""
+        eligible = self.cross_world_references.any(1).nonzero().flatten()
+        count = min(4, len(eligible))
+        if not count:
+            return references.new_zeros(()), 0
+        indices = eligible[(torch.arange(count, device=self.device) + self.updates) % len(eligible)]
+        crops = F.interpolate(_rgb(self.bank_pixels[indices], self.device),
+                              (self.input_size, self.input_size),
+                              mode="bilinear", align_corners=False)
+        predictions = self._match(crops, references, self.cross_world_references[indices])
+        # The annotation confirms the object somewhere in the crop. It does
+        # not make every cell a positive or certify the source frame.
+        crop_logits = predictions["ensemble"].flatten(2).topk(4, dim=2).values.mean(2)
+        return F.softplus(-crop_logits).mean(), count
 
     def _paired_loss(self, data, indices, result, labels, valid):
         """Match observed regions sharing a train-only instance across real adjacent actions."""
@@ -448,8 +483,7 @@ class GoalReference(nn.Module):
         eligible &= ~first[incoming] & actual[incoming] & torch.isfinite(controls[incoming]).all(-1)
         group = torch.as_tensor(data["goal_instance_group"], device=device).reshape(-1, GRID*GRID)[indices]
         use = (valid & labels).flatten(1) & (group > 0)
-        # Only consider the sparse labeled positive cells (45 rays maximum in
-        # collected data). Cap at 16 to keep pair search bounded.
+        # Cap the sparse labeled positive cells at 16 to bound the pair search.
         region_idx = use.to(torch.int8).topk(16, dim=-1).indices
         group = group.gather(1, region_idx) * use.gather(1, region_idx)
         same = (group[:-1, :, None] == group[1:, None, :]) & (group[:-1, :, None] > 0)

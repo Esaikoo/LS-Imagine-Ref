@@ -19,7 +19,7 @@ import torch
 SCHEMA_VERSION = 1
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "logdir", "traindir", "evaldir", "offline_traindir",
-    "offline_evaldir", "device", "steps", "log_every", "log_all_metrics",
+    "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
     "use_wandb", "wandb_key", "results_dir", "name", "debug",
 }
 _CLOCKS = ("_should_train", "_should_log", "_should_reset")
@@ -310,6 +310,7 @@ def prepare_resume(config):
     if saved.get("search_vnext_enabled"):
         # New defaults must not silently change historical evaluation/control.
         restored["vnext_spatial_fix_version"] = checkpoint.get("spatial_fix_version", 0)
+        restored["vnext_pose_loss_version"] = saved.get("vnext_pose_loss_version", 1)
     for key, metadata in (("search_a_model_version", "search_a_version"),
                           ("search_b_model_version", "search_b_version"),
                           ("search_c_model_version", "search_c_version"),

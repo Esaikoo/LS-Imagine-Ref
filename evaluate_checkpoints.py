@@ -47,6 +47,9 @@ def record_search_visual_decision(visualizer, episode_id, obs, result, training_
     if visualizer is None:
         return
     visual_obs = dict(obs)
+    if "log_goal_version" in result:
+        visual_obs["goal_original_heatmap"] = obs.get("heatmap")
+        visual_obs["goal_policy_rgb"] = obs.get("image")
     if rgb is not None:
         visual_obs['image'] = rgb
     if heatmap is not None:

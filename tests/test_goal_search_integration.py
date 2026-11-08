@@ -86,7 +86,8 @@ class GoalSearchIntegrationTests(unittest.TestCase):
     def test_causal_replay_old_unknown_and_checkpoint_resume(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cfg = goal_config(logdir=root/"source", traindir=root/"source"/"train_eps")
+            cfg = goal_config(logdir=root/"source", traindir=root/"source"/"train_eps",
+                              video_pred_log=False)
             cfg.traindir.mkdir(parents=True)
             agent = agent_for(cfg)
             episode = collected_episode(agent, 24)
@@ -111,8 +112,10 @@ class GoalSearchIntegrationTests(unittest.TestCase):
             self.assertGreater(int(agent._goal_reference.updates), 0)
             checkpoint_path = save_training_checkpoint(agent,cfg,100000)
             checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
-            incoming = goal_config(logdir=root/"new", resume_from=str(checkpoint_path), steps=128)
+            incoming = goal_config(logdir=root/"new", resume_from=str(checkpoint_path), steps=128,
+                                   video_pred_log=True)
             plan = prepare_resume(incoming)
+            self.assertTrue(incoming.video_pred_log)
             restored = agent_for(incoming, plan["checkpoint"]["goal_reference_bank"])
             restore_training_state(restored,plan,SimpleNamespace(step=0))
             self.assertEqual(restored._goal_reference.bank_fingerprint, agent._goal_reference.bank_fingerprint)

@@ -185,7 +185,7 @@ def main(config):
                 is_training=False,
             )
             if config.video_pred_log:
-                video_pred = agent._wm.video_pred(next(eval_dataset))
+                video_pred = agent._video_prediction(next(eval_dataset))
                 logger.video("eval_openl", to_np(video_pred))
 
     finally:

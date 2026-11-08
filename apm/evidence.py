@@ -142,11 +142,28 @@ RAY_PITCHES = np.deg2rad(np.linspace(-25, 25, 5))
 RAY_YAWS = np.deg2rad(np.linspace(-40, 40, 9))
 
 
-def lidar_rays(distance=32.0):
-    return [(float(p), float(y), float(distance)) for p in RAY_PITCHES for y in RAY_YAWS]
+# Additional training-only sightlines land in distinct cells over the
+# client's FOV range. Keep the original 45 rays first for the A labels.
+GOAL_RAY_OFFSETS = tuple(
+    (float(np.deg2rad(p)), float(np.deg2rad(y)))
+    for pitches, yaws in (((-7, -3, 3, 7), (-12, -2, 2, 12)),
+                          ((-9, -5, 5, 9), (-27, -17, 17, 27)))
+    for p in pitches for y in yaws
+)
+
+
+def lidar_rays(distance=32.0, *, goal=False):
+    rays = [(float(p), float(y), float(distance)) for p in RAY_PITCHES for y in RAY_YAWS]
+    if goal:
+        rays.extend((p, y, float(distance)) for p, y in GOAL_RAY_OFFSETS)
+    return rays
 
 
 def goal_ray_cells(obs, count):
+    return _project_goal_rays(obs, count)[0]
+
+
+def _project_goal_rays(obs, count):
     """Conservative projection from MineDojo's first-person rich lidar.
 
     The ray implementation adds elevation, clips at +/-89 degrees, then rotates
@@ -156,6 +173,7 @@ def goal_ray_cells(obs, count):
     supervises its sampled point in that cell, never all pixels in a patch.
     """
     unknown = np.full((count, 2), -1, np.int16)
+    outside = np.zeros(count, bool)
     rays = obs.get("rays", {})
     try:
         image = np.asarray(obs["rgb"])
@@ -163,11 +181,11 @@ def goal_ray_cells(obs, count):
         yaw = np.asarray(rays["ray_yaw"], float).reshape(count)
         elevation = -np.deg2rad(float(np.asarray(obs["location_stats"]["pitch"]).item()))
     except (KeyError, TypeError, ValueError):
-        return unknown
+        return unknown, outside
     if image.ndim != 3 or image.shape[0] != 3 or min(image.shape[1:]) <= 0:
-        return unknown
+        return unknown, outside
     if not np.isfinite(elevation) or not np.isfinite(pitch).all() or not np.isfinite(yaw).all():
-        return unknown
+        return unknown, outside
     ray_elevation = np.clip(elevation + pitch, -np.deg2rad(89), np.deg2rad(89))
     horizontal = np.cos(ray_elevation)
     forward = np.sin(elevation)*np.sin(ray_elevation) + np.cos(elevation)*horizontal*np.cos(yaw)
@@ -181,11 +199,13 @@ def goal_ray_cells(obs, count):
         col = .5 + right/(scale*aspect)
         projected.append(np.floor(GOAL_GRID*np.stack((row, col), axis=-1)).astype(np.int32))
     a, b = projected
-    stable = (forward > 0) & (a == b).all(-1) & (a >= 0).all(-1) & (a < GOAL_GRID).all(-1)
+    in_view = ((forward > 0) & (a >= 0).all(-1) & (a < GOAL_GRID).all(-1)
+               & (b >= 0).all(-1) & (b < GOAL_GRID).all(-1))
+    stable = in_view & (a == b).all(-1)
     unknown[stable] = a[stable]
     center = (np.abs(pitch) < 1e-7) & (np.abs(yaw) < 1e-7) & (abs(elevation) <= np.deg2rad(89))
     unknown[center] = GOAL_GRID//2
-    return unknown
+    return unknown, in_view | center
 
 
 def empty_labels(version=LABEL_VERSION):
@@ -217,7 +237,8 @@ BLOCK_TARGETS = {
     "iron_ore": {"iron_ore"},
     "water_bucket": {"water", "flowing_water", "stationary_water"},
 }
-ENTITY_TARGETS = {"wool": {"sheep"}}
+# Rich lidar returns the Java class name on the standard client.
+ENTITY_TARGETS = {"wool": {"sheep", "entitysheep"}}
 
 
 class SearchEvidence:
@@ -280,11 +301,15 @@ class SearchEvidence:
             self._unknown_geometry()
             return result
         arrays = {k: np.asarray(rays[k]).reshape(-1) for k in fields}
-        if any(len(v) != self.expected_rays for v in arrays.values()):
+        count = len(arrays["block_name"])
+        legacy = slice(None, self.expected_rays)
+        allowed = (self.expected_rays, self.expected_rays + len(GOAL_RAY_OFFSETS)
+                   if self.goal_supervision else self.expected_rays)
+        if count not in allowed or any(len(v) != count for v in arrays.values()):
             self._unknown_geometry()
             return result
         numeric = [arrays[k].astype(float) for k in fields if k not in ("block_name", "entity_name")]
-        if not all(np.isfinite(v).all() for v in numeric):
+        if not all(np.isfinite(v[legacy]).all() for v in numeric):
             self._unknown_geometry()
             return result
         blocks = np.array([_name(x) for x in arrays["block_name"]])
@@ -299,9 +324,13 @@ class SearchEvidence:
         block_hit = (~np.isin(blocks, ["air", "null", "none", ""])) & (bd >= 0) & (bd < self.distance - 0.1) & ~entity_hit
         goal_blocks = block_hit & np.isin(blocks, list(BLOCK_TARGETS.get(self.target, ())))
         goal_entities = entity_hit & np.isin(entities, list(ENTITY_TARGETS.get(self.target, ())))
-        visible = bool(goal_blocks.any() or goal_entities.any())
-        if self.goal_supervision:
+        if self.goal_supervision and all(np.isfinite(v).all() for v in numeric):
             self._goal_regions(obs, result, arrays, blocks, block_hit, goal_blocks, goal_entities)
+        # Additional D rays do not alter the scope of existing A, map,
+        # center-interaction or discovery supervision.
+        arrays = {k: v[legacy] for k, v in arrays.items()}
+        block_hit, entity_hit = block_hit[legacy], entity_hit[legacy]
+        visible = bool(goal_blocks[legacy].any() or goal_entities[legacy].any())
         result["search_visible"] = np.float32(visible)
         result["search_visible_valid"] = np.float32(1)
         # Distinct from legacy discovery (reacquisition). Never pay repeatedly
@@ -335,7 +364,7 @@ class SearchEvidence:
         # A D cell represents one or more sampled rays, not a filled mask.
         # Rich lidar can miss distant rendered objects. Neither air nor an
         # empty ray scan supplies a negative full-frame label.
-        cells = goal_ray_cells(obs, len(block_hit))
+        cells, in_view = _project_goal_rays(obs, len(block_hit))
         # MineDojo fills miss coordinates at the end of a ray. Its synthetic
         # miss distance is unreliable, so independently require real hit
         # coordinates to be interior to the ray and consistent with distance.
@@ -379,7 +408,9 @@ class SearchEvidence:
                 labels[cell] = target
                 valid[cell] = 1
         result["goal_label_version"] = np.uint8(GOAL_LABEL_VERSION)
-        result["goal_visible_gt"] = result["goal_visible_valid"] = np.uint8(labels.any())
+        # Visibility can use hits that stay in-frame even when their exact
+        # 16x16 cell moves with FOV. A sparse miss still cannot prove absence.
+        result["goal_visible_gt"] = result["goal_visible_valid"] = np.uint8((targets & in_view).any())
 
     def _unknown_geometry(self):
         self.previous_visible = None

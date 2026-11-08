@@ -585,6 +585,7 @@ class WorldModel(nn.Module):
         obs = {k: torch.Tensor(v).to(self._config.device) for k, v in obs.items()}
         return obs
 
+    @torch.no_grad()
     def video_pred(self, data):
         data = self.preprocess(data, zoomed=False)
         embed = self.encoder(data)

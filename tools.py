@@ -130,6 +130,18 @@ class Logger:
             wandb.config.update({"initial_step": step})
 
         else:
+            if self._goal_console and (getattr(config, "video_pred_log", False)
+                                       or getattr(config, "eval_episode_num", 0) > 0):
+                # SummaryWriter can silently emit an empty image when its
+                # encoder is unavailable. Catch it before starting MineDojo.
+                from torch.utils.tensorboard.summary import video
+                try:
+                    sample = video("video_check", np.zeros((1, 2, 3, 8, 8), np.uint8), fps=16)
+                    if not sample.value[0].image.encoded_image_string:
+                        raise RuntimeError("TensorBoard video encoder returned no image")
+                except Exception as error:
+                    raise RuntimeError("TensorBoard video encoding failed. Check moviepy and imageio in the training environment.") from error
+                print("TensorBoard video encoding ready.", flush=True)
             self._writer = SummaryWriter(log_dir=str(logdir), max_queue=1000)
 
     def scalar(self, name, value):
@@ -638,10 +650,8 @@ def simulate(
                     else:
                         first_success_step = max_steps
 
-                    if "log_goal_version" not in cache[envs[i].id]:
-                        logger.video(f"eval_policy", np.array(video)[None])
-
                     if len(eval_scores) >= episodes and not eval_done:
+                        logger.video("eval_policy", np.asarray(video)[None])
                         logger.scalar(f"eval_return", score)
                         logger.scalar(f"eval_length", episode_length)
                         logger.scalar("eval_protocol_version", 7 if "log_vnext_version" in cache[envs[i].id] else

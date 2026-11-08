@@ -119,6 +119,18 @@ class ReferenceTests(unittest.TestCase):
         model.train_batch(data)
         self.assertEqual(model.cal_counts[0, 1].item(), 4, "Replay repeats are not new calibration samples")
 
+    def test_reference_crop_learning_excludes_its_source_world(self):
+        assets = bank()
+        assets["manifest"]["entries"][1]["world_seed"] = 17
+        same_world = GoalReference(config(), assets)
+        self.assertFalse(same_world.cross_world_references.any())
+        self.assertEqual(same_world.train_batch(labeled())["D/reference_assets"], 0.)
+        other_world = GoalReference(config(), bank())
+        self.assertEqual(other_world.cross_world_references.tolist(), [[False, True], [True, False]])
+        report = other_world.train_batch(labeled())
+        self.assertEqual(report["D/reference_assets"], 2.)
+        self.assertGreater(report["D/reference_asset_loss"], 0.)
+
     def test_interaction_feedback_aligns_to_actual_source(self):
         model = GoalReference(config(), bank())
         data = labeled()

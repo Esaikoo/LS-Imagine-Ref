@@ -84,6 +84,58 @@ class VNextModelsTest(unittest.TestCase):
         self.assertEqual(targets[0,2,1].item(),1)
         self.assertFalse(valid[0,0,1])
 
+    def test_reobserve_matches_confirmed_proposals_across_viewpoint_changes(self):
+        from apm.replay import sample_spatial_episodes
+
+        ep = episode(n=6)
+        ep.update(
+            goal_label_version=np.ones(6, np.uint8),
+            goal_region_valid=np.zeros((6,16,16,1), np.uint8),
+            goal_instance_group=np.zeros((6,16,16,1), np.int32),
+            log_goal_context=np.zeros((6,8), np.float32),
+            log_goal_version=np.ones(6, np.uint8),
+            log_goal_boxes=np.zeros((6,8,4), np.float32),
+        )
+        # A different shortlist box supports the same block after turning;
+        # D is still uncalibrated and its best peak has no valid ray sample.
+        for i, (y, x, instance) in enumerate(((2,3,17),(4,5,17),(6,7,25),(8,9,25))):
+            ep["goal_instance_group"][i,y,x,0] = instance
+            ep["goal_region_valid"][i,y,x,0] = i < 3
+            ep["log_goal_boxes"][i+1,5] = np.array((x,y,x+1,y+1))/16
+        # The same identity exists outside the next shortlist; the sampled
+        # follow-up proposal is about another block. Do not claim frame absence.
+        ep["goal_instance_group"][2,15,15,0] = 17
+        ep["goal_region_valid"][2,15,15,0] = 1
+        g = sample_spatial_episodes({"episode":ep}, 6, seed=2, history_slots=3, goal_enabled=True)
+        for _ in range(15):
+            d = next(g)
+            for row, i in enumerate(d["vnext_observation_index"]):
+                expected = ep["log_goal_boxes"][i+1] if i < 5 else np.zeros((8,4))
+                np.testing.assert_array_equal(d["vnext_goal_boxes"][row], expected)
+
+        context = torch.zeros(1,6,8)
+        data = {key: value[None] for key,value in ep.items()}
+        data["vnext_goal_boxes"] = np.roll(ep["log_goal_boxes"], -1, axis=0)[None]
+        data["vnext_goal_context_valid"] = np.array([[1,1,1,1,1,0]], np.float32)
+        labels, valid = goal_transition_labels(data, context, 1, context.device)
+        self.assertEqual(labels[0,:3,1].tolist(), [1.,0.,0.])
+        self.assertEqual(valid[0,:3,1].tolist(), [True,True,False])
+        cfg = config()
+        cfg.vnext_spatial_enabled = True
+        cfg.vnext_spatial_fix_version = 3
+        cfg.goal_search_enabled = True
+        model = SearchVNext(24, cfg)
+        data["vnext_goal_context"] = context.numpy()
+        data["vnext_spatial_valid"] = np.ones((1,6), np.float32)
+        metrics = model.train_step(torch.randn(1,6,24), data)
+        self.assertEqual(metrics["A/H1/reobserve_labels"].item(), 2)
+        self.assertEqual(metrics["A/H1/reobserve_positive_labels"].item(), 1)
+
+        # Unknown collected candidate provenance also cannot train this head.
+        data["vnext_goal_context_valid"][0,1] = 0
+        _, valid = goal_transition_labels(data, context, 1, context.device)
+        self.assertFalse(valid[0,:,1].any())
+
     def test_stitched_success_is_real_not_padding(self):
         a=episode(3,offset=1);b=episode(4,offset=2)
         a["image"][:]=11;b["image"][:]=22

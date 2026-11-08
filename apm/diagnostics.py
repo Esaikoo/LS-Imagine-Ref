@@ -157,7 +157,7 @@ def goal_episode_diagnostics(episode):
               "goal_uncertain_rate": float(np.mean(states == 1)),
               "goal_untrusted_rate": float(np.mean(states == 0))}
     for name in ("gate", "conflict", "peak_rejected", "interaction_probability", "interaction_valid",
-                 "verify_used", "reject_used",
+                 "verify_used", "reject_used", "absence_confirmed",
                  "search_eligible", "search_learned_used", "search_probe_used"):
         values = np.asarray(episode.get("log_goal_" + name, []))
         if values.shape == version.shape:

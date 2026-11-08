@@ -40,7 +40,7 @@ python -m py_compile apm/actuator.py apm/outcome.py apm/control.py apm/odometry.
 bash -n scripts/test_a.sh
 sh -n scripts/train.sh
 echo '[APM] CPU tests and syntax: PASS'
-if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "--minedojo-abc" || "${1:-}" == "--minedojo-full" || "${1:-}" == "--minedojo-vnext" ]]; then
+if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "--minedojo-abc" || "${1:-}" == "--minedojo-full" || "${1:-}" == "--minedojo-vnext" || "${1:-}" == "--minedojo-vnext4" ]]; then
   MODE=full
   EXTRA=()
   PREFILL=32
@@ -69,9 +69,10 @@ if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "-
   fi
   if [[ "$1" == "--minedojo-vnext4" ]]; then
     MODE=vnext4
-    CONFIGS=(minedojo apm_vnext apm_vnext4 apm_a_smoke)
-    EXTRA+=(--goal_ref_bank_root "${GOAL_REF_BANK_ROOT:?Set GOAL_REF_BANK_ROOT to a real sand reference bank}"
-      --goal_ref_train_every 1 --eval_every 48 --vnext_visual_every 48 --vnext_visual_strict True)
+    CONFIGS=(minedojo apm_vnext4 apm_a_smoke)
+    EXTRA+=(--goal_ref_bank_root "${GOAL_REF_BANK_ROOT:-assets/goal_references}"
+      --goal_ref_train_every 1 --eval_every 48 --vnext_visual_every 48 --vnext_visual_strict True
+      --video_pred_log True --env_seed 17 --minedojo_gradle_offline "${MINEDOJO_GRADLE_OFFLINE:-False}")
   fi
   if [[ "$1" == "--minedojo-off" ]]; then
     MODE=off
@@ -157,6 +158,10 @@ if mode in ('vnext', 'vnext4'):
         assert checkpoint['goal_ref_version'] == 1
         assert checkpoint['goal_controller_version'] == 3
         assert checkpoint['goal_reference_fingerprint']
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        media = EventAccumulator(str(latest.parent)).Reload().Tags()
+        video_tags = set(media["images"]) | set(media["tensors"])
+        assert {"eval_openl", "eval_policy", "train_openl"} <= video_tags, media
         assert any(row.get('D/updates', 0) > 0 for row in rows)
         for path in episodes:
             if path.parent.name == 'eval_eps':

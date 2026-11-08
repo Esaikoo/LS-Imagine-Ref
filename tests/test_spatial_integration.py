@@ -423,6 +423,9 @@ class SpatialIntegrationTests(unittest.TestCase):
         checkpoint["config"]["vnext_spatial_fix_version"] = 3
         check_vnext_checkpoint(checkpoint,True)
         self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],3)
+        self.assertEqual(restore_vnext_config({"vnext_pose_loss_version":2},checkpoint)["vnext_pose_loss_version"],1)
+        checkpoint["config"]["vnext_pose_loss_version"] = 2
+        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_pose_loss_version"],2)
         checkpoint["spatial_fix_version"] = 4
         checkpoint["config"]["vnext_spatial_fix_version"] = 4
         with self.assertRaisesRegex(ValueError,"revision"):

@@ -10,6 +10,12 @@ from torch import nn
 from torch.nn import functional as F
 
 
+MIN_TRANSLATION = .03
+MIN_MOTION_PROBABILITY = .8
+MAX_TRANSLATION_SIGMA = .1
+MAX_STATIC_TAIL = .05
+
+
 def wrap_angle(value):
     """Wrap radians, including differences across the +/-pi seam."""
     if torch.is_tensor(value):
@@ -45,13 +51,16 @@ class PoseNet(nn.Module):
     """Small paired-frame regressor; no command-only translation dead reckoning."""
     def __init__(self, hidden=128, min_samples=256, ready_error=.25, max_translation=1.5,
                  min_calibration=32, min_moving=8, calibration_ratio=.8, cache_size=4096,
-                 fix_version=1):
+                 fix_version=1, loss_version=1):
         super().__init__()
         self.min_samples, self.ready_error = int(min_samples), float(ready_error)
         self.max_translation = float(max_translation)
         self.min_calibration, self.min_moving = int(min_calibration), int(min_moving)
         self.calibration_ratio, self.cache_size = float(calibration_ratio), int(cache_size)
         self.fix_version = int(fix_version)
+        self.loss_version = int(loss_version)
+        if self.loss_version not in (1, 2):
+            raise ValueError("Unknown pose loss revision")
         if self.cache_size < max(self.min_samples, self.min_calibration, 2*self.min_moving):
             raise ValueError("Pose calibration cache is smaller than required support")
         if self.min_moving < 1 or self.min_calibration < 1 or not 0 < self.calibration_ratio < 1:
@@ -73,6 +82,10 @@ class PoseNet(nn.Module):
                 # small yaw residual; old revision 0 keeps its original layout.
                 self.fusion[-1].bias[2] = -2.
                 self.fusion[-1].bias[5] = 0.
+        if self.loss_version == 2:
+            axis = (torch.arange(64, dtype=torch.float32)+.5)*2/64-1
+            self.register_buffer("camera_grid", torch.stack(torch.meshgrid(axis, axis, indexing="xy"), -1),
+                                 persistent=False)
         self.register_buffer("supervised_samples", torch.zeros((), dtype=torch.long))
         self.register_buffer("position_error_ema", torch.full((), 1000.))
         self.register_buffer("angle_error_ema", torch.full((), math.pi))
@@ -108,7 +121,7 @@ class PoseNet(nn.Module):
                     # A small mean can hide a minority of large false steps.
                     # This tail guard qualifies the integrated estimator only;
                     # its cache never feeds back into individual motion gates.
-                    ((self.static_error_bound() <= .05) if self.fix_version else True))
+                    ((self.static_error_bound() <= MAX_STATIC_TAIL) if self.fix_version else True))
 
     @torch.no_grad()
     def record_predictions(self, delta, target, train_mask, calibration_mask, frame_ids=None):
@@ -197,14 +210,16 @@ class PoseNet(nn.Module):
         # This fixed threshold is intentionally independent of gated calibration
         # errors. Otherwise rejecting a pair would zero its cached error, lower
         # the next acceptance threshold and create a qualification feedback loop.
-        radius = torch.full_like(raw_motion, .03)
+        radius = torch.full_like(raw_motion, MIN_TRANSLATION)
         before, after = normalized_rgb(previous_image), normalized_rgb(image)
-        visual_difference = (after-before).abs().mean((-1, -2, -3))
+        visual_difference = prediction.get("visual_difference")
+        if visual_difference is None:
+            visual_difference = (after-before).abs().mean((-1, -2, -3))
         finite = torch.isfinite(mean).all(-1) & torch.isfinite(sigma).all(-1)
         finite &= torch.isfinite(before).flatten(-3).all(-1) & torch.isfinite(after).flatten(-3).all(-1)
         probability = prediction.get("motion_probability", torch.zeros_like(raw_motion))
-        supported = finite & (visual_difference > (1./255.)) & (raw_motion >= torch.maximum(radius, radius.new_tensor(.03)))
-        supported &= (probability >= .8) & (sigma.mean(-1) <= .1)
+        supported = finite & (visual_difference > (1./255.)) & (raw_motion >= radius)
+        supported &= (probability >= MIN_MOTION_PROBABILITY) & (sigma.mean(-1) <= MAX_TRANSLATION_SIGMA)
         return supported, raw_motion, radius
 
     def forward(self, previous_image, image, control):
@@ -216,7 +231,11 @@ class PoseNet(nn.Module):
         control = torch.as_tensor(control, device=image.device).float()
         if control.shape != (*lead, 9):
             raise ValueError("PoseNet requires nine applied-control components")
-        pair = torch.cat((previous_image, image, image-previous_image), -1)
+        difference = image - previous_image
+        residual = difference
+        if self.loss_version == 2:
+            residual = self._camera_residual(previous_image, image, control)
+        pair = torch.cat((previous_image, image, residual), -1)
         encoded = self.visual(pair.reshape(-1, 64, 64, 9).permute(0, 3, 1, 2))
         scale = control.new_tensor([1, 1, 1, 1, 1, 1, 1, 10, 10])
         raw = self.fusion(torch.cat((encoded, (control/scale).reshape(-1, 9)), -1))
@@ -234,7 +253,21 @@ class PoseNet(nn.Module):
         result = dict(delta=mean, log_std=log_std, sigma=log_std.exp())
         if self.fix_version:
             result.update(motion_logit=raw[..., 2], motion_probability=raw[..., 2].sigmoid())
+        if self.loss_version == 2:
+            result["visual_difference"] = difference.abs().mean((-1, -2, -3))
         return result
+
+    def _camera_residual(self, previous_image, image, control):
+        # Approximate the center-of-view rotation from own applied pitch/yaw
+        # and MineDojo's default 256x160 render aspect. Keep both original frames
+        # available so the model can handle parallax and imperfect alignment.
+        previous = previous_image.reshape(-1, 64, 64, 3).permute(0, 3, 1, 2)
+        camera = control[..., [8, 7]].reshape(-1, 2)
+        shift = camera.deg2rad().tan() / math.tan(math.radians(35.))
+        shift = shift / shift.new_tensor([256./160., 1.])
+        grid = self.camera_grid + shift[:, None, None, :]
+        aligned = F.grid_sample(previous, grid, padding_mode="border", align_corners=False)
+        return image - aligned.permute(0, 2, 3, 1).reshape_as(image)
 
     def supervised_loss(self, previous_image, image, control, target, valid, record=True,
                         calibration_mask=None, frame_ids=None):
@@ -275,7 +308,12 @@ class PoseNet(nn.Module):
             group_classification = torch.stack([(classification*m).sum()/m.sum().clamp_min(1) for m in (static, moving)])
             present_classification = torch.stack([static.any(), moving.any()])
             classification_loss = (group_classification*present_classification).sum()/present_classification.sum().clamp_min(1)
-            loss = balanced+10.*bias_loss+3.*classification_loss
+            if self.loss_version == 2:
+                stratified_classification, moving_risk, static_tail = self._gated_translation_loss(
+                    prediction, error, target, control, previous_image, image, static, moving, classification)
+                loss = balanced + 10.*bias_loss + 3.*stratified_classification + 5.*moving_risk + 8.*static_tail
+            else:
+                loss = balanced+10.*bias_loss+3.*classification_loss
         else:
             loss = (per_row*valid).sum()/valid.sum().clamp_min(1)
         count = valid.sum().detach()
@@ -307,6 +345,10 @@ class PoseNet(nn.Module):
                 "B/pose_static_bias_loss": bias_loss.detach(),
                 "B/pose_motion_classification_loss": classification_loss.detach(),
                 "B/pose_motion_train_samples": moving.sum().detach()})
+            if self.loss_version == 2:
+                metrics.update({"B/pose_stratified_motion_loss": stratified_classification.detach(),
+                                "B/pose_gated_moving_risk": moving_risk.detach(),
+                                "B/pose_gated_static_tail_loss": static_tail.detach()})
             with torch.no_grad():
                 accepted, _, _ = self.translation_support(prediction, previous_image, image)
                 if bool(static.any()):
@@ -326,3 +368,43 @@ class PoseNet(nn.Module):
             if self.fix_version:
                 metrics["B/pose_calibration_static_p95"] = self.static_error_bound().detach().clone()
         return loss, metrics, prediction
+
+    @staticmethod
+    def _gated_translation_loss(prediction, error, target, control, previous, image, static, moving, classification):
+        """Optimize the motion estimator used by the map, including rare false steps."""
+        control = torch.as_tensor(control, device=target.device)
+        commanded = (control[..., 1:5].abs() > 0).any(-1)
+        # Blocked walks and continued motion without a fresh walk command are
+        # real labels. Give each subgroup support independent of its frequency.
+        groups = torch.stack((static & ~commanded, static & commanded, moving & ~commanded, moving & commanded))
+        counts = groups.reshape(4, -1).sum(-1)
+        means = (classification * groups).reshape(4, -1).sum(-1) / counts.clamp_min(1)
+        present = (counts > 0).reshape(2, 2)
+        class_means = means.reshape(2, 2).sum(-1) / present.sum(-1).clamp_min(1)
+        stratified = class_means.sum() / present.any(-1).sum().clamp_min(1)
+
+        # Soft training surrogate for the unchanged hard inference gate. The
+        # rejected branch costs the same error as a zero-displacement estimate.
+        magnitude = torch.linalg.vector_norm(prediction["delta"][..., :2].float(), dim=-1)
+        logit_threshold = math.log(MIN_MOTION_PROBABILITY / (1 - MIN_MOTION_PROBABILITY))
+        probability = ((prediction["motion_logit"].float() - logit_threshold) * 2.).sigmoid()
+        sigma = prediction["sigma"][..., :2].float().mean(-1)
+        probability = probability * ((MAX_TRANSLATION_SIGMA - sigma) / .02).sigmoid()
+        probability = probability * ((magnitude - MIN_TRANSLATION) / .01).sigmoid()
+        visual_change = prediction.get("visual_difference")
+        if visual_change is None:
+            visual_change = (normalized_rgb(image).to(target.device) -
+                             normalized_rgb(previous).to(target.device)).abs().mean((-1, -2, -3))
+        probability = probability * (visual_change > (1./255.))
+        position_error = torch.linalg.vector_norm(error[..., :2], dim=-1)
+        zero_error = torch.linalg.vector_norm(target[..., :2], dim=-1)
+        risk = torch.lerp(zero_error, position_error, probability)
+        moving_risk = (risk * moving).sum() / moving.sum().clamp_min(1)
+
+        # The worst static pairs should not disappear into an easy static mean.
+        # Rank differentiable excess over the held-out tail bound, keeping only
+        # true supervised static pairs. Calibration is never used for gradients.
+        excess = ((position_error - MAX_STATIC_TAIL).relu() * probability)[static]
+        tail_count = math.ceil(.05 * excess.numel())
+        static_tail = excess.topk(tail_count).values.sum() / max(1, tail_count)
+        return stratified, moving_risk, static_tail
