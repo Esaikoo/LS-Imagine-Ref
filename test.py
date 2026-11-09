@@ -166,7 +166,7 @@ def main(config):
         if visualizer is not None:
             visualizer.set_step(logger.step)
             if agent._goal_reference is not None:
-                visualizer.set_goal_bank(agent._goal_reference.export_bank()["pixels"])
+                visualizer.set_goal_bank(agent._goal_reference.export_bank())
             logger.search_visualizer = visualizer
 
         if config.eval_episode_num > 0:

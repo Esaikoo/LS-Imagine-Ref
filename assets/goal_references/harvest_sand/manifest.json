@@ -1,9 +1,15 @@
 {
   "version": 1,
   "task_id": "harvest_sand",
+  "curation": {
+    "protocol": "compact_v1",
+    "positive": 12,
+    "negative": 8,
+    "positive_min_side": 20
+  },
   "entries": [
     {
-      "frame": 115,
+      "frame": 443,
       "roi": [
         0.0,
         0.0,
@@ -11,32 +17,106 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
+      "world_group": 9397111,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_001.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "80c5842d99d44ec305202e3ac97a9fcd4aee0a7131231eaca743844f6d423331",
-      "source_frame_png": "harvest_sand_000.png",
-      "source_frame_sha256": "9eda06bb2ca4e4a8b00f10aec26e49adf2853dfb20b30aececd2600b1d2de9bd",
-      "source_roi_normalized": [
-        0.453125,
-        0.390625,
-        0.5625,
-        0.5
-      ],
+      "annotation": "Broad sand surface in partial shade, with neighboring sand block faces. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T231127-601680b561aa4e8fb671c0a55a7a0f5f-1004.npz",
+      "source_sha256": "764033f34c2363ae894ea9c11ccc96a2e7de5e975a4a7d79ccae3dd87f8cb488",
+      "sha256": "03c5f6351c83861df98b427c34285f19d82db5535dae902ba33411d333aa18e4",
+      "source_frame_png": "231127_0443.png",
+      "source_frame_sha256": "c80acd3d2d7a9f1fd5c7bbf466e9e6e514b73fd1c1453660ebe29b6bb00a22e6",
       "source_roi_xyxy": [
-        29,
-        25,
-        36,
-        32
+        9,
+        30,
+        44,
+        65
+      ],
+      "source_roi_normalized": [
+        0.09375,
+        0.3125,
+        0.4583333333333333,
+        0.6770833333333334
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
+      ]
+    },
+    {
+      "frame": 456,
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "role": "positive",
+      "world_group": 983571,
+      "world_seed": null,
+      "task_id": "harvest_sand",
+      "split": "train",
+      "path": "positive_sand_002.png",
+      "annotation": "Close-up sand wall with block interaction marks. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T183424-d9c389c8aba848d18a4071e3fdbccc35-469.npz",
+      "source_sha256": "61e392d89b59796cc16a89feeb4b282a8b0d12f6e84934f1cad9ee09fdb46896",
+      "sha256": "42d8afc2064079c8af7950318c3d292b3b1d708c88c5d1f605263ec0d14588a8",
+      "source_frame_png": "183424_0456.png",
+      "source_frame_sha256": "026a36f0c25f59221ee5357535361bbfe982a24c5ea879ef3633d43a3d94347f",
+      "source_roi_xyxy": [
+        36,
+        15,
+        63,
+        42
+      ],
+      "source_roi_normalized": [
+        0.375,
+        0.15625,
+        0.65625,
+        0.4375
+      ],
+      "source_rgb_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "frame": 823,
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "role": "positive",
+      "world_group": 9397111,
+      "world_seed": null,
+      "task_id": "harvest_sand",
+      "split": "train",
+      "path": "positive_sand_003.png",
+      "annotation": "Side and top of a shallow sand terrace. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T233455-97793beb07304b01b04adc03e79ed872-1001.npz",
+      "source_sha256": "fce91dbb13019410e7b34b44fcdb3484c9914bbf2f5551e5f61473ee7d3fbc0c",
+      "sha256": "2f53c3401247fea4c455b5a60f7e74c086a4c1b9975b7d4238dcae28bd227d46",
+      "source_frame_png": "233455_0823.png",
+      "source_frame_sha256": "79df47185f7e1e4243c8de8674f41169044f2d1b6825b5c86f67563df55489fe",
+      "source_roi_xyxy": [
+        18,
+        37,
+        42,
+        61
+      ],
+      "source_roi_normalized": [
+        0.1875,
+        0.3854166666666667,
+        0.4375,
+        0.6354166666666666
+      ],
+      "source_rgb_size": [
+        96,
+        96
       ]
     },
     {
@@ -48,110 +128,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_002.png",
+      "world_group": 15774506,
       "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "db29c34d6aef37fcb9e4d5517b83b6bee5440f5092132c1a621140a8442d16e0",
-      "source_frame_png": "harvest_sand_001.png",
-      "source_frame_sha256": "14514f9fcc0001ede5faa673fd2445b1cd4b6650ce210520d2c3a068e83973a8",
-      "source_roi_normalized": [
-        0.390625,
-        0.46875,
-        0.609375,
-        0.578125
-      ],
-      "source_roi_xyxy": [
-        25,
-        30,
-        39,
-        37
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 310,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_003.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "47290a3720daf7a6bd482bcda2610ccaec86742b6b4d43b0d07b1502ed794c6d",
-      "source_frame_png": "harvest_sand_002.png",
-      "source_frame_sha256": "846fb049838c54117af77909a4deb702d25c775e889240d5c53ef4c00b24578b",
-      "source_roi_normalized": [
-        0.390625,
-        0.390625,
-        0.546875,
-        0.5625
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        35,
-        36
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 193,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_004.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "62a8e4593a016215be2ecf5c9fef5c437f5666f95d97855e08ff72cf9b2f789b",
-      "source_frame_png": "harvest_sand_003.png",
-      "source_frame_sha256": "9b46b0dfcd33024d697fdae8127d37b08088a7a00e1c6a4695c14fd1a50305f0",
-      "source_roi_normalized": [
-        0.421875,
-        0.546875,
-        0.578125,
-        0.6875
-      ],
+      "annotation": "Daylight sand bank viewed obliquely from above. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T224516-5fa3b71973f3494d97563c926b84860d-878.npz",
+      "source_sha256": "884de799c055823a21a280953a1ece089018d23d923ff54be50e747167a95bff",
+      "sha256": "5393e871dc73f81839733b6557bbb80df76c4c52006df61b6eb9d5dee51374c2",
+      "source_frame_png": "224516_0396.png",
+      "source_frame_sha256": "dbcac5b7c4c800c67b06841f0900ff39e99dedc2b00e7f8233bd2cfe078d2c94",
       "source_roi_xyxy": [
         27,
-        35,
-        37,
-        44
+        43,
+        47,
+        63
+      ],
+      "source_roi_normalized": [
+        0.28125,
+        0.4479166666666667,
+        0.4895833333333333,
+        0.65625
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 310,
+      "frame": 404,
       "roi": [
         0.0,
         0.0,
@@ -159,36 +165,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target.",
+      "world_group": 15774506,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_005.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "35984093ef9bb5756ac44da8bf1b15af7204071472eefa35271d1266d7b598d8",
-      "source_frame_png": "harvest_sand_004.png",
-      "source_frame_sha256": "99c253566e17ba9313efe77df7490e498a08886187a159e35b6b3ff9594d2f1b",
-      "source_roi_normalized": [
-        0.43,
-        0.32,
-        0.62,
-        0.52
-      ],
+      "annotation": "Sunlit shoreline top surface. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T225340-dbe615f87f4c412890b25377a121ab77-1548.npz",
+      "source_sha256": "2d1807be3dab26775016c00d5b49aedc401583701773693b63166384dd1f16dd",
+      "sha256": "370c2e8588966d8789234b8d8e9a2c4c68a9c283c538496bfceb286c8e31be5f",
+      "source_frame_png": "225340_0404.png",
+      "source_frame_sha256": "026cbbe055e91c39ca14a861db2af02b7c0975e489bc4c3bb871c01a6654dd91",
       "source_roi_xyxy": [
-        27,
-        20,
-        40,
-        34
+        55,
+        45,
+        78,
+        68
+      ],
+      "source_roi_normalized": [
+        0.5729166666666666,
+        0.46875,
+        0.8125,
+        0.7083333333333334
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 79,
+      "frame": 497,
       "roi": [
         0.0,
         0.0,
@@ -196,36 +202,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
+      "world_group": 15774506,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_006.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "9a4751b827298c79c2123371d942b139bdcfbdf5f0d67bb5199143e7dd3d5e99",
-      "source_frame_png": "harvest_sand_005.png",
-      "source_frame_sha256": "594045fcb15031539edccdb68d4188e24217349b06d8ed28be822908defabf2d",
-      "source_roi_normalized": [
-        0.390625,
-        0.453125,
-        0.609375,
-        0.53125
-      ],
+      "annotation": "Continuous shoreline sand bank, reviewed inside the boundary to exclude water and grass.",
+      "source_replay": "20261108T225340-dbe615f87f4c412890b25377a121ab77-1548.npz",
+      "source_sha256": "2d1807be3dab26775016c00d5b49aedc401583701773693b63166384dd1f16dd",
+      "sha256": "8f2af8047b85043419042bac9db992e96c066fc2ec253dab61569c7dd764d1ca",
+      "source_frame_png": "225340_0497.png",
+      "source_frame_sha256": "1c54776085ae5aea4bd022e7e0a79e4b4c63d1c13f16f2aac8b57134ffe2ace2",
       "source_roi_xyxy": [
-        25,
-        29,
-        39,
-        34
+        60,
+        43,
+        83,
+        66
+      ],
+      "source_roi_normalized": [
+        0.625,
+        0.4479166666666667,
+        0.8645833333333334,
+        0.6875
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 376,
+      "frame": 441,
       "roi": [
         0.0,
         0.0,
@@ -233,36 +239,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
+      "world_group": 983571,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_007.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "5127647d933c146afa26601167a0d7479cc0aeb9dc447b762f0d01f29c027cb9",
-      "source_frame_png": "harvest_sand_006.png",
-      "source_frame_sha256": "ad897ed76d187e0e02403a4ba08f52998a943060005c80bfc2a88d78d96d4132",
-      "source_roi_normalized": [
-        0.390625,
-        0.390625,
-        0.53125,
-        0.5625
-      ],
+      "annotation": "Broad sand surface viewed downwards on a coast. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T183424-d9c389c8aba848d18a4071e3fdbccc35-469.npz",
+      "source_sha256": "61e392d89b59796cc16a89feeb4b282a8b0d12f6e84934f1cad9ee09fdb46896",
+      "sha256": "ffaa11b82b5e7adc5c662d75f0918ca364e601671c18ef491267a10ff0a18725",
+      "source_frame_png": "183424_0441.png",
+      "source_frame_sha256": "6adb05f1f8110045f079b7a4f545a85359c520c10823e886890081cc4bb04fa1",
       "source_roi_xyxy": [
-        25,
-        25,
-        34,
-        36
+        52,
+        31,
+        78,
+        57
+      ],
+      "source_roi_normalized": [
+        0.5416666666666666,
+        0.3229166666666667,
+        0.8125,
+        0.59375
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 345,
+      "frame": 278,
       "roi": [
         0.0,
         0.0,
@@ -270,36 +276,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
+      "world_group": 3659444,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_008.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "f72ced95cccd1e095db08910dbe659555ef4c83612f4e74e5f34b8a0d0d14e33",
-      "source_frame_png": "harvest_sand_007.png",
-      "source_frame_sha256": "92b606dda48f0455588634bb68066b0dda13c8853fb1121d904350cce6dd5275",
-      "source_roi_normalized": [
-        0.390625,
-        0.390625,
-        0.59375,
-        0.5625
-      ],
+      "annotation": "Shallow-angle desert sand. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T191037-55337ec3fcca48e9bc1c19cf97ee1468-432.npz",
+      "source_sha256": "c00ecf8e4aeed6b32b47b6908c8947295f4d5756aee0423920748e5ece4cb366",
+      "sha256": "858a9f4294bf8a9b1486d963bccd5677fcd9383b219eede4e8c4a50b4d1e0160",
+      "source_frame_png": "191037_0278.png",
+      "source_frame_sha256": "9de307679dd32bc919d6adc7a56c0bb061f441864fb1106eecef80dc367fd682",
       "source_roi_xyxy": [
-        25,
-        25,
-        38,
-        36
+        8,
+        37,
+        32,
+        61
+      ],
+      "source_roi_normalized": [
+        0.08333333333333333,
+        0.3854166666666667,
+        0.3333333333333333,
+        0.6354166666666666
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 872,
+      "frame": 344,
       "roi": [
         0.0,
         0.0,
@@ -307,36 +313,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
+      "world_group": 3659444,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_009.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "9eb3842ce2d89997a11b723d21a791eff2e345fe6cb6a89aaee423d9a701ecf6",
-      "source_frame_png": "harvest_sand_008.png",
-      "source_frame_sha256": "88c880330cf8e8425db508435d71d2e118d2d5990a2c93ed36dd425df0f0b933",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
+      "annotation": "Desert sand with a shadowed block face. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T191037-55337ec3fcca48e9bc1c19cf97ee1468-432.npz",
+      "source_sha256": "c00ecf8e4aeed6b32b47b6908c8947295f4d5756aee0423920748e5ece4cb366",
+      "sha256": "7ef548745640d62efac3ff42b82841ca2d08910b7ad51e773e826ab1931c917f",
+      "source_frame_png": "191037_0344.png",
+      "source_frame_sha256": "ef8dcd1296488acc17c7ebe2c3fae65a75d716713bd0092e5f4580d33f6c9a23",
       "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
+        52,
+        40,
+        76,
+        64
+      ],
+      "source_roi_normalized": [
+        0.5416666666666666,
+        0.4166666666666667,
+        0.7916666666666666,
+        0.6666666666666666
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 195,
+      "frame": 230,
       "roi": [
         0.0,
         0.0,
@@ -344,36 +350,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
+      "world_group": 2248990,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_010.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "d06a40da2f4eb9fa4855c8b4606b0af5fa22283a4524c09dc7ec651844b0cbd2",
-      "source_frame_png": "harvest_sand_009.png",
-      "source_frame_sha256": "956fc5f1cfcac38ea46b2caf2ee32c16b4dbf847f92bef7cde2d0e3d5df53754",
-      "source_roi_normalized": [
-        0.46875,
-        0.296875,
-        0.65625,
-        0.5
-      ],
+      "annotation": "Top face of a close isolated sand block. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T195024-fda4a4ee83c84c8aa6bf4195bc05c48d-237.npz",
+      "source_sha256": "1aa38d77f76938a18e53e39be880895ed3783ac27a563f212e94b40b2c11f4cf",
+      "sha256": "89748efb2b31b84d539b44075c9045d44a0e7195b8c2709ec9727c88fea66f49",
+      "source_frame_png": "195024_0230.png",
+      "source_frame_sha256": "89c1c3d9ff6c191541c0c0a112e8ee33ee119db7ba9fdb7900100d6799466d61",
       "source_roi_xyxy": [
-        30,
-        19,
-        42,
-        32
+        15,
+        13,
+        37,
+        35
+      ],
+      "source_roi_normalized": [
+        0.15625,
+        0.13541666666666666,
+        0.3854166666666667,
+        0.3645833333333333
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 822,
+      "frame": 375,
       "roi": [
         0.0,
         0.0,
@@ -381,36 +387,36 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
+      "world_group": 15695152,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_011.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "c1b0abeb8f8817bc517bdbe671955fdd16e8aa8094b013576d8bc4240e938a60",
-      "source_frame_png": "harvest_sand_010.png",
-      "source_frame_sha256": "08247ad22dc08882a413ed4e1894a0a23b527fd5d0a8e8e577be5992b42cb47d",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
+      "annotation": "Steep-down view of a shoreline sand ledge from an independent training world. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T105904-119e83962c404ae58a82c3c5de783534-1001.npz",
+      "source_sha256": "56e211b71721cce8cb1d35916790c6b2c7e60353c0bba891864a0bbecc4c6d0f",
+      "sha256": "6d2b6ed708c4ade0fd57f1b35976d5357e21c1a3822f7d9baeb404f8abe9f491",
+      "source_frame_png": "prior_0375.png",
+      "source_frame_sha256": "4c0593b9d53cfb672a1d71f8b9ebaaffcf6ce3c6f6a3b0d14ad6ea5715748b32",
       "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
+        28,
+        13,
+        57,
+        42
+      ],
+      "source_roi_normalized": [
+        0.2916666666666667,
+        0.13541666666666666,
+        0.59375,
+        0.4375
       ],
       "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
-      "frame": 121,
+      "frame": 830,
       "roi": [
         0.0,
         0.0,
@@ -418,476 +424,32 @@
         1.0
       ],
       "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
+      "world_group": 6628959,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
       "path": "positive_sand_012.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "3a5e6495a20ecbc598775f78361b7e5d614c217ada3855e536963e1c0460cb3c",
-      "source_frame_png": "harvest_sand_011.png",
-      "source_frame_sha256": "2e6fd212f5d591ada1e0c734d3fc80264ed6caadd882d559c77b3e338407141d",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
+      "annotation": "Sloping sand face in a forest shoreline world. Human-reviewed crop of native D training RGB.",
+      "source_replay": "20261108T193008-bf467604f8cc4fe191b64da2ac7cee36-832.npz",
+      "source_sha256": "690bf241c01dfc6e79acd9e9fcf59a5d280d37ffa631f9299d6dd994025a40d6",
+      "sha256": "c2a6c734a3d11eb3d9f77be77a9de5d01e79484ebf0861ac9994af8e7588d3f6",
+      "source_frame_png": "193008_0830.png",
+      "source_frame_sha256": "75ea9ac4064195ffe4ca46e406443fd6ee2775cc187397a3e0a7254c17cf5ddc",
       "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
+        2,
+        49,
+        24,
+        71
+      ],
+      "source_roi_normalized": [
+        0.020833333333333332,
+        0.5104166666666666,
+        0.25,
+        0.7395833333333334
       ],
       "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 283,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_013.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "c09b7acac9602faec91c5c3c879e9215d3ef1acc5aa4710b93465e6c111b2211",
-      "source_frame_png": "harvest_sand_012.png",
-      "source_frame_sha256": "984448ad9bb1154965d1f1eb9c908ff8da07bd1925e44e747e5b9d349567df22",
-      "source_roi_normalized": [
-        0.43,
-        0.32,
-        0.62,
-        0.52
-      ],
-      "source_roi_xyxy": [
-        27,
-        20,
-        40,
-        34
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 379,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_014.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "63e44b388b6f27b5c9762895273b02263b64c80b8bc273058f011ccd392e8a6c",
-      "source_frame_png": "harvest_sand_013.png",
-      "source_frame_sha256": "cc380ec18e3c5cc2a86d8a488d0511531d6917efbc95b73c7d6b44ad6636c8a6",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 277,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_015.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "419381c00f4f847a3355ddf9682cddb10ba4faf932df5a723e10454ed88a26e9",
-      "source_frame_png": "harvest_sand_014.png",
-      "source_frame_sha256": "c33c34a7cc348189881dadc35aaffb89efce59261663983d8ac7934f697e72af",
-      "source_roi_normalized": [
-        0.43,
-        0.32,
-        0.62,
-        0.52
-      ],
-      "source_roi_xyxy": [
-        27,
-        20,
-        40,
-        34
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 655,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_016.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "9cd400b927c065ba7e84c7677287ae10d5e87d4b83c4cf77e01dde28f2dffd10",
-      "source_frame_png": "harvest_sand_015.png",
-      "source_frame_sha256": "60bdca18d4089601eed8dfca844481bfb3a36bc14e61c53c937dcc5f4c261071",
-      "source_roi_normalized": [
-        0.390625,
-        0.46875,
-        0.609375,
-        0.5625
-      ],
-      "source_roi_xyxy": [
-        25,
-        30,
-        39,
-        36
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 357,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_017.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "983a5925f24bb9141f23f333a36795c084d514e40b8c2540eb1e51e1680c6303",
-      "source_frame_png": "harvest_sand_016.png",
-      "source_frame_sha256": "94c719fdc4e7b23da95577c0ade9e365c2d5ae6bf30c8dc251956761f50fbd6e",
-      "source_roi_normalized": [
-        0.390625,
-        0.390625,
-        0.5625,
-        0.53125
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        36,
-        34
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 496,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray. Manually tightened the sand ROI on this training frame to exclude adjacent sky or water.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_018.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "59333350661f8e8dbefd35285e9ea4bd85ae9d7f2792cbc61aed4cbe7024190e",
-      "source_frame_png": "harvest_sand_017.png",
-      "source_frame_sha256": "b8ce8e4c8eea0e7396cc7dd9b1168b9e247e570fd7310396c070b29a148c08b7",
-      "source_roi_normalized": [
-        0.390625,
-        0.390625,
-        0.546875,
-        0.59375
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        35,
-        38
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 717,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_019.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "b013e08640fd4eb8e4abb8977c0a700ec6559ef3ce075b0908944aacd151c7ce",
-      "source_frame_png": "harvest_sand_018.png",
-      "source_frame_sha256": "76f87eecf9cbcec9bb575c8ed109be575bbc9c4880cc61b840cfa5382467af09",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 363,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_020.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "b092b9a186eed58d7ba274a79a925bc9c9f93130e88bb537427b2e70f7d2ed3c",
-      "source_frame_png": "harvest_sand_019.png",
-      "source_frame_sha256": "21eeea22b6340d2ffa98a9b7482c3b4b1735b76e7587e3269dc59b99777312c6",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 255,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_021.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "cceccbdf1706e2423b9b4e085a53a67c705510e80d0d44573e18e94bc7268396",
-      "source_frame_png": "harvest_sand_020.png",
-      "source_frame_sha256": "4f39a774c19714cf54bea3199e6c1b700d0ad2d225012906558e55a54c844612",
-      "source_roi_normalized": [
-        0.43,
-        0.32,
-        0.62,
-        0.52
-      ],
-      "source_roi_xyxy": [
-        27,
-        20,
-        40,
-        34
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 297,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Visible sand in manually reviewed training frame with valid center-ray target.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_022.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "cfac9ad9b3b55b92f2b93c7d926da2f845568e20daa3f89503034cd17b5813cf",
-      "source_frame_png": "harvest_sand_021.png",
-      "source_frame_sha256": "3cba4bf9d70aac4302add16fcc64245f24240be6dd13ee84cbfcc1fbc6f02eb0",
-      "source_roi_normalized": [
-        0.43,
-        0.32,
-        0.62,
-        0.52
-      ],
-      "source_roi_xyxy": [
-        27,
-        20,
-        40,
-        34
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 858,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8828909,
-      "source_replay": "20261107T024212-6acadc21d6da4d1a93288d1d7ad02813-873.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_023.png",
-      "world_seed": null,
-      "source_sha256": "7b70124dbf0e7148a5c919ed53a4276460f7bc9703ecfca6fdc02cee1202fc46",
-      "sha256": "b1870697bd571ea84f9b72ee550858ac7d4b3518889198eda071d52abb2324fb",
-      "source_frame_png": "harvest_sand_022.png",
-      "source_frame_sha256": "306b74cbb93d3f67b69fcdd3a113fb7c84c2fb6a4c6ed4c45be21419f2964fbd",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 385,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "positive",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually reviewed center crop of sand from a valid training target ray.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "positive_sand_024.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "66f62122689accf132ac18de6fcd1f2a94991eb8eceef116834daa8d7085fd52",
-      "source_frame_png": "harvest_sand_023.png",
-      "source_frame_sha256": "d6441d081fc8116548494956aede03264a6328e5e0e76ffb27f283506c9bb887",
-      "source_roi_normalized": [
-        0.4,
-        0.4,
-        0.6,
-        0.6
-      ],
-      "source_roi_xyxy": [
-        25,
-        25,
-        39,
-        39
-      ],
-      "source_rgb_size": [
-        64,
-        64
+        96,
+        96
       ]
     },
     {
@@ -929,7 +491,7 @@
       ]
     },
     {
-      "frame": 47,
+      "frame": 0,
       "roi": [
         0.0,
         0.0,
@@ -937,29 +499,164 @@
         1.0
       ],
       "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
+      "world_group": 2958632,
+      "world_seed": null,
       "task_id": "harvest_sand",
       "split": "train",
-      "path": "negative_sky_002.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "ab804afbe154fcf9b5fa5469490f18858141636b52559932017e90f65ec1709b",
-      "source_frame_png": "harvest_sand_025.png",
-      "source_frame_sha256": "520c5a94bd34c864f4f99b59f6dde2e3d0c0b48dafce0a39217eb02cd9dd316f",
+      "path": "negative_mushroom_underside_001.png",
+      "annotation": "Brown giant mushroom block underside (interior texture), independently captured in MineDojo. Five rays confirmed mushroom variant 5; no evaluation pixels were used.",
+      "source_replay": "mushroom_bottom_view.npz",
+      "source_sha256": "18cefb2f0b533843075d03f02f364004000e2e46f44ff954b1d2f7a1d54bfdbc",
+      "sha256": "63e8ebb2eb7f035b65c3df2507585fdc69d95a9dcde63d3e229d33ce006a9439",
+      "source_frame_png": "underside_bottom_view.png",
+      "source_frame_sha256": "c20ab01f6c6c9eae277f8253486d429c081928b7c48fcd24d57fd393e3129e3f",
+      "source_roi_xyxy": [
+        100,
+        64,
+        123,
+        104
+      ],
       "source_roi_normalized": [
-        0.32,
-        0.08,
-        0.68,
-        0.39
+        0.390625,
+        0.4,
+        0.48046875,
+        0.65
+      ],
+      "source_rgb_size": [
+        256,
+        160
+      ],
+      "source_capture": {
+        "task_id": "harvest_sand",
+        "split": "train",
+        "world_group": 2958632,
+        "world_seed": null,
+        "scene_id": "harvest_sand_distractors_flat_v1",
+        "flat_world": "3;minecraft:bedrock,2*minecraft:dirt,minecraft:grass;1;",
+        "commands": [
+          "setblock 0 7 3 minecraft:brown_mushroom_block 5",
+          "tp @p 0.5 4 2.55 0 -60"
+        ],
+        "block_names": [
+          "mushroom",
+          "mushroom",
+          "mushroom",
+          "mushroom",
+          "mushroom"
+        ],
+        "block_meta": [
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "ray_distance": [
+          1.5935455560684204,
+          1.5935429334640503,
+          1.5935455560684204,
+          1.6430648565292358,
+          1.5507694482803345
+        ]
+      }
+    },
+    {
+      "frame": 130,
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "role": "negative",
+      "world_group": 8948140,
+      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
+      "source_roi_xyxy": [
+        41,
+        2,
+        63,
+        38
+      ],
+      "source_rgb_size": [
+        64,
+        64
+      ],
+      "annotation": "Manually verified white birch bark with black markings in a non-held-out natural harvest_sand training frame. No sand in crop.",
+      "distractor_type": "birch_bark",
+      "task_id": "harvest_sand",
+      "split": "train",
+      "path": "negative_birch_bark_001.png",
+      "world_seed": null,
+      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
+      "sha256": "d7f6ad206656491fcbd2f7b804d621880a3b0f34b8c45b30688a17fa0376a36e",
+      "source_rgb_key": "image"
+    },
+    {
+      "frame": 2,
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "role": "negative",
+      "world_group": 2958632,
+      "source_replay": "distractor_flat_capture.npz",
+      "source_roi_xyxy": [
+        101,
+        60,
+        155,
+        114
+      ],
+      "source_rgb_size": [
+        256,
+        160
+      ],
+      "annotation": "Manually reviewed real MineDojo RGB from an authored training-only fixture; center ray hit the placed mushroom, with no sand in crop.",
+      "distractor_type": "mushroom",
+      "task_id": "harvest_sand",
+      "split": "train",
+      "path": "negative_mushroom_stem_001.png",
+      "world_seed": null,
+      "source_sha256": "266b5f25ac7609f89e503df940e773af9729a702c5e14bcbc1c1c8e6c7511d05",
+      "sha256": "6a2925a0e674c3405216b386f60fdd1d09361517b708da303fb24f4fc88f909f",
+      "source_rgb_key": "rgb",
+      "source_scene": "harvest_sand_distractors_flat_v1",
+      "source_block_id": "minecraft:brown_mushroom_block",
+      "source_block_meta": 10
+    },
+    {
+      "frame": 193,
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "role": "negative",
+      "world_group": 8948140,
+      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
+      "annotation": "Visually verified tree canopy against open blue sky; the sand cliff is outside this ROI.",
+      "task_id": "harvest_sand",
+      "split": "train",
+      "path": "negative_sky_tree_edge_001.png",
+      "world_seed": null,
+      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
+      "sha256": "66aac868edc98533a08ca02b7ea9e7144ac9755af6a21e6b1119c750e3cb0234",
+      "distractor_type": "sky_tree_edge",
+      "source_frame_png": "harvest_sand_003.png",
+      "source_frame_sha256": "9b46b0dfcd33024d697fdae8127d37b08088a7a00e1c6a4695c14fd1a50305f0",
+      "source_roi_normalized": [
+        0.734375,
+        0.09375,
+        1.0,
+        0.5
       ],
       "source_roi_xyxy": [
-        20,
-        5,
-        44,
-        25
+        47,
+        6,
+        64,
+        32
       ],
       "source_rgb_size": [
         64,
@@ -1005,234 +702,6 @@
       ]
     },
     {
-      "frame": 23,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_003.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "56f05d018446599650eca6f8ccf1809c626d026c6c15afce4efc2b84a95ce6d3",
-      "source_frame_png": "harvest_sand_027.png",
-      "source_frame_sha256": "d7c58b0f378864bcc25d8ee20fc2a682d2c45c83d67f07699d080ed0cf9c884f",
-      "source_roi_normalized": [
-        0.32,
-        0.08,
-        0.68,
-        0.39
-      ],
-      "source_roi_xyxy": [
-        20,
-        5,
-        44,
-        25
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 29,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_004.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "c33934255b3720b4b18abd40791f4cfbd840be198c0a07cd492ea96480cd931d",
-      "source_frame_png": "harvest_sand_028.png",
-      "source_frame_sha256": "fecbcc6f62d5fbaaf8d172fa720f6f4d7dea4e2dd07d77aa74dde9e4029870ca",
-      "source_roi_normalized": [
-        0.32,
-        0.08,
-        0.68,
-        0.39
-      ],
-      "source_roi_xyxy": [
-        20,
-        5,
-        44,
-        25
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 17,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_005.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "9a7926a11aedf7f8750d562412c199fcd81b88a79bc2d8285191aaed32f39e9d",
-      "source_frame_png": "harvest_sand_029.png",
-      "source_frame_sha256": "bbe57fba96f00d5407b79d0344067505a74b828ef383afb5ed26ec8dbde1cfef",
-      "source_roi_normalized": [
-        0.32,
-        0.08,
-        0.68,
-        0.39
-      ],
-      "source_roi_xyxy": [
-        20,
-        5,
-        44,
-        25
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 35,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_006.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "78eb621a2bdeb23c67b37baa058e799c50432f73633e37658bb9ddc1c5dcb0c7",
-      "source_frame_png": "harvest_sand_030.png",
-      "source_frame_sha256": "38426437bec77b2c6d09efa274206934bb0f74f7850078c0b2492bdaadb94232",
-      "source_roi_normalized": [
-        0.32,
-        0.08,
-        0.68,
-        0.39
-      ],
-      "source_roi_xyxy": [
-        20,
-        5,
-        44,
-        25
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 41,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_007.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "6174dd2f99f4ec5a99985f248bc2d560c21e47b300dfb7b13fadacaee8ac2ec5",
-      "source_frame_png": "harvest_sand_031.png",
-      "source_frame_sha256": "56a5b5ef8a50daf2efdecb104294938d04d9b33b0003ef0ddf7ec16faa68fffa",
-      "source_roi_normalized": [
-        0.32,
-        0.08,
-        0.68,
-        0.39
-      ],
-      "source_roi_xyxy": [
-        20,
-        5,
-        44,
-        25
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 11,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 1734789,
-      "source_replay": "sample_train.npz",
-      "annotation": "Manually reviewed patch of open sky in real training frame, containing no sand.",
-      "distractor_type": "sky",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_008.png",
-      "world_seed": null,
-      "source_sha256": "4b5749df3c64a0f490c88c1255089a05cbf3b5fd573f88667f9db5c81765492f",
-      "sha256": "222975f2c878a7b8e340f60f172eb186b1c61c4e0ac844d7a45ed257abfa4f46",
-      "source_frame_png": "harvest_sand_032.png",
-      "source_frame_sha256": "a7c338ad3a9ec0b152dd7d26cd9113c2349cd0406fba531d58c249d386618c44",
-      "source_roi_normalized": [
-        0.44,
-        0.08,
-        0.69,
-        0.37
-      ],
-      "source_roi_xyxy": [
-        28,
-        5,
-        45,
-        24
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
       "frame": 396,
       "roi": [
         0.0,
@@ -1264,44 +733,6 @@
         36,
         21,
         55
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 193,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually verified tree canopy against open blue sky; the sand cliff is outside this ROI.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_tree_edge_001.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "66aac868edc98533a08ca02b7ea9e7144ac9755af6a21e6b1119c750e3cb0234",
-      "distractor_type": "sky_tree_edge",
-      "source_frame_png": "harvest_sand_003.png",
-      "source_frame_sha256": "9b46b0dfcd33024d697fdae8127d37b08088a7a00e1c6a4695c14fd1a50305f0",
-      "source_roi_normalized": [
-        0.734375,
-        0.09375,
-        1.0,
-        0.5
-      ],
-      "source_roi_xyxy": [
-        47,
-        6,
-        64,
-        32
       ],
       "source_rgb_size": [
         64,
@@ -1345,172 +776,6 @@
         64,
         64
       ]
-    },
-    {
-      "frame": 345,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "annotation": "Visually verified blue sky beside a grass and dirt slope, with no sand in this ROI.",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_sky_grass_edge_001.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "91486d75985175a1726d60f3488aab49c4bb71e56ab924ca94f4046fec9a413d",
-      "distractor_type": "sky_grass_edge",
-      "source_frame_png": "harvest_sand_007.png",
-      "source_frame_sha256": "92b606dda48f0455588634bb68066b0dda13c8853fb1121d904350cce6dd5275",
-      "source_roi_normalized": [
-        0.75,
-        0.0,
-        1.0,
-        0.3125
-      ],
-      "source_roi_xyxy": [
-        48,
-        0,
-        64,
-        20
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ]
-    },
-    {
-      "frame": 130,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "source_roi_xyxy": [
-        41,
-        2,
-        63,
-        38
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ],
-      "annotation": "Manually verified white birch bark with black markings in a non-held-out natural harvest_sand training frame. No sand in crop.",
-      "distractor_type": "birch_bark",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_birch_bark_001.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "d7f6ad206656491fcbd2f7b804d621880a3b0f34b8c45b30688a17fa0376a36e",
-      "source_rgb_key": "image"
-    },
-    {
-      "frame": 107,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "source_roi_xyxy": [
-        27,
-        8,
-        39,
-        37
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ],
-      "annotation": "Manually verified white birch bark with black markings in a non-held-out natural harvest_sand training frame. No sand in crop.",
-      "distractor_type": "birch_bark",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_birch_bark_002.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "d5de5e69bcd99fff69b8af671c0d9ee2089a28bed4539e8d4bffe8fd18bcedfc",
-      "source_rgb_key": "image"
-    },
-    {
-      "frame": 76,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 8948140,
-      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
-      "source_roi_xyxy": [
-        1,
-        23,
-        13,
-        52
-      ],
-      "source_rgb_size": [
-        64,
-        64
-      ],
-      "annotation": "Manually verified white birch bark with black markings in a non-held-out natural harvest_sand training frame. No sand in crop.",
-      "distractor_type": "birch_bark",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_birch_bark_003.png",
-      "world_seed": null,
-      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
-      "sha256": "1fd143432eb127c743688c9b8f1c28ab7b5a2ee949c3ed7cb151b226d894ccb1",
-      "source_rgb_key": "image"
-    },
-    {
-      "frame": 2,
-      "roi": [
-        0.0,
-        0.0,
-        1.0,
-        1.0
-      ],
-      "role": "negative",
-      "world_group": 2958632,
-      "source_replay": "distractor_flat_capture.npz",
-      "source_roi_xyxy": [
-        101,
-        60,
-        155,
-        114
-      ],
-      "source_rgb_size": [
-        256,
-        160
-      ],
-      "annotation": "Manually reviewed real MineDojo RGB from an authored training-only fixture; center ray hit the placed mushroom, with no sand in crop.",
-      "distractor_type": "mushroom",
-      "task_id": "harvest_sand",
-      "split": "train",
-      "path": "negative_mushroom_stem_001.png",
-      "world_seed": null,
-      "source_sha256": "266b5f25ac7609f89e503df940e773af9729a702c5e14bcbc1c1c8e6c7511d05",
-      "sha256": "6a2925a0e674c3405216b386f60fdd1d09361517b708da303fb24f4fc88f909f",
-      "source_rgb_key": "rgb",
-      "source_scene": "harvest_sand_distractors_flat_v1",
-      "source_block_id": "minecraft:brown_mushroom_block",
-      "source_block_meta": 10
     }
-  ],
-  "provenance": "MineDojo training frames; no evaluation-derived assets"
+  ]
 }

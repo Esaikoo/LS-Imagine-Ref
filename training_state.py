@@ -76,14 +76,15 @@ def _jsonable(value):
 
 
 def _replay_from_sources(sources, limit):
+    from tools import read_episode_npz
+
     records = {}
     for directory in sources:
         if not directory.is_dir():
             raise FileNotFoundError("Missing ancestor Replay directory: " + str(directory))
         for filename in sorted(directory.glob("*.npz")):
             try:
-                with np.load(filename, allow_pickle=False) as archive:
-                    episode = {key: archive[key] for key in archive.files}
+                episode = read_episode_npz(filename)
                 length = len(episode["reward"])
                 if length < 1 or any(np.ndim(value) == 0 or len(value) != length
                                      for value in episode.values()):
@@ -153,6 +154,7 @@ def validate_goal_checkpoint(checkpoint, values, *, evaluation=False):
         values.update({key: value for key, value in saved.items() if key.startswith("goal_")})
         values["goal_ref_enabled"] = enabled
         if enabled:
+            values["goal_ref_border_padding"] = saved.get("goal_ref_border_padding", "zeros")
             values.update(search_eval_evidence=False, vnext_visual_audit=False,
                           check_obs_enabled=False)
     elif (enabled != bool(values.get("goal_ref_enabled", False))
@@ -311,6 +313,8 @@ def prepare_resume(config):
         # New defaults must not silently change historical evaluation/control.
         restored["vnext_spatial_fix_version"] = checkpoint.get("spatial_fix_version", 0)
         restored["vnext_pose_loss_version"] = saved.get("vnext_pose_loss_version", 1)
+    if saved.get("goal_ref_enabled"):
+        restored["goal_ref_border_padding"] = saved.get("goal_ref_border_padding", "zeros")
     for key, metadata in (("search_a_model_version", "search_a_version"),
                           ("search_b_model_version", "search_b_version"),
                           ("search_c_model_version", "search_c_version"),

@@ -299,6 +299,23 @@ class VisualizationTests(unittest.TestCase):
                                 for s in summary["selected_keyframes_for_A"]))
             viz.close()
 
+    def test_unlocalized_decision_keeps_only_real_visual_history(self):
+        with tempfile.TemporaryDirectory() as root:
+            viz = SearchVisualizer(root, dict(task="sand", vnext_spatial_fix_version=3))
+            obs, out = fixture()
+            frames = np.zeros((3, 4, 4, 4), dtype=np.uint8)
+            frames[0, :, :, :3], frames[2, :, :, :3] = 40, 80
+            out.update(log_spatial_local_valid=0., log_spatial_pose_model_ready=0.,
+                       log_spatial_memory_available=1., log_spatial_history_frames=frames,
+                       log_spatial_history_valid=np.array([1., 0., 1.]))
+            viz.observe("eval", "unlocalized", obs, out, 0)
+            event = viz._active[("eval", "unlocalized")].c[0]
+            self.assertFalse(event["row"]["pose_model_ready"])
+            self.assertFalse(event["row"]["local_ready"])
+            self.assertEqual(event["history_preview"].shape, (4, 8, 3))
+            self.assertTrue((event["history_preview"][:, :4] == 40).all())
+            self.assertTrue((event["history_preview"][:, 4:] == 80).all())
+
     def test_goal_keyframe_prefers_actual_fusion_over_raw_heat_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             viz = SearchVisualizer(directory, dict(task="sand", goal_ref_use_raw_image=True))

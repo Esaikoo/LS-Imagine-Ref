@@ -1178,7 +1178,7 @@ def worker(args, manifest):
             if visualizer is not None:
                 visualizer.set_step(agent._logger.step)
                 if agent._goal_reference is not None:
-                    visualizer.set_goal_bank(agent._goal_reference.export_bank()["pixels"])
+                    visualizer.set_goal_bank(agent._goal_reference.export_bank())
             print('Loaded checkpoint strictly:', checkpoint_path, flush=True)
             episode_indices = [args.worker_episode] if args.worker_episode is not None else range(args.episodes)
             for episode in episode_indices:

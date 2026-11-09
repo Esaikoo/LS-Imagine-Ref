@@ -210,12 +210,19 @@ class LS_Imagine(nn.Module):
         if terminal_obs is not None:
             feat = self._wm.dynamics.get_feat({key:value[index:index+1] for key,value in state[0].items()})
             control = state[3]["previous_control"][index:index+1]
-            image = torch.as_tensor(terminal_obs["image"],device=feat.device)[None]
-            heatmap = torch.as_tensor(terminal_obs["heatmap"],device=feat.device)[None]
+            inputs = {key: torch.as_tensor(terminal_obs[key], device=feat.device)[None]
+                      for key in ("image", "heatmap", "goal_image", "goal_image_valid") if key in terminal_obs}
             extra = {}
+            if self._goal_reference is not None:
+                from apm.goal_guidance import build_policy_observation
+                tracking = state[3].get("goal_tracking")
+                if tracking is not None:
+                    tracking = tuple(value[index:index+1] for value in tracking)
+                inputs, goal, _ = build_policy_observation(inputs, self._goal_reference, tracking, control)
+                extra.update(goal_context=goal["context"], goal_peak_rejected=goal["peak_rejected"])
             if int(getattr(self._config,"vnext_spatial_fix_version",0)) >= 2:
                 extra["camera_pitch"] = state[3]["actuator"][index:index+1,2]
-            _,memory,_ = self._vnext.b.online(feat,image,heatmap,memory,
+            _,memory,_ = self._vnext.b.online(feat,inputs["image"],inputs["heatmap"],memory,
                 previous_control=control,reward=terminal_obs.get("obs_reward",0.),**extra)
         return self._vnext.b.visualization_state(memory)
 
@@ -850,7 +857,7 @@ def main(config): # config is namespace
         import json
         goal = agent._goal_reference
         if hasattr(logger, "search_visualizer"):
-            logger.search_visualizer.set_goal_bank(goal.export_bank()["pixels"])
+            logger.search_visualizer.set_goal_bank(goal.export_bank())
         (logdir / "goal_reference_manifest.json").write_text(json.dumps({
             "fingerprint": goal.bank_fingerprint, "manifest": goal.bank_manifest,
             "goal_ref_version": config.goal_ref_version,

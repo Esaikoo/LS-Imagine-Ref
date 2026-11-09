@@ -789,27 +789,15 @@ def save_episodes(directory, episodes):
     return True
 
 def replace_none_with_zeros(episode):
-    if "image" in episode and len(episode["image"]):
-        reference_shape = episode["image"][0].shape
-    else:
+    if "image" not in episode or not len(episode["image"]):
         raise ValueError("Image data is missing or malformed in episode.")
-    
-    if "zoomed_image" in episode:
-        episode["zoomed_image"] = [
-            np.zeros(reference_shape) if img is None else img for img in episode["zoomed_image"]
-        ]
-    
-    if "heatmap" in episode and len(episode["heatmap"]):
-        heatmap_shape = episode["heatmap"][0].shape
-    else:
-        heatmap_shape = None
-    
-    if "heatmap_on_zoomed" in episode and heatmap_shape:
-        episode["heatmap_on_zoomed"] = [
-            np.zeros(heatmap_shape) if hm is None else hm for hm in episode["heatmap_on_zoomed"]
-        ]
-    
+    for field, reference in (("zoomed_image", "image"), ("heatmap_on_zoomed", "heatmap")):
+        if field in episode and reference in episode and len(episode[reference]):
+            template = episode[reference][0]
+            episode[field] = [np.zeros_like(template) if value is None else value
+                              for value in episode[field]]
     return episode
+
 
 def from_generator(generator, batch_size):
 
@@ -873,6 +861,22 @@ def sample_episodes(episodes, length, seed=0):
         yield ret
 
 
+def read_episode_npz(filename):
+    """Restore byte zoom fields losslessly from older archives with float padding."""
+    with np.load(filename, allow_pickle=False) as archive:
+        episode = {key: archive[key] for key in archive.files}
+    for field, reference in (("zoomed_image", "image"), ("heatmap_on_zoomed", "heatmap")):
+        values, template = episode.get(field), episode.get(reference)
+        if (values is None or template is None or values.dtype.kind != "f"
+                or template.dtype != np.uint8 or values.shape != template.shape):
+            continue
+        if values.min(initial=0.) >= 0. and values.max(initial=0.) <= 255.:
+            compact = values.astype(np.uint8)
+            if np.array_equal(compact, values):
+                episode[field] = compact
+    return episode
+
+
 def load_episodes(directory, limit=None, reverse=True):
     directory = pathlib.Path(directory).expanduser()
     episodes = collections.OrderedDict()
@@ -880,9 +884,7 @@ def load_episodes(directory, limit=None, reverse=True):
     if reverse:
         for filename in reversed(sorted(directory.glob("*.npz"))):
             try:
-                with filename.open("rb") as f:
-                    episode = np.load(f)
-                    episode = {k: episode[k] for k in episode.keys()}
+                episode = read_episode_npz(filename)
             except Exception as e:
                 print(f"Could not load episode: {e}")
                 continue
@@ -894,9 +896,7 @@ def load_episodes(directory, limit=None, reverse=True):
     else:
         for filename in sorted(directory.glob("*.npz")):
             try:
-                with filename.open("rb") as f:
-                    episode = np.load(f)
-                    episode = {k: episode[k] for k in episode.keys()}
+                episode = read_episode_npz(filename)
             except Exception as e:
                 print(f"Could not load episode: {e}")
                 continue

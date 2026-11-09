@@ -59,7 +59,7 @@ class PoseNet(nn.Module):
         self.calibration_ratio, self.cache_size = float(calibration_ratio), int(cache_size)
         self.fix_version = int(fix_version)
         self.loss_version = int(loss_version)
-        if self.loss_version not in (1, 2):
+        if self.loss_version not in (1, 2, 3):
             raise ValueError("Unknown pose loss revision")
         if self.cache_size < max(self.min_samples, self.min_calibration, 2*self.min_moving):
             raise ValueError("Pose calibration cache is smaller than required support")
@@ -82,7 +82,7 @@ class PoseNet(nn.Module):
                 # small yaw residual; old revision 0 keeps its original layout.
                 self.fusion[-1].bias[2] = -2.
                 self.fusion[-1].bias[5] = 0.
-        if self.loss_version == 2:
+        if self.loss_version >= 2:
             axis = (torch.arange(64, dtype=torch.float32)+.5)*2/64-1
             self.register_buffer("camera_grid", torch.stack(torch.meshgrid(axis, axis, indexing="xy"), -1),
                                  persistent=False)
@@ -122,6 +122,18 @@ class PoseNet(nn.Module):
                     # This tail guard qualifies the integrated estimator only;
                     # its cache never feeds back into individual motion gates.
                     ((self.static_error_bound() <= MAX_STATIC_TAIL) if self.fix_version else True))
+
+    @torch.no_grad()
+    def qualification_diagnostics(self):
+        """Show why the estimator can or cannot place real observations."""
+        moving = int(self.calibration_moving_samples)
+        baseline = float(self.calibration_moving_baseline) if moving else 0.
+        return dict(ready=self.ready, moving=moving,
+                    moving_ratio=float(self.calibration_moving_error)/baseline if baseline > 0. else None,
+                    moving_ratio_limit=self.calibration_ratio,
+                    static=int(self.calibration_static_samples),
+                    static_p95=float(self.static_error_bound()) if self.calibration_static_samples else None,
+                    static_p95_limit=MAX_STATIC_TAIL)
 
     @torch.no_grad()
     def record_predictions(self, delta, target, train_mask, calibration_mask, frame_ids=None):
@@ -233,7 +245,7 @@ class PoseNet(nn.Module):
             raise ValueError("PoseNet requires nine applied-control components")
         difference = image - previous_image
         residual = difference
-        if self.loss_version == 2:
+        if self.loss_version >= 2:
             residual = self._camera_residual(previous_image, image, control)
         pair = torch.cat((previous_image, image, residual), -1)
         encoded = self.visual(pair.reshape(-1, 64, 64, 9).permute(0, 3, 1, 2))
@@ -253,7 +265,7 @@ class PoseNet(nn.Module):
         result = dict(delta=mean, log_std=log_std, sigma=log_std.exp())
         if self.fix_version:
             result.update(motion_logit=raw[..., 2], motion_probability=raw[..., 2].sigmoid())
-        if self.loss_version == 2:
+        if self.loss_version >= 2:
             result["visual_difference"] = difference.abs().mean((-1, -2, -3))
         return result
 
@@ -308,10 +320,14 @@ class PoseNet(nn.Module):
             group_classification = torch.stack([(classification*m).sum()/m.sum().clamp_min(1) for m in (static, moving)])
             present_classification = torch.stack([static.any(), moving.any()])
             classification_loss = (group_classification*present_classification).sum()/present_classification.sum().clamp_min(1)
-            if self.loss_version == 2:
+            if self.loss_version >= 2:
                 stratified_classification, moving_risk, static_tail = self._gated_translation_loss(
                     prediction, error, target, control, previous_image, image, static, moving, classification)
                 loss = balanced + 10.*bias_loss + 3.*stratified_classification + 5.*moving_risk + 8.*static_tail
+                if self.loss_version >= 3:
+                    direct_motion, usable_margin, stopped_margin = self._usable_motion_loss(
+                        prediction, error, target, moving, static)
+                    loss = loss + 5.*direct_motion + usable_margin + .5*stopped_margin
             else:
                 loss = balanced+10.*bias_loss+3.*classification_loss
         else:
@@ -345,10 +361,14 @@ class PoseNet(nn.Module):
                 "B/pose_static_bias_loss": bias_loss.detach(),
                 "B/pose_motion_classification_loss": classification_loss.detach(),
                 "B/pose_motion_train_samples": moving.sum().detach()})
-            if self.loss_version == 2:
+            if self.loss_version >= 2:
                 metrics.update({"B/pose_stratified_motion_loss": stratified_classification.detach(),
                                 "B/pose_gated_moving_risk": moving_risk.detach(),
                                 "B/pose_gated_static_tail_loss": static_tail.detach()})
+            if self.loss_version >= 3:
+                metrics.update({"B/pose_direct_moving_error": direct_motion.detach(),
+                                "B/pose_usable_motion_margin_loss": usable_margin.detach(),
+                                "B/pose_stopped_motion_margin_loss": stopped_margin.detach()})
             with torch.no_grad():
                 accepted, _, _ = self.translation_support(prediction, previous_image, image)
                 if bool(static.any()):
@@ -362,12 +382,38 @@ class PoseNet(nn.Module):
                             "B/pose_calibration_angle_error": self.calibration_angle_error.detach().clone()})
         if bool(self.calibration_moving_samples > 0):
             metrics.update({"B/pose_calibration_moving_error": self.calibration_moving_error.detach().clone(),
-                            "B/pose_zero_motion_baseline": self.calibration_moving_baseline.detach().clone()})
+                            "B/pose_zero_motion_baseline": self.calibration_moving_baseline.detach().clone(),
+                            "B/pose_calibration_moving_ratio": (self.calibration_moving_error /
+                                self.calibration_moving_baseline.clamp_min(1e-6)).detach()})
         if bool(self.calibration_static_samples > 0):
             metrics["B/pose_calibration_static_error"] = self.calibration_static_error.detach().clone()
             if self.fix_version:
                 metrics["B/pose_calibration_static_p95"] = self.static_error_bound().detach().clone()
         return loss, metrics, prediction
+
+    @staticmethod
+    def _usable_motion_loss(prediction, error, target, moving, static):
+        # Teach direction and magnitude even when the soft gate is saturated
+        # closed. Teach a gate margin only for visually supported predictions
+        # that already improve on zero with a small absolute residual.
+        distance = torch.linalg.vector_norm(error[..., :2].float(), dim=-1)
+        direct = (distance * moving).sum() / moving.sum().clamp_min(1)
+        baseline = torch.linalg.vector_norm(target[..., :2], dim=-1)
+        magnitude = torch.linalg.vector_norm(prediction["delta"][..., :2].detach().float(), dim=-1)
+        visible_step = (magnitude >= MIN_TRANSLATION) & (prediction["visual_difference"] > 1./255.)
+        usable = (moving & visible_step & (distance.detach() < .5*baseline) &
+                  (distance.detach() < .5*MAX_TRANSLATION_SIGMA))
+        threshold = math.log(MIN_MOTION_PROBABILITY / (1.-MIN_MOTION_PROBABILITY))
+        motion_margin = (threshold + .3 - prediction["motion_logit"].float()).relu()
+        sigma = prediction["sigma"][..., :2].float().mean(-1)
+        sigma_margin = ((sigma - .9*MAX_TRANSLATION_SIGMA) / MAX_TRANSLATION_SIGMA).relu()
+        margin = ((motion_margin + sigma_margin) * usable).sum() / usable.sum().clamp_min(1)
+        # The complementary training margin prevents a stationary pair with
+        # visible appearance changes from borrowing the moving gate.
+        stopped = static & visible_step
+        stopped_margin = (prediction["motion_logit"].float() - (threshold - .7)).relu()
+        stopped_margin = (stopped_margin * stopped).sum() / stopped.sum().clamp_min(1)
+        return direct, margin, stopped_margin
 
     @staticmethod
     def _gated_translation_loss(prediction, error, target, control, previous, image, static, moving, classification):

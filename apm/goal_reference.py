@@ -52,6 +52,22 @@ def _entry_worlds(entry):
     return groups
 
 
+def _validate_curation(curation, positive, negative):
+    """Keep the pinned ablation bank fixed without rejecting legacy manifests."""
+    if curation is None:
+        return
+    entries = positive + negative
+    if (curation != dict(protocol="compact_v1", positive=12, negative=8, positive_min_side=20)
+            or len(positive) != 12 or len(negative) != 8
+            or len({entry["sha256"] for entry in entries}) != len(entries)
+            or len({entry["path"] for entry in entries}) != len(entries)):
+        raise ValueError("Curated reference counts or unique assets do not match the manifest")
+    for entry in positive:
+        roi = entry.get("source_roi_xyxy", [])
+        if len(roi) != 4 or min(roi[2]-roi[0], roi[3]-roi[1]) < curation["positive_min_side"]:
+            raise ValueError("Curated positive must meet the native crop size requirement")
+
+
 def load_reference_bank(root, task, max_references):
     """Load only training assets matching the fixed run category."""
     root = Path(root).resolve()
@@ -91,6 +107,8 @@ def load_reference_bank(root, task, max_references):
                 x0, y0, x1, y1 = roi * (width, height, width, height)
                 image = image.crop((int(np.floor(x0)), int(np.floor(y0)),
                                     int(np.ceil(x1)), int(np.ceil(y1))))
+            if manifest.get("curation") is not None and not negative and min(image.size) < 20:
+                raise ValueError("Curated positive image is smaller than its native crop requirement")
             sample = np.asarray(image.resize((REFERENCE_SIZE, REFERENCE_SIZE), Image.BILINEAR), dtype=np.uint8)
         if negative:
             negatives.append(sample)
@@ -98,6 +116,8 @@ def load_reference_bank(root, task, max_references):
         else:
             pixels.append(sample)
             entries.append(dict(entry))
+    curation = manifest.get("curation")
+    _validate_curation(curation, entries, negative_entries)
     if not pixels:
         raise ValueError(f"No verified training references for {task} in {source}")
     pixels = np.stack(pixels)
@@ -106,6 +126,8 @@ def load_reference_bank(root, task, max_references):
     frozen = dict(version=VERSION, task_id=task, target_class=TASKS[task],
                   entries=entries, pixels_sha256=_sha(pixels.tobytes()),
                   negative_entries=negative_entries, negative_pixels_sha256=_sha(negatives.tobytes()))
+    if curation is not None:
+        frozen["curation"] = curation
     return {"manifest": frozen, "pixels": pixels, "negative_pixels": negatives}
 
 
@@ -184,6 +206,7 @@ class GoalReference(nn.Module):
                 or pixels.dtype != torch.uint8
                 or _sha(pixels.numpy().tobytes()) != manifest["pixels_sha256"]):
             raise ValueError("Invalid or incompatible checkpoint goal reference bank")
+        _validate_curation(manifest.get("curation"), entries, negative_entries)
         self.bank_manifest = manifest
         self.bank_fingerprint = _sha(json.dumps(
             manifest, sort_keys=True, separators=(",", ":")).encode())
@@ -199,9 +222,14 @@ class GoalReference(nn.Module):
         self.register_buffer("reference_features", torch.empty(0), persistent=False)
         self.register_buffer("updates", torch.zeros((), dtype=torch.long))
         dim = int(getattr(config, "goal_ref_dim", 128))
-        self.encoder = nn.Sequential(nn.Conv2d(3, 24, 5, 2, 2), nn.GroupNorm(4, 24), nn.SiLU(),
-                                     nn.Conv2d(24, 32, 3, 2, 1), nn.GroupNorm(4, 32), nn.SiLU(),
-                                     nn.Conv2d(32, dim, 3, 1, 1))
+        padding = str(getattr(config, "goal_ref_border_padding", "zeros"))
+        if padding not in ("zeros", "replicate"):
+            raise ValueError("Unknown D image border padding")
+        self.encoder = nn.Sequential(nn.Conv2d(3, 24, 5, 2, 2, padding_mode=padding),
+                                     nn.GroupNorm(4, 24), nn.SiLU(),
+                                     nn.Conv2d(24, 32, 3, 2, 1, padding_mode=padding),
+                                     nn.GroupNorm(4, 32), nn.SiLU(),
+                                     nn.Conv2d(32, dim, 3, 1, 1, padding_mode=padding))
         self.match = nn.Sequential(nn.Conv2d(dim + 3, 32, 1), nn.SiLU(),
                                    nn.Conv2d(32, 2, 1))
         self.visibility = nn.Sequential(nn.Linear(dim + 3, 32), nn.SiLU(), nn.Linear(32, 1))

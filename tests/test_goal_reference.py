@@ -90,6 +90,26 @@ class ReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA256"):
                 load_reference_bank(root, "harvest_sand", 32)
 
+    def test_replicate_padding_eliminates_artificial_edges_on_uniform_rgb(self):
+        old = GoalReference(config(), bank())
+        model = GoalReference(config(goal_ref_border_padding="replicate"), bank())
+        model.load_state_dict(old.state_dict())
+        uniform = torch.full((1, 3, 96, 96), .5)
+        expected = model._encode(uniform)
+        torch.testing.assert_close(expected, expected[:, :, 8:9, 8:9].expand_as(expected))
+        self.assertGreater(float(old._encode(uniform).std((-2, -1)).mean()), .01)
+
+    def test_curated_sand_bank_is_pinned_and_portable(self):
+        root = Path(__file__).resolve().parents[1]/"assets"/"goal_references"
+        bank = load_reference_bank(root, "harvest_sand", 32)
+        model = GoalReference(config(), bank)
+        self.assertEqual((len(model.bank_pixels), len(model.negative_pixels)), (12, 8))
+        names = [e["path"] for e in model.bank_manifest["negative_entries"]]
+        self.assertEqual([n for n in names if n.startswith("negative_sky_0")], ["negative_sky_001.png"])
+        self.assertIn("negative_mushroom_underside_001.png", names)
+        with self.assertRaisesRegex(ValueError, "Curated reference counts"):
+            load_reference_bank(root, "harvest_sand", 8)
+
     def test_unknown_replay_does_not_train_or_calibrate(self):
         model = GoalReference(config(), bank())
         data = observed()

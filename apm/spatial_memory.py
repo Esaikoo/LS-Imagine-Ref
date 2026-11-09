@@ -474,7 +474,8 @@ class SpatialMapMemory(nn.Module):
                 state["global_continuity"] &= first
         was_tracking = state["tracking_ready"].clone()
         # Qualification may revoke tracking, but can only enable it at reset.
-        state["tracking_ready"] &= self.pose.ready
+        pose_model_ready = self.pose.ready
+        state["tracking_ready"] &= pose_model_ready
         qualification_lost = was_tracking & ~state["tracking_ready"]
         current = normalized_rgb(torch.as_tensor(image, device=device))
         goal = peak_rejected = None
@@ -538,7 +539,7 @@ class SpatialMapMemory(nn.Module):
                     state["tick"], state["first_gap_step"])
                 if self.fix_version >= 3:
                     state["global_continuity"] &= ~lost
-                    confirmed = valid & pair_motion_known & bool(self.pose.ready)
+                    confirmed = valid & pair_motion_known & pose_model_ready
                     state["trusted_run"] = torch.where(confirmed, state["trusted_run"]+1,
                                                        torch.zeros_like(state["trusted_run"]))
                     restart = (~state["tracking_ready"]) & confirmed & (state["trusted_run"]>=self.segment_resume_pairs)
@@ -700,6 +701,7 @@ class SpatialMapMemory(nn.Module):
                 log_spatial_history_tick=(state["tick"]-1).float(),
                 log_spatial_segment=state["segment"].float(),
                 log_spatial_local_valid=state["tracking_ready"].float(),
+                log_spatial_pose_model_ready=torch.full_like(u, pose_model_ready),
                 log_spatial_memory_available=state["history_valid"].any(-1).float(),
                 log_spatial_visual_revisit=history_repeated.float())
         if goal is not None:
@@ -809,7 +811,8 @@ class SpatialMapMemory(nn.Module):
             channels=MAP_CHANNELS, predicted=True, observation_type="directional-view proxy",
             target_type="cue-observation viewpoint", tracking_ready=bool(state["tracking_ready"][0]),
             localization=("estimated" if bool(state["tracking_ready"][0]) else "unknown: pose not qualified at episode start"),
-            ledger=ledger, ledger_capacity=self.ledger_capacity)
+            ledger=ledger, ledger_capacity=self.ledger_capacity,
+            pose_qualification=self.pose.qualification_diagnostics())
         if self.fix_version >= 2:
             started = bool(state["trajectory_started"][0])
             result.update(trajectory_valid=bool(state["tracking_ready"][0]),

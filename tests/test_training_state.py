@@ -126,6 +126,38 @@ class TrainingStateTests(unittest.TestCase):
         checkpoint = save_training_checkpoint(agent, cfg, 100000)
         return cfg, agent, checkpoint
 
+    def test_zoomed_replay_padding_preserves_byte_storage_and_reads_old_files(self):
+        from training_state import _replay_from_sources
+
+        rgb = np.full((2, 2, 3), 247, np.uint8)
+        heat = np.full((2, 2), 63, np.uint8)
+        episode = dict(image=[rgb, rgb], heatmap=[heat, heat], reward=[0., 0.],
+                       zoomed_image=[None, rgb], heatmap_on_zoomed=[None, heat])
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            tools.save_episodes(directory, {"new": episode})
+            new_file = directory / "new-2.npz"
+            with np.load(new_file) as stored:
+                self.assertEqual(stored["zoomed_image"].dtype, np.uint8)
+                self.assertEqual(stored["heatmap_on_zoomed"].dtype, np.uint8)
+                self.assertFalse(stored["zoomed_image"][0].any())
+                old = {key: stored[key] for key in stored.files}
+            self.assertIsNone(episode["zoomed_image"][0])
+            old["zoomed_image"] = old["zoomed_image"].astype(np.float64)
+            old["heatmap_on_zoomed"] = old["heatmap_on_zoomed"].astype(np.float64)
+            old["heatmap_on_zoomed"][0, 0, 0] = .5  # Preserve genuinely fractional input.
+            old_file = directory / "old-2.npz"
+            np.savez_compressed(old_file, **old)
+            restored, _ = _replay_from_sources([directory], limit=None)
+            self.assertEqual(restored["old"]["zoomed_image"].dtype, np.uint8)
+            np.testing.assert_array_equal(restored["old"]["zoomed_image"], old["zoomed_image"])
+            self.assertEqual(restored["old"]["heatmap_on_zoomed"].dtype, np.float64)
+            np.testing.assert_array_equal(restored["old"]["heatmap_on_zoomed"], old["heatmap_on_zoomed"])
+            loaded = tools.load_episodes(directory)["old-2"]
+            np.testing.assert_array_equal(loaded["zoomed_image"], restored["old"]["zoomed_image"])
+            with np.load(old_file) as stored:
+                self.assertEqual(stored["zoomed_image"].dtype, np.float64)
+
     def test_strict_restore_preserves_source_optimizer_rng_amp_and_new_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp)/"source"

@@ -139,8 +139,18 @@ class SearchVisualizer:
                           incomplete_resets=0, skipped_partial_prefix=0)
         self.last_error = None
 
-    def set_goal_bank(self, pixels):
-        self.goal_references = tuple(_rgb(frame) for frame in _array(pixels)[:4])
+    def set_goal_bank(self, bank):
+        manifest = bank["manifest"]
+        positives = list(zip(manifest["entries"], _array(bank["pixels"])))
+        negatives = list(zip(manifest.get("negative_entries", []), _array(bank["negative_pixels"])))
+        examples = positives[:4] if not negatives else positives[:2] + negatives[:2]
+        self.goal_references = []
+        for entry, frame in examples:
+            name = Path(entry.get("path", "reference")).stem.split("_", 1)[-1].rsplit("_", 1)[0].replace("_", " ")
+            roi = entry.get("source_roi_xyxy")
+            size = "" if roi is None else f" · {roi[2]-roi[0]}×{roi[3]-roi[1]} native"
+            role = "Negative" if entry.get("role") == "negative" else "Positive"
+            self.goal_references.append((f"{role} · {name}{size}", _rgb(frame)))
 
     def set_step(self, step):
         """Start/resume at a real training step; never fabricate past exports."""
@@ -205,6 +215,8 @@ class SearchVisualizer:
                    pose_gap_count=int(_scalar(policy_output,"log_spatial_pose_gap_count")),
                    segment=int(_scalar(policy_output,"log_spatial_segment")),
                    local_ready=local_ready,
+                   pose_model_ready=(bool(_scalar(policy_output, "log_spatial_pose_model_ready"))
+                                     if "log_spatial_pose_model_ready" in policy_output else None),
                    memory_available=bool(_scalar(policy_output,"log_spatial_memory_available")),
                    goal_state=int(_scalar(policy_output, "log_goal_state", -1)),
                    goal_gate=_scalar(policy_output, "log_goal_gate"),
@@ -269,6 +281,11 @@ class SearchVisualizer:
                     reasons=[r for r, yes in (("override", row["override"]),
                              ("phase_change", phase_change), ("close_values", margin < .1),
                              ("target_evidence", visible >= .7)) if yes])
+        if decision and not local_ready and row["memory_available"]:
+            frames = _array(policy_output.get("log_spatial_history_frames"))
+            valid = _array(policy_output.get("log_spatial_history_valid"))
+            if frames is not None and valid is not None and valid.any():
+                snap["history_preview"] = np.concatenate(list(frames[valid.astype(bool)][:3, ..., :3]), axis=1)
         # Copy retained arrays only at actual decision points, not every frame.
         for field_name in ("heatmap", "patch", "a_score", "supported"):
             if snap[field_name] is not None:
@@ -471,6 +488,7 @@ class SearchVisualizer:
             rendered_segment_steps=rendered_segment_steps,
             rendered_segment_extent_m=rendered_segment_extent,
             local_tracking_ready=local_terminal,
+            pose_qualification=state_fields.get("pose_qualification"),
             persistent_memory_available=bool(map_state.get("memory_available",False)) if map_state else False,
             history_slots_retained=(int(np.asarray(map_state.get("history_valid",[])).sum()) if map_state else 0),
             memory_available_fraction=float(np.mean([r.get("memory_available",False) for r in ep.rows])),
@@ -680,6 +698,17 @@ class SearchVisualizer:
                     "Visual history is shown separately when available.",
                     ha="center", va="center", fontsize=9, transform=ax.transAxes)
             ax.set_xticks([]); ax.set_yticks([])
+            diagnostic = summary.get("pose_qualification")
+            if diagnostic is not None:
+                moving, static = diagnostic["moving_ratio"], diagnostic["static_p95"]
+                move_text = "waiting for held-out pairs" if moving is None else (
+                    f"{100*moving:.1f}% of zero-motion error (need < {100*diagnostic['moving_ratio_limit']:.0f}%)")
+                static_text = "waiting for held-out pairs" if static is None else (
+                    f"{static:.3f} m p95 (limit {diagnostic['static_p95_limit']:.2f} m)")
+                status = "Ready, no supported segment" if diagnostic["ready"] else "Not yet qualified"
+                sidebar.text(0, .91, "Pose calibration", fontsize=11, weight="bold")
+                sidebar.text(0, .86, f"{status}\nMoving: {move_text}\nStatic: {static_text}",
+                             fontsize=8, va="top", linespacing=1.6, wrap=True)
         else:
             if state is not None and "grid" in state and not prior_segment:
                 grid = np.asarray(state["grid"]); resolution = float(state.get("resolution", 1.))
@@ -916,9 +945,17 @@ class SearchVisualizer:
             patch = _map_rgb(patch.astype(float)/255. if patch.dtype == np.uint8 else patch)[::-1]
         else:
             patch = None
+        row = event["row"]
+        b_title = "B · Local search patch"
+        b_note = None
+        if not row["local_ready"]:
+            patch = event.get("history_preview")
+            b_title = "B · Retained visual history"
+            b_note = ("Pose calibration pending" if row.get("pose_model_ready") is False
+                      else "Local pose unavailable")
         tiles = [("Current observation", event.get("rgb"), None),
                  ("Original U-Net", _goal_heatmap(event.get("heatmap")), "turbo"),
-                 ("B · Local search patch", patch, None)]
+                 (b_title, patch, None)]
         if event["row"]["goal_state"] >= 0:
             tiles += [("D · Region evidence", _goal_heatmap(event.get("goal_ref_map")), "turbo"),
                       ("Effective heatmap", _goal_heatmap(event.get("goal_heatmap_policy")), "turbo")]
@@ -928,13 +965,13 @@ class SearchVisualizer:
             ax.axis("off")
             ax.set_title(title, fontsize=10, color="#33475b", pad=8)
             if image is None:
-                ax.text(.5, .5, "Not recorded", transform=ax.transAxes, ha="center", va="center",
-                        color="#657487", fontsize=10)
+                ax.text(.5, .5, b_note if title == b_title and b_note else "Not recorded",
+                        transform=ax.transAxes, ha="center", va="center", color="#657487", fontsize=9)
             else:
                 ax.imshow(image, cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
-                if title.startswith("B") and not event["row"]["local_ready"]:
-                    ax.text(.5, .06, "Pose unqualified", transform=ax.transAxes, ha="center", va="bottom",
-                            color="white", fontsize=8, bbox=dict(facecolor="#34495e", edgecolor="none", pad=2))
+                if title == b_title and b_note:
+                    ax.text(.5, -.14, b_note + " · RGB tokens", transform=ax.transAxes,
+                            ha="center", va="top", color="#657487", fontsize=8)
 
     def _render_goal(self, event, path):
         from matplotlib.patches import Rectangle
@@ -945,8 +982,8 @@ class SearchVisualizer:
         for ax in axes.flat:
             ax.axis("off")
         for i, ax in enumerate(axes[0]):
-            rgb = refs[i] if i < len(refs) else None
-            ax.set_title("Bank example %d" % (i+1))
+            label, rgb = refs[i] if i < len(refs) else ("Bank example", None)
+            ax.set_title(label, fontsize=9)
             if rgb is not None:
                 ax.imshow(rgb, interpolation="nearest")
             else:

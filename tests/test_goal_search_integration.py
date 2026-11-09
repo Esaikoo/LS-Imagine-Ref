@@ -69,7 +69,7 @@ class GoalSearchIntegrationTests(unittest.TestCase):
         hook = agent._wm.encoder.register_forward_pre_hook(
             lambda _, args: inputs.append(args[0]["heatmap"].clone()))
         rng = torch.get_rng_state()
-        left, _ = agent._policy(obs,None,False)
+        left, state = agent._policy(obs,None,False)
         torch.set_rng_state(rng)
         right, _ = agent._policy(extra,None,False)
         hook.remove()
@@ -82,6 +82,13 @@ class GoalSearchIntegrationTests(unittest.TestCase):
         torch.testing.assert_close(inputs[0], model_batch["heatmap"][:,0,:,:,None].float()/255.)
         self.assertFalse(inputs[0].requires_grad)
         self.assertEqual(int(agent._goal_reference.updates), 0)
+        # The exported last observation follows the same D path as the policy.
+        terminal = {key: value[0] for key, value in obs.items()}
+        with mock.patch.object(agent._vnext.b, "online", wraps=agent._vnext.b.online) as online:
+            agent.visualization_map(state, 0, terminal)
+            torch.testing.assert_close(online.call_args.args[2], left["log_goal_heatmap_policy"])
+            self.assertIn("goal_context", online.call_args.kwargs)
+
 
     def test_causal_replay_old_unknown_and_checkpoint_resume(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,9 +120,16 @@ class GoalSearchIntegrationTests(unittest.TestCase):
             checkpoint_path = save_training_checkpoint(agent,cfg,100000)
             checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
             incoming = goal_config(logdir=root/"new", resume_from=str(checkpoint_path), steps=128,
-                                   video_pred_log=True)
+                                   video_pred_log=True, goal_ref_border_padding="replicate",
+                                   vnext_pose_loss_version=3)
             plan = prepare_resume(incoming)
             self.assertTrue(incoming.video_pred_log)
+            self.assertEqual(incoming.goal_ref_border_padding, "zeros")
+            self.assertEqual(incoming.vnext_pose_loss_version, 1)
+            from training_state import validate_goal_checkpoint
+            evaluation = {"goal_ref_border_padding": "replicate"}
+            validate_goal_checkpoint(plan["checkpoint"], evaluation, evaluation=True)
+            self.assertEqual(evaluation["goal_ref_border_padding"], "zeros")
             restored = agent_for(incoming, plan["checkpoint"]["goal_reference_bank"])
             restore_training_state(restored,plan,SimpleNamespace(step=0))
             self.assertEqual(restored._goal_reference.bank_fingerprint, agent._goal_reference.bank_fingerprint)

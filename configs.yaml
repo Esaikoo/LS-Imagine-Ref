@@ -40,6 +40,7 @@ defaults:
   goal_ref_enabled: False
   goal_ref_use_raw_image: True
   goal_ref_version: 1
+  goal_ref_border_padding: zeros
   goal_ref_bank_root: assets/goal_references
   goal_ref_dim: 128
   goal_ref_max_candidates: 8
@@ -543,7 +544,8 @@ apm_vnext:
 
 # Standalone preset, using the spatial fix3 backbone.
 apm_vnext4:
-  vnext_pose_loss_version: 2
+  vnext_pose_loss_version: 3
+  goal_ref_border_padding: replicate
   compile: False
   search_vnext_enabled: True
   vnext_spatial_enabled: True

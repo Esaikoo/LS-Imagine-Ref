@@ -505,6 +505,26 @@ class SpatialMemoryTests(unittest.TestCase):
         torch.testing.assert_close(delta.grad[8:], torch.zeros(2,3))
         self.assertFalse(model.ready)
 
+    def test_pose_revision_three_learns_through_a_closed_gate_without_holdout_gradients(self):
+        model = PoseNet(hidden=16, loss_version=3)
+        target = torch.tensor([[0., .2, 0.], [0., .2, 0.], [0., .2, 0.], [0., 0., 0.]])
+        delta = torch.tensor([[0., .0, 0.], [0., .17, 0.], [0., .17, 0.], [0., .14, 0.]], requires_grad=True)
+        logit = torch.tensor([-8., -8., -8., 2.], requires_grad=True)
+        sigma = torch.full((4, 3), .2, requires_grad=True)
+        motion = dict(delta=delta, motion_logit=logit, sigma=sigma, visual_difference=torch.ones(4))
+        moving = torch.tensor([True, True, False, False])  # row 2 is held out
+        static = torch.tensor([False, False, False, True])
+        direct, margin, stopped = model._usable_motion_loss(motion, delta-target, target, moving, static)
+        (direct + margin + stopped).backward()
+        self.assertLess(float(delta.grad[0, 1]), 0.)
+        self.assertEqual(float(logit.grad[0]), 0.)
+        self.assertLess(float(logit.grad[1]), 0.)
+        self.assertGreater(float(sigma.grad[1, :2].sum()), 0.)
+        torch.testing.assert_close(delta.grad[2:], torch.zeros(2, 3))
+        self.assertEqual(float(logit.grad[2]), 0.)
+        self.assertGreater(float(logit.grad[3]), 0.)
+        self.assertFalse(model.qualification_diagnostics()["ready"])
+
     def test_revision_zero_keeps_checkpoint_shape_and_original_motion_semantics(self):
         old=PoseNet(hidden=16,fix_version=0);new=PoseNet(hidden=16,fix_version=1)
         self.assertEqual({k:tuple(v.shape) for k,v in old.state_dict().items()},
