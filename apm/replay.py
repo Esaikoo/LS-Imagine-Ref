@@ -56,7 +56,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
     action was executed. A terminal observation has no such decision/map.
     Pose image pairs use their real predecessor even at synthetic window starts.
     """
-    from .control import FIELDS
+    from .control import FIELDS, GOAL_FIELDS
     rng = np.random.RandomState(seed)
     templates = {}
     shapes = dict(FIELDS, **SPATIAL_LABEL_SHAPES)
@@ -89,11 +89,8 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
             log_goal_interaction_probability=(),
             log_goal_interaction_valid=(), log_goal_boxes=(8,4), log_goal_candidate_scores=(8,),
             log_goal_candidate_sources=(8,), log_goal_ref_map=(64,64),
-            log_goal_heatmap_policy=(64,64), log_goal_memory=(6,), log_goal_forecast=(12,2),
-            log_goal_direction_novelty=(12,), log_goal_absence_confirmed=(),
-            log_goal_new_area_forecast=(12,),
-            log_goal_verify_used=(), log_goal_reject_used=(), log_goal_search_eligible=(),
-            log_goal_search_learned_used=(), log_goal_search_probe_used=())
+            log_goal_heatmap_policy=(64,64), log_goal_memory=(6,))
+        shapes.update(GOAL_FIELDS)
         goal_dtypes.update(log_goal_ref_map=np.uint8, log_goal_heatmap_policy=np.uint8)
         if goal_use_raw_image:
             shapes.update(goal_image=(96,96,3), goal_image_valid=())

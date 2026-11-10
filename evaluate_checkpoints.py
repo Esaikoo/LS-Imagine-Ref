@@ -33,7 +33,9 @@ def create_search_visualizer(config, root):
         return None
     from apm.visualization import SearchVisualizer
     custom_root = get('vnext_visual_root', '')
-    return SearchVisualizer(Path(custom_root).expanduser() if custom_root else root, config)
+    # A standalone run is not a training-time visualization round.
+    return SearchVisualizer(Path(custom_root).expanduser() if custom_root else root, config,
+                            scheduled_eval_maps=False)
 
 
 def worker_runtime_args(args):
@@ -372,8 +374,10 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
     saved = json.loads(settings_file.read_text())
     runtime = {'logdir', 'results_dir', 'device', 'name', 'traindir', 'evaldir',
                'minedojo_gradle_offline'}
+    audit_flags = ('search_eval_evidence',)
     different = [key for key, value in saved['config'].items()
-                 if key not in runtime and not key.startswith(('search_a_', 'search_b_', 'search_c_'))
+                 if key not in runtime and key not in audit_flags
+                 and not key.startswith(('search_a_', 'search_b_', 'search_c_'))
                  and key != 'search_vnext_enabled' and not key.startswith(('vnext_', 'goal_'))
                  and config.get(key) != value]
     if has_control_override(args):
@@ -402,6 +406,8 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
                     different.append(key)
     before_task, before_sim, before_audit = reference_specification(saved['task_specs'], saved['sim_specs'])
     after_task, after_sim, after_audit = reference_specification(task_specs, sim_specs)
+    before_audit['config'] = {key: saved['config'][key] for key in audit_flags if key in saved['config']}
+    after_audit['config'] = {key: config[key] for key in audit_flags if key in config}
     if before_task != after_task:
         different.append('task_specs')
     if before_sim != after_sim:
@@ -966,6 +972,31 @@ def fixed_reference_main(args, manifest):
             raise
 
 
+def reap_evaluation_process_tree(process, timeout=5):
+    """Reap MineDojo's own process tree when a child can exit during cleanup."""
+    import psutil
+
+    try:
+        processes = process.children(recursive=True)[::-1] + [process]
+    except psutil.NoSuchProcess:
+        return
+    for child in processes:
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            continue
+    _, alive = psutil.wait_procs(processes, timeout=timeout)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            continue
+    _, alive = psutil.wait_procs(alive, timeout=timeout)
+    if alive:
+        print(f'MineDojo cleanup: processes still alive: {[child.pid for child in alive]}',
+              file=sys.stderr, flush=True)
+
+
 def worker(args, manifest):
     # Imports stay out of the coordinator, leaving its memory available to Minecraft.
     os.environ.setdefault('MINEDOJO_HEADLESS', '1')
@@ -980,7 +1011,11 @@ def worker(args, manifest):
     from envs.tasks.minedojo import make_minedojo
     from envs.tasks.base.ls_imagine_wrapper import LSImagineWrapper
     from envs.wrappers import OneHotAction, RewardObs, SelectAction
+    from minedojo.sim.bridge.utils import watchdog
 
+    # The upstream watchdog can abort while describing a just-exited child.
+    # This process-local reaper lets it finish closing the remaining children.
+    watchdog.reap_process_and_children = reap_evaluation_process_tree
     torch.set_num_threads(args.threads)
     task = args.worker_task
     run = args.worker_run

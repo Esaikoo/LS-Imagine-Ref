@@ -10,7 +10,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .odometry import PoseNet, normalized_rgb, wrap_angle
+from .odometry import (MAX_STATIC_MOTION_PROBABILITY, MAX_TRANSLATION_SIGMA,
+                          MIN_TRANSLATION, PoseNet, normalized_rgb, wrap_angle)
 
 SPATIAL_VERSION = 2
 MAP_CHANNELS = ("visited", "observed", "target_vantage", "revisit", "uncertainty", "frontier")
@@ -473,7 +474,8 @@ class SpatialMapMemory(nn.Module):
             if missing_state:
                 state["global_continuity"] &= first
         was_tracking = state["tracking_ready"].clone()
-        # Qualification may revoke tracking, but can only enable it at reset.
+        # Qualification may revoke tracking. Revision 3 can later open a
+        # separate local segment once it confirms consecutive pairs.
         pose_model_ready = self.pose.ready
         state["tracking_ready"] &= pose_model_ready
         qualification_lost = was_tracking & ~state["tracking_ready"]
@@ -523,10 +525,12 @@ class SpatialMapMemory(nn.Module):
             # interval is also small. Rejected means remain uncertainty, never
             # effective map displacement or control progress.
             motion_probability = predicted.get("motion_probability", torch.ones_like(raw_motion))
-            trusted_pair &= supported | ((motion_probability <= .2) & (sigma[:, :2].mean(-1) <= .1))
+            static_confidence = ((motion_probability <= MAX_STATIC_MOTION_PROBABILITY) &
+                                 (sigma[:, :2].mean(-1) <= MAX_TRANSLATION_SIGMA))
+            trusted_pair &= supported | static_confidence
             if self.fix_version >= 2:
                 known_control = previous_control is not None
-                confident_static = (motion_probability <= .2) & (sigma[:, :2].mean(-1) <= .1) & (raw_motion <= .03)
+                confident_static = static_confidence & (raw_motion <= MIN_TRANSLATION)
                 pair_motion_known = (supported | confident_static) & known_control
                 motion_unknown = valid & ~pair_motion_known
                 # Count loss of a previously continuous segment once, not every

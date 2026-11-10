@@ -34,6 +34,8 @@ defaults:
   vnext_score_uncertainty: 0.2
   vnext_visual_enabled: False
   vnext_visual_every: 10000
+  vnext_visual_map_all_eval_episodes: False
+  vnext_visual_map_min_span: 24.0
   vnext_visual_audit: True
   vnext_visual_root: ''
   check_obs_enabled: True
@@ -56,6 +58,7 @@ defaults:
   goal_fusion_epsilon: 0.05
   goal_fusion_overlap_weight: 0.5
   goal_search_enabled: False
+  goal_guidance_revision: 1
   goal_verify_max_trials: 3
   goal_search_adaptive_budget: True
   goal_search_absent_fraction: 0.30
@@ -544,8 +547,10 @@ apm_vnext:
 
 # Standalone preset, using the spatial fix3 backbone.
 apm_vnext4:
-  vnext_pose_loss_version: 3
+  goal_guidance_revision: 2
+  vnext_pose_loss_version: 4
   goal_ref_border_padding: replicate
+  vnext_visual_map_all_eval_episodes: True
   compile: False
   search_vnext_enabled: True
   vnext_spatial_enabled: True

@@ -12,6 +12,7 @@ from torch.nn import functional as F
 
 MIN_TRANSLATION = .03
 MIN_MOTION_PROBABILITY = .8
+MAX_STATIC_MOTION_PROBABILITY = .2
 MAX_TRANSLATION_SIGMA = .1
 MAX_STATIC_TAIL = .05
 
@@ -59,7 +60,7 @@ class PoseNet(nn.Module):
         self.calibration_ratio, self.cache_size = float(calibration_ratio), int(cache_size)
         self.fix_version = int(fix_version)
         self.loss_version = int(loss_version)
-        if self.loss_version not in (1, 2, 3):
+        if self.loss_version not in (1, 2, 3, 4):
             raise ValueError("Unknown pose loss revision")
         if self.cache_size < max(self.min_samples, self.min_calibration, 2*self.min_moving):
             raise ValueError("Pose calibration cache is smaller than required support")
@@ -391,8 +392,7 @@ class PoseNet(nn.Module):
                 metrics["B/pose_calibration_static_p95"] = self.static_error_bound().detach().clone()
         return loss, metrics, prediction
 
-    @staticmethod
-    def _usable_motion_loss(prediction, error, target, moving, static):
+    def _usable_motion_loss(self, prediction, error, target, moving, static):
         # Teach direction and magnitude even when the soft gate is saturated
         # closed. Teach a gate margin only for visually supported predictions
         # that already improve on zero with a small absolute residual.
@@ -408,12 +408,35 @@ class PoseNet(nn.Module):
         sigma = prediction["sigma"][..., :2].float().mean(-1)
         sigma_margin = ((sigma - .9*MAX_TRANSLATION_SIGMA) / MAX_TRANSLATION_SIGMA).relu()
         margin = ((motion_margin + sigma_margin) * usable).sum() / usable.sum().clamp_min(1)
+        if self.loss_version >= 4:
+            return direct, margin, self._stationary_motion_loss(prediction, static)
         # The complementary training margin prevents a stationary pair with
         # visible appearance changes from borrowing the moving gate.
         stopped = static & visible_step
         stopped_margin = (prediction["motion_logit"].float() - (threshold - .7)).relu()
         stopped_margin = (stopped_margin * stopped).sum() / stopped.sum().clamp_min(1)
         return direct, margin, stopped_margin
+
+    @staticmethod
+    def _stationary_motion_loss(prediction, static):
+        # A known stop can keep the segment only if the stationary gate is
+        # confident. The previous margin targeted the moving gate and left
+        # static predictions in the wide uncertainty band between the two.
+        threshold = math.log(MAX_STATIC_MOTION_PROBABILITY / (1. - MAX_STATIC_MOTION_PROBABILITY))
+        motion = prediction["motion_logit"].float()
+        magnitude = torch.linalg.vector_norm(prediction["delta"][..., :2].float(), dim=-1)
+        sigma = prediction["sigma"][..., :2].float().mean(-1)
+        motion_margin = (motion - (threshold - .3)).relu()
+        displacement_margin = (magnitude / MIN_TRANSLATION - .8).relu()
+        # Teach small uncertainty only when the stationary mean already fits.
+        sigma_margin = (sigma / MAX_TRANSLATION_SIGMA - .9).relu() * (magnitude.detach() <= MIN_TRANSLATION)
+        margin = motion_margin + displacement_margin + sigma_margin
+        # Train through a closed moving gate. A few severe raw static errors
+        # must not disappear in the mean merely because they were rejected.
+        tail = ((magnitude - MAX_STATIC_TAIL).relu() / MAX_STATIC_TAIL)[static]
+        tail_count = math.ceil(.05 * tail.numel())
+        mean_margin = (margin * static).sum() / static.sum().clamp_min(1)
+        return mean_margin + tail.topk(tail_count).values.sum() / max(1, tail_count)
 
     @staticmethod
     def _gated_translation_loss(prediction, error, target, control, previous, image, static, moving, classification):

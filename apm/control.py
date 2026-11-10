@@ -65,7 +65,8 @@ GOAL_FIELDS = dict(log_goal_context=(8,), log_goal_forecast=(N_OPTIONS,2),
     log_goal_new_area_forecast=(N_OPTIONS,),
     log_goal_direction_novelty=(N_OPTIONS,), log_goal_verify_used=(), log_goal_reject_used=(),
     log_goal_absence_confirmed=(),
-    log_goal_search_eligible=(), log_goal_search_learned_used=(), log_goal_search_probe_used=())
+    log_goal_search_eligible=(), log_goal_search_learned_used=(), log_goal_search_probe_used=(),
+    log_goal_unresolved_search=(), log_goal_visual_sky_recovery=(), log_goal_pickup_continuation=())
 
 
 def cfg(config,key):
@@ -223,6 +224,7 @@ class VNextController(nn.Module):
         self.interaction_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 2
         self.guidance_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 3
         self.goal_search = bool(getattr(config, "goal_search_enabled", False))
+        self.goal_guidance_fix = self.goal_search and int(getattr(config, "goal_guidance_revision", 1)) >= 2
         self.version = GOAL_SEARCH_VERSION if self.goal_search else SPATIAL_VERSION if self.spatial else VERSION
         if self.goal_search:
             if not self.guidance_fix:
@@ -325,10 +327,27 @@ class VNextController(nn.Module):
             last_option=torch.full((batch,),-1,device=device,dtype=torch.long),
             episode_phase_coverage=z(4,N_OPTIONS).long())
         if self.goal_search:
-            state.update(goal_absent_run=z().long(), goal_conflict_run=z().long(),
+            state.update(goal_absent_run=z().long(), goal_unresolved_run=z().long(),
+                goal_conflict_run=z().long(),
                 goal_verify_trials=z().long(), goal_verify_cooldown=z().long(),
                 goal_verify_active=z().bool(), goal_reject_active=z().bool())
         return state
+
+    @staticmethod
+    def clear_blue_crosshair(image, reference):
+        """High-specificity RGB cue for sky recovery, never a visibility label."""
+        if image is None:
+            return torch.zeros_like(reference, dtype=torch.bool)
+        pixels = torch.as_tensor(image, device=reference.device)
+        height, width = pixels.shape[1:3]
+        patch = pixels[:, 3*height//8:5*height//8, 3*width//8:5*width//8]
+        if patch.shape[1] == 0 or patch.shape[2] == 0:
+            return torch.zeros_like(reference, dtype=torch.bool)
+        rgb = patch.float() / (255. if patch.dtype == torch.uint8 else 1.)
+        red, green, blue = rgb.unbind(-1)
+        blue_pixels = (blue >= .58) & (blue >= green + .07) & (green >= red + .055)
+        quiet = rgb.flatten(1, 2).std(dim=1, unbiased=False).amax(-1) < .045
+        return quiet & (blue_pixels.float().mean((1, 2)) >= .95)
 
     def independent_progress(self, state, image):
         """Small, causal same-view appearance memory, independent of PoseNet.
@@ -735,6 +754,7 @@ class VNextController(nn.Module):
         act=(actionable>=float(cfg(self.config,"vnext_interactable_high")))&self.ready(current,"center_interactable",feat)
         goal_context = None
         goal_verify = goal_reject = goal_trusted = torch.zeros_like(high)
+        visual_sky = unresolved_search = pickup_continuation = torch.zeros_like(high)
         goal_novelty = feat.new_zeros(batch,N_OPTIONS)
         if self.goal_search:
             from apm.outcome import goal_context_tensor
@@ -758,12 +778,17 @@ class VNextController(nn.Module):
             goal_verify &= state["goal_verify_cooldown"]==0
             peak_rejected = torch.as_tensor(obs.get("goal_peak_rejected", goal_context[:,5]>.5),
                 device=device).bool().reshape(batch)
-            sky = ~goal_trusted & ~uncertain & peak_rejected & (state["actuator"][:,2]<=-30)
+            upward_view = state["actuator"][:,2] <= -30
+            sky = ~goal_trusted & ~uncertain & peak_rejected & upward_view
+            if self.goal_guidance_fix:
+                visual_sky = upward_view & self.clear_blue_crosshair(image, high)
+                sky |= visual_sky
+                goal_verify &= ~visual_sky
             state["goal_conflict_run"] = torch.where(sky,state["goal_conflict_run"]+1,
                 torch.zeros_like(state["goal_conflict_run"]))
             upward_or_attack = (proposed==2)|(proposed==1)|(proposed==11)
             goal_reject = sky & (state["goal_conflict_run"]>=2) & upward_or_attack & ~progress
-            high = goal_trusted | (high & ~absent & ~sky)
+            high = (goal_trusted | (high & ~absent)) & ~sky
             low = absent | sky | (low & ~goal_trusted & ~uncertain)
             state["goal_absent_run"] = torch.where(absent,
                 state["goal_absent_run"]+1, torch.zeros_like(state["goal_absent_run"]))
@@ -776,11 +801,35 @@ class VNextController(nn.Module):
         interaction_probe=torch.zeros_like(act)
         if self.guidance_fix:
             interaction_probe=torch.as_tensor(current.get("interaction_probe_ready",False),device=device).bool().expand(batch).clone()
+            if self.goal_guidance_fix:
+                # D can corroborate aim when the fused U-Net has a weak center.
+                # The separate calibrated A joint reach/target predicate is
+                # still required. D confidence alone cannot authorize a probe.
+                a_candidate = torch.as_tensor(current.get("interaction_probe_candidate", False),
+                                              device=device).bool().expand(batch)
+                centered = goal_context[:, 3:5].abs().amax(-1) <= .25
+                safe_pitch = state["actuator"][:, 2] >= -10.
+                interaction_probe |= a_candidate & goal_trusted & centered & safe_pitch
             interaction_probe &= high&~act
             if self.goal_search:
                 interaction_probe &= interaction_allowed
             interaction_probe &= state["interaction_probe_trials"]<int(cfg(self.config,"vnext_interaction_probe_limit"))
             act |= interaction_probe
+        if self.goal_guidance_fix:
+            unresolved = ~high & ~goal_verify & ~act & ~progress
+            state["goal_unresolved_run"] = torch.where(
+                unresolved, state["goal_unresolved_run"] + 1,
+                torch.zeros_like(state["goal_unresolved_run"]))
+            unresolved_search = state["goal_unresolved_run"] >= 12
+            # Once an attack phase has actually executed, a planned single
+            # forward pickup may finish if the broken target disappears.
+            # This exception never authorizes another attack or use.
+            if getattr(self.config, "target_item", "sand") in ("sand", "log"):
+                next_command = state["commands"].gather(1, state["position"].clamp(0, 2)[:, None]).squeeze(1)
+                pickup_continuation = ((state["active"] == 8) & (state["position"] > 0)
+                    & (state["position"] < state["length"]) & (next_command == 6)
+                    & (state["actuator"][:, :2] == 0).all(-1) & (state["actuator"][:, 2] >= -10.)
+                    & ~sky & ~progress)
         for key,condition in (("visible_run",high),("invisible_run",low),("actionable_run",act),("not_actionable_run",~act)):
             state[key]=torch.where(condition,state[key]+1,torch.zeros_like(state[key]))
         hysteresis=int(cfg(self.config,"vnext_phase_hysteresis"))
@@ -822,8 +871,11 @@ class VNextController(nn.Module):
             phase[released]=torch.where(high[released],
                 torch.full_like(phase[released],ALIGN),torch.full_like(phase[released],SEARCH))
         if self.goal_search:
-            phase[goal_trusted & ~act & ~progress] = ALIGN
+            phase[goal_trusted & high & ~act & ~progress] = ALIGN
             phase[goal_verify & ~act & ~progress & ~recovery_lease] = ALIGN
+            if self.goal_guidance_fix:
+                phase[unresolved_search & (phase == ALIGN) & ~recovery_lease] = SEARCH
+                phase[pickup_continuation] = INTERACT
             phase[goal_reject] = RECOVERY
         emergency=(phase==RECOVERY)&(state["actuator"][:,2].abs()>=60)&bounded_dead&~act&~progress
         if self.goal_search:
@@ -854,6 +906,9 @@ class VNextController(nn.Module):
         extra_fraction = float(cfg(self.config,"vnext_total_fraction"))
         if self.goal_search and bool(getattr(self.config,"goal_search_adaptive_budget",True)):
             absence_ramp = ((state["goal_absent_run"]-3)/20.).clamp(0,1)
+            if self.goal_guidance_fix:
+                unknown_ramp = ((state["goal_unresolved_run"]-11)/24.).clamp(0, .5)
+                absence_ramp = torch.maximum(absence_ramp, unknown_ramp * (phase == SEARCH))
             search_max = max(fraction,float(getattr(self.config,"goal_search_absent_fraction",.3)))
             total_max = max(extra_fraction,float(getattr(self.config,"goal_total_absent_fraction",.4)))
             fraction = fraction+(search_max-fraction)*absence_ramp
@@ -900,6 +955,10 @@ class VNextController(nn.Module):
         if bool(cfg(self.config,"vnext_interaction")):
             mask[:,8]=allowed&(phase==INTERACT)&act&(state["actuator"][:,1]==0)&(state["cooldown"]==0)&~failed&total_ok[:,8]
             if self.interaction_fix:mask[:,8]&=~state["pending_interact"]
+            if self.goal_guidance_fix:
+                # Preserve the Actor's own attack and count bounded probes
+                # only when they replace a genuinely different action.
+                mask[:,8] &= ~interact
             mask[:,9]=allowed&(phase==INTERACT)&(state["actuator"][:,1]>0)&(settle_used+lengths[:,9]<=int(cfg(self.config,"vnext_settle_limit")))&total_ok[:,9]
         if self.guidance_fix:
             # Different low-risk ways out of a sustained Actor loop remain
@@ -951,6 +1010,16 @@ class VNextController(nn.Module):
         budget_one&=~search_active|(search_used<search_limit)
         budget_one&=(active!=9)|(settle_used<int(cfg(self.config,"vnext_settle_limit")))
         abort=((active>0)&(~compatible|~allowed|~budget_one|changed))|((active==ACTOR)&changed)
+        if self.goal_guidance_fix:
+            # Finish a legal pickup through lost visual qualification. A
+            # pending attack still needs current, qualified interaction.
+            abort &= ~(pickup_continuation & allowed & budget_one)
+            abort |= (active == 8) & ~act & ~pickup_continuation
+            interrupted = abort & (active == 8) & (state["position"] > 0) & ~progress
+            state["pending_interact"] |= interrupted
+            state["interaction_wait"][interrupted] = int(cfg(self.config, "vnext_interact_result_wait"))
+            state["cooldown"][interrupted] = int(cfg(self.config, "vnext_retry_cooldown"))
+            mask[interrupted, 8] = False
         state["active"][abort]=-1;state["position"][abort]=0
         new=state["active"]<0
         info={key:feat.new_zeros(batch,*dims) for key,dims in FIELDS.items()}
@@ -1259,7 +1328,10 @@ class VNextController(nn.Module):
                 state["search_probe_trials"][search_rows]+=1
                 state["search_probe_cooldown"][search_rows]=int(cfg(self.config,"vnext_search_probe_every"))
                 if self.goal_search:
-                    sustained = search_rows[state["goal_absent_run"][search_rows]>=12]
+                    sustained_search = state["goal_absent_run"] >= 12
+                    if self.goal_guidance_fix:
+                        sustained_search |= unresolved_search
+                    sustained = search_rows[sustained_search[search_rows]]
                     state["search_probe_cooldown"][sustained] = state["search_probe_cooldown"][sustained].clamp(max=8)
                     verify_rows = starts[state["goal_verify_active"][starts]]
                     state["goal_verify_trials"][verify_rows] += 1
@@ -1334,6 +1406,10 @@ class VNextController(nn.Module):
                 log_goal_reject_used=(state["goal_reject_active"]&extra).float(),
                 log_goal_search_learned_used=((phase==SEARCH)&(state["source"]==1)&extra).float(),
                 log_goal_search_probe_used=((phase==SEARCH)&(state["source"]==9)&extra).float())
+            if self.goal_guidance_fix:
+                info.update(log_goal_unresolved_search=(unresolved_search & (phase == SEARCH)).float(),
+                            log_goal_visual_sky_recovery=(visual_sky & state["goal_reject_active"] & extra).float(),
+                            log_goal_pickup_continuation=(pickup_continuation & (option == 8)).float())
         return F.one_hot(command,12).to(actor_action.dtype),state,info
 
 

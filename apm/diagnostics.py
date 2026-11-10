@@ -92,6 +92,23 @@ def spatial_episode_diagnostics(episode):
         tracked &= ~(np.nan_to_num(errors[:-1], nan=1.) > .5)
     result["spatial_localization_rate"] = float(tracked.sum())/(length-1)
 
+    # Local fragments can contain useful cells after episode-origin tracking
+    # has been lost. Count each coordinate frame separately.
+    local = _rows(episode, "log_spatial_local_valid", length)
+    segments = _rows(episode, "log_spatial_segment", length)
+    if local is not None and segments is not None:
+        segment_ids = segments[1:]
+        valid_local = (selected & (local[1:] == 1.) & np.isfinite(poses).all(-1)
+                       & np.isfinite(segment_ids) & (segment_ids >= 0))
+        if errors is not None:
+            valid_local &= ~(np.nan_to_num(errors[:-1], nan=1.) > .5)
+        result["spatial_qualified_segment_count"] = float(len(np.unique(segment_ids[valid_local])))
+        visits = _rows(episode, "log_spatial_visited_cells", length)
+        if visits is not None:
+            has_visits = valid_local & np.isfinite(visits[1:]) & (visits[1:] >= 0)
+            if has_visits.any():
+                result["spatial_max_local_segment_visited_cells"] = float(visits[1:][has_visits].max())
+
     # These are explicitly predicted search-behaviour proxies on valid states.
     if tracked.any():
         result["spatial_map_proxy_available"] = 1.
@@ -158,7 +175,8 @@ def goal_episode_diagnostics(episode):
               "goal_untrusted_rate": float(np.mean(states == 0))}
     for name in ("gate", "conflict", "peak_rejected", "interaction_probability", "interaction_valid",
                  "verify_used", "reject_used", "absence_confirmed",
-                 "search_eligible", "search_learned_used", "search_probe_used"):
+                 "search_eligible", "search_learned_used", "search_probe_used",
+                 "unresolved_search", "visual_sky_recovery", "pickup_continuation"):
         values = np.asarray(episode.get("log_goal_" + name, []))
         if values.shape == version.shape:
             result["goal_" + name + "_mean"] = float(values[1:][valid].mean())

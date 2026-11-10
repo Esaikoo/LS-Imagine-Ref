@@ -121,15 +121,17 @@ class GoalSearchIntegrationTests(unittest.TestCase):
             checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
             incoming = goal_config(logdir=root/"new", resume_from=str(checkpoint_path), steps=128,
                                    video_pred_log=True, goal_ref_border_padding="replicate",
-                                   vnext_pose_loss_version=3)
+                                   vnext_pose_loss_version=4, goal_guidance_revision=2)
             plan = prepare_resume(incoming)
             self.assertTrue(incoming.video_pred_log)
             self.assertEqual(incoming.goal_ref_border_padding, "zeros")
             self.assertEqual(incoming.vnext_pose_loss_version, 1)
+            self.assertEqual(incoming.goal_guidance_revision, 1)
             from training_state import validate_goal_checkpoint
-            evaluation = {"goal_ref_border_padding": "replicate"}
+            evaluation = {"goal_ref_border_padding": "replicate", "goal_guidance_revision": 2}
             validate_goal_checkpoint(plan["checkpoint"], evaluation, evaluation=True)
             self.assertEqual(evaluation["goal_ref_border_padding"], "zeros")
+            self.assertEqual(evaluation["goal_guidance_revision"], 1)
             restored = agent_for(incoming, plan["checkpoint"]["goal_reference_bank"])
             restore_training_state(restored,plan,SimpleNamespace(step=0))
             self.assertEqual(restored._goal_reference.bank_fingerprint, agent._goal_reference.bank_fingerprint)

@@ -525,6 +525,32 @@ class SpatialMemoryTests(unittest.TestCase):
         self.assertGreater(float(logit.grad[3]), 0.)
         self.assertFalse(model.qualification_diagnostics()["ready"])
 
+    def test_pose_revision_four_trains_stationary_pairs_to_preserve_segments(self):
+        # An uncertain 50% motion prediction with a small raw mean escaped the
+        # old stopped margin. The new one trains it toward the actual stop gate.
+        model = PoseNet(hidden=16, loss_version=4)
+        older = PoseNet(hidden=16, loss_version=3)
+        model.load_state_dict(older.state_dict(), strict=True)
+        target = torch.zeros(4, 3)
+        delta = torch.tensor([[0., .025, 0.], [0., .12, 0.],
+                              [0., .12, 0.], [0., .025, 0.]], requires_grad=True)
+        logit = torch.tensor([0., -8., 0., -3.], requires_grad=True)
+        sigma = torch.full((4, 3), .12, requires_grad=True)
+        motion = dict(delta=delta, motion_logit=logit, sigma=sigma, visual_difference=torch.ones(4))
+        static = torch.tensor([True, True, False, False])
+        moving = torch.zeros_like(static)
+        _, _, old_stop = older._usable_motion_loss(motion, delta, target, moving, static)
+        _, _, new_stop = model._usable_motion_loss(motion, delta, target, moving, static)
+        self.assertEqual(float(old_stop), 0.)
+        new_stop.backward()
+        self.assertGreater(float(logit.grad[0]), 0.)
+        self.assertGreater(float(delta.grad[0, 1]), 0.)
+        self.assertGreater(float(sigma.grad[0, :2].sum()), 0.)
+        self.assertGreater(float(delta.grad[1, 1]), 0.)  # strong penalty even when moving gate is closed
+        self.assertEqual(float(sigma.grad[1, :2].sum()), 0.)  # no confidence in a bad static mean
+        for grad in (delta.grad, logit.grad, sigma.grad):
+            torch.testing.assert_close(grad[2:], torch.zeros_like(grad[2:]))
+
     def test_revision_zero_keeps_checkpoint_shape_and_original_motion_semantics(self):
         old=PoseNet(hidden=16,fix_version=0);new=PoseNet(hidden=16,fix_version=1)
         self.assertEqual({k:tuple(v.shape) for k,v in old.state_dict().items()},

@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "task_id": "harvest_sand",
+  "entries": [
+    {
+      "path": "train_01.png",
+      "sha256": "a73dc18a815335a1681cd4263e272bd39d220920f2e8226df1e505be58a7f391",
+      "fold": "train",
+      "visible": false,
+      "world_group": 8948140,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
+      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
+      "frame": 5,
+      "annotation": "Birch trunks, leaves and exposed dirt. The whole RGB contains no visible sand.",
+      "source_size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "train_02.png",
+      "sha256": "ad2e567810ecc3e533eaf22505269faefcdc8ba4b9e1b21aabe04d5d50d5c8c5",
+      "fold": "train",
+      "visible": false,
+      "world_group": 8948140,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
+      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
+      "frame": 59,
+      "annotation": "Sky, birch wood and forest foliage with grass and dirt. No visible sand.",
+      "source_size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "train_03.png",
+      "sha256": "82b15dc14d7ae3b06ccb8760821ea4ef61a3b1f53edbb57c173c35476e30533d",
+      "fold": "train",
+      "visible": false,
+      "world_group": 8948140,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261107T063312-21337b63b2a24a94ad99b985e2fc683c-394.npz",
+      "source_sha256": "8b984ae66325fe602bc13d07000d46338c98accf6811bfc96dd117a7ef7a71ec",
+      "frame": 32,
+      "annotation": "A low grass and dirt bank under birch trunks and sky. No visible sand.",
+      "source_size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "train_04.png",
+      "sha256": "dbf067aa0bff6ecd5a85dc62cff7e467b1ab0374a2988821105af12d71258e29",
+      "fold": "train",
+      "visible": false,
+      "world_group": 2958632,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "distractor_flat_capture.npz",
+      "source_sha256": "266b5f25ac7609f89e503df940e773af9729a702c5e14bcbc1c1c8e6c7511d05",
+      "frame": 1,
+      "annotation": "Controlled training-only flat capture with birch and mushroom stems against grass. No visible sand.",
+      "source_size": [
+        160,
+        256
+      ]
+    },
+    {
+      "path": "train_05.png",
+      "sha256": "5522e34af2a8bfa1ad225de92180645ee0ff1594d87e9b23be8fc59684dd5065",
+      "fold": "train",
+      "visible": false,
+      "world_group": 2958632,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "distractor_flat_capture.npz",
+      "source_sha256": "266b5f25ac7609f89e503df940e773af9729a702c5e14bcbc1c1c8e6c7511d05",
+      "frame": 2,
+      "annotation": "Controlled training-only flat capture with a pale stem and sky. No visible sand.",
+      "source_size": [
+        160,
+        256
+      ]
+    },
+    {
+      "path": "train_06.png",
+      "sha256": "a4ab36b6f85eaa52d96808c2c9aa8111d17a04d9d94d93b0f91c037ddd9880df",
+      "fold": "train",
+      "visible": false,
+      "world_group": 2958632,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "distractor_flat_capture.npz",
+      "source_sha256": "266b5f25ac7609f89e503df940e773af9729a702c5e14bcbc1c1c8e6c7511d05",
+      "frame": 5,
+      "annotation": "Controlled training-only flat capture with gray stone over grass. No visible sand.",
+      "source_size": [
+        160,
+        256
+      ]
+    },
+    {
+      "path": "calibration_07.png",
+      "sha256": "84dc610e7187cb84567e730859c4f9cc235e719a8fbb509f93c6ed01547840ca",
+      "fold": "calibration",
+      "visible": false,
+      "world_group": 5446456,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T161936-4d31c72b241e463c9ff3dfac87cb1aa8-50.npz",
+      "source_sha256": "c38b9e9923a4e85d71cd347929947751019641575259d38a59794fbe22e903da",
+      "frame": 5,
+      "annotation": "Grass and exposed dirt beneath blue sky. No visible sand.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_08.png",
+      "sha256": "8a65af4e735b229c3b70dc7451a2daed38baea9b540896440faceb8b8eda021f",
+      "fold": "calibration",
+      "visible": false,
+      "world_group": 5446456,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T161936-4d31c72b241e463c9ff3dfac87cb1aa8-50.npz",
+      "source_sha256": "c38b9e9923a4e85d71cd347929947751019641575259d38a59794fbe22e903da",
+      "frame": 15,
+      "annotation": "Close grass, exposed dirt and tree canopy. No visible sand.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_09.png",
+      "sha256": "52ec376838211f16523a3a47fe8e243d9752af871c4d9cef198cc7201b3d7324",
+      "fold": "calibration",
+      "visible": false,
+      "world_group": 5446456,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T161936-4d31c72b241e463c9ff3dfac87cb1aa8-50.npz",
+      "source_sha256": "c38b9e9923a4e85d71cd347929947751019641575259d38a59794fbe22e903da",
+      "frame": 25,
+      "annotation": "Upward sky and tree canopy view. No visible sand.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_10.png",
+      "sha256": "dfd05aaaaf19dbbca759cc5605564a3fa87e09fe64ca275aca24d2463570db2f",
+      "fold": "calibration",
+      "visible": false,
+      "world_group": 5446456,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T161936-4d31c72b241e463c9ff3dfac87cb1aa8-50.npz",
+      "source_sha256": "c38b9e9923a4e85d71cd347929947751019641575259d38a59794fbe22e903da",
+      "frame": 45,
+      "annotation": "Sky and foliage after the turn. No visible sand.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_11.png",
+      "sha256": "fad2cf3a830f9d2f8be0ba90e8763f9b03cf31741c7d9abad4e21eef73df9cd1",
+      "fold": "calibration",
+      "visible": false,
+      "world_group": 6066900,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "capture-50101-0-5.npz",
+      "source_sha256": "b00bcb3c140572a48b0008391b9786f80c6de59ae62c91a834216aa7f90c7c26",
+      "frame": 2,
+      "annotation": "Trees, tall grass, exposed dirt and distant birch bark. No visible sand.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_12.png",
+      "sha256": "17a6f0303819569a66eea3b74a44bdeb509ec686baa07cc34d346a3fcaec22d0",
+      "fold": "calibration",
+      "visible": true,
+      "world_group": 9017121,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T211455-53f1b09cea5141c2bcb375f1a14b6f5e-865.npz",
+      "source_sha256": "e4a7e25019ac41bca053e39513f63654d068265d68348631f36d7358bea94b22",
+      "frame": 265,
+      "annotation": "Distant sand on the riverbank, visible beneath the trees.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_13.png",
+      "sha256": "88b5af846064d0d033d93cce4dd0dc9affd6fa5fd6c4dd14df43dbb077722522",
+      "fold": "calibration",
+      "visible": true,
+      "world_group": 9017121,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T211455-53f1b09cea5141c2bcb375f1a14b6f5e-865.npz",
+      "source_sha256": "e4a7e25019ac41bca053e39513f63654d068265d68348631f36d7358bea94b22",
+      "frame": 826,
+      "annotation": "A pale sand bank occupies the near side of the river.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_14.png",
+      "sha256": "d74e80f29fdb8e7bc22c353d5b0726c468f6a798dcb91fa872b55311163a3f5b",
+      "fold": "calibration",
+      "visible": true,
+      "world_group": 9017121,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T211822-43296ca4331a4eb78df8c3e3e6d63bb9-838.npz",
+      "source_sha256": "bb83ef3d36c3d6005d2d7b949140cfb6b1a9dffd8d22e58bbf4ee55972bf6e90",
+      "frame": 806,
+      "annotation": "Nearby broad sand shoreline with water and trees.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_15.png",
+      "sha256": "02ee4d79afabfefcd95beb770ecfc3b059dc87300a727f61a1181adabeb63661",
+      "fold": "calibration",
+      "visible": true,
+      "world_group": 3625143,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261109T002331-d7a31d3104984f1088be27470152fb9d-996.npz",
+      "source_sha256": "f301bb68064cff6492b6ef661b0b38a6c3f7a1b58f017b55b874cdf24b900af3",
+      "frame": 991,
+      "annotation": "A small sand ledge and column stand visibly above water.",
+      "source_size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "calibration_16.png",
+      "sha256": "ed7c479323f701ac3b186cef8d06cc64158e18ca252595148f0c127792ed9f3d",
+      "fold": "calibration",
+      "visible": true,
+      "world_group": 7199232,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_replay": "20261108T170330-99538c0f79484630b010a35d62ae5058-1001.npz",
+      "source_sha256": "3bddee3ffd6d8f6d04c743a5effe112b91d830abb4940b6c7cc6598e44f630f8",
+      "frame": 90,
+      "annotation": "Pale sand block faces are visible along a snowy bank.",
+      "source_size": [
+        96,
+        96
+      ]
+    }
+  ]
+}

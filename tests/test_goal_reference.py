@@ -185,6 +185,65 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(labels[:,1,1].nonzero().flatten().tolist(), [1])
         self.assertEqual(labels[:,1,0].nonzero().flatten().tolist(), [1])
 
+    def test_delayed_interaction_needs_actual_contact_and_unbroken_history(self):
+        model = GoalReference(config(goal_guidance_revision=2), bank())
+        data = observed()
+        data = {key: np.repeat(value[:, :1], 10, axis=1) for key, value in data.items()}
+        data["is_first"][:, 1:] = False
+        data["log_applied_control"] = np.zeros((2, 10, 9), np.float32)
+        data["log_applied_control"][:, 1, 0] = 1.
+        data["log_actuator_valid"] = ~data["is_first"]
+        data["log_env_error"] = np.zeros((2, 10), bool)
+        data["goal_inventory_transition_valid"] = ~data["is_first"]
+        data["goal_interaction_outcome"] = np.zeros((2, 10), bool)
+        data["goal_interaction_outcome"][0, 3] = True
+        data["goal_interaction_valid"] = np.ones((2, 10), bool)
+        data["search_center_interactable"] = np.zeros((2, 10), bool)
+        data["search_center_interactable"][0, 0] = True
+        data["search_center_interactable_valid"] = np.ones((2, 10), bool)
+
+        def labels():
+            return model._supervision(data)[2][:, 1].reshape(2, 10, 2)
+
+        self.assertEqual(labels()[0, 0].tolist(), [True, True])
+        self.assertEqual(labels()[1, 0].tolist(), [False, True])
+        # Do not cross a bad simulator row or a replay segment boundary.
+        for key in ("is_first", "log_env_error"):
+            data[key][0, 2] = True
+            self.assertEqual(labels()[0, 0].tolist(), [False, False])
+            data[key][0, 2] = False
+        data["log_applied_control"][0, 2, 6] = 1.
+        self.assertEqual(labels()[0, 0].tolist(), [False, False])
+        data["log_applied_control"][0, 3, 0] = 1.
+        self.assertEqual(labels()[0, 2].tolist(), [True, True])
+        self.assertEqual(labels()[0, 0].tolist(), [False, False])
+        # Legacy no-inventory replay retains immediate actual positives only.
+        del data["goal_inventory_transition_valid"]
+        self.assertEqual(labels()[0, 2].tolist(), [True, True])
+        self.assertEqual(labels()[1, 0].tolist(), [False, False])
+
+    def test_bundled_review_keeps_training_and_calibration_worlds_disjoint(self):
+        root = Path(__file__).resolve().parents[1] / "assets/goal_references"
+        cfg = config(goal_guidance_revision=2, goal_ref_bank_root=root)
+        model = GoalReference(cfg)
+        self.assertEqual(model.reviewed_visibility_calibration.sum().item(), 10)
+        self.assertFalse(model.reviewed_visibility_labels[~model.reviewed_visibility_calibration].any())
+        self.assertFalse(set(model.reviewed_visibility_worlds.tolist()) & set(model.bank_world_groups.tolist()))
+        data = labeled()
+        data["log_vnext_world_group"] = np.full((2, 4), int(model.reviewed_visibility_worlds[0]))
+        self.assertTrue(model._supervision(data)[3].all())
+        data["log_vnext_world_group"][:] = 20
+        report = model.train_batch(data)
+        self.assertEqual(report["D/visible_review_train_frames"], 6.)
+        self.assertEqual(report["D/visible_cal_positive"], 5.)
+        self.assertEqual(report["D/visible_cal_negative"], 5.)
+        portable = GoalReference(cfg, model.export_bank())
+        portable.load_state_dict(model.state_dict())
+        self.assertEqual(portable.bank_fingerprint, model.bank_fingerprint)
+        self.assertTrue(torch.equal(portable.reviewed_visibility_images, model.reviewed_visibility_images))
+        legacy = GoalReference(config(goal_ref_bank_root=root))
+        self.assertEqual(legacy.reviewed_visibility_images.numel(), 0)
+
     def test_reference_world_cannot_certify_even_with_bad_split_flag(self):
         model = GoalReference(config(), bank())
         data = labeled()

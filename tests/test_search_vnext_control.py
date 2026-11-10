@@ -160,6 +160,86 @@ class VNextControlTests(unittest.TestCase):
         self.assertEqual(info["log_goal_search_learned_used"].item(),0)
         self.assertEqual(info["log_goal_search_eligible"].item(),1)
 
+    def test_sustained_unknown_can_leave_align_without_claiming_absence(self):
+        controller = VNextController(8, config(vnext_spatial_enabled=True,
+            vnext_spatial_fix_version=3, goal_search_enabled=True, goal_guidance_revision=2))
+        state = controller.initial(1, "cpu")
+        state["age"][:] = 100
+        state["phase"][:] = ALIGN
+        cur = current(visible=.5, ready=False)
+        for _ in range(12):
+            _, state, info = self.run_step(controller, UnsupportedSpatialAB(), state,
+                proposal=0, cur=cur, training=False)
+        self.assertEqual(info["log_vnext_phase"].item(), SEARCH)
+        self.assertEqual(info["log_goal_unresolved_search"].item(), 1)
+        self.assertEqual(info["log_goal_absence_confirmed"].item(), 0)
+        self.assertEqual(info["log_vnext_mask"][0, 8].item(), 0)
+        cur["goal_context"] = torch.tensor([[.9, .7, .3, 0., 0., .1, 2., 1.]])
+        _, state, info = self.run_step(controller, UnsupportedSpatialAB(), state,
+            proposal=0, cur=cur, training=False)
+        self.assertEqual(state["goal_unresolved_run"].item(), 0)
+        self.assertEqual(info["log_goal_unresolved_search"].item(), 0)
+
+    def test_uniform_blue_high_pitch_can_correct_a_false_trusted_peak(self):
+        controller = VNextController(8, config(vnext_spatial_enabled=True,
+            vnext_spatial_fix_version=3, goal_search_enabled=True, goal_guidance_revision=2))
+        state = controller.initial(1, "cpu")
+        state["age"][:] = 100
+        state["actuator"][:, 2] = -40
+        cur = current(visible=.9)
+        cur["goal_context"] = torch.tensor([[.95, .8, .2, 0., 0., .01, 2., 1.]])
+        blue = torch.tensor([.35, .57, .87]).expand(1, 64, 64, 3)
+        for _ in range(2):
+            action, state, info = self.run_step(controller, UnsupportedSpatialAB(), state,
+                proposal=1, cur=cur, training=False, obs={"image": blue})
+        self.assertEqual(action.argmax(-1).item(), 3)
+        self.assertEqual(info["log_goal_visual_sky_recovery"].item(), 1)
+        self.assertEqual(info["log_goal_absence_confirmed"].item(), 0)
+        self.assertEqual(info["log_vnext_applied"][0, 0].item(), 0)
+
+    def test_centered_d_can_corroborate_a_probe_and_finish_pickup_after_target_loss(self):
+        controller = VNextController(8, config(vnext_spatial_enabled=True,
+            vnext_spatial_fix_version=3, goal_search_enabled=True, goal_guidance_revision=2))
+        state = controller.initial(1, "cpu")
+        state["age"][:] = 100
+        target = current(visible=.9, joint=.9, ready=False)
+        target["goal_context"] = torch.tensor([[.95, .8, .2, .1, 0., .01, 2., 1.]])
+        no_target = current(visible=.5, ready=False)
+        ab = UnsupportedSpatialAB()
+        _, state, info = self.run_step(controller, ab, state, proposal=0, cur=target, training=False)
+        self.assertEqual(info["log_vnext_mask"][0, 8].item(), 0)
+        target["interaction_probe_candidate"] = torch.tensor([True])
+        for _ in range(3):
+            action, state, info = self.run_step(controller, ab, state,
+                proposal=0, cur=target, training=False)
+        self.assertEqual(action.argmax(-1).item(), 1)
+        self.assertEqual(info["log_vnext_source"].item(), 8)
+        action, state, info = self.run_step(controller, ab, state,
+            proposal=0, cur=no_target, training=False)
+        self.assertEqual(action.argmax(-1).item(), 6)
+        self.assertEqual(info["log_goal_pickup_continuation"].item(), 1)
+        self.assertEqual(info["log_vnext_applied"][0, 0].item(), 0)
+        self.assertTrue(state["pending_interact"].item())
+
+    def test_lost_qualification_cancels_second_attack_and_waits_for_result(self):
+        controller = VNextController(8, config(vnext_spatial_enabled=True,
+            vnext_spatial_fix_version=3, goal_search_enabled=True, goal_guidance_revision=2))
+        state = controller.initial(1, "cpu")
+        state["age"][:] = 100
+        target = current(visible=.9, joint=.9, ready=False)
+        target["goal_context"] = torch.tensor([[.95, .8, .2, .1, 0., .01, 2., 1.]])
+        target["interaction_probe_candidate"] = torch.tensor([True])
+        ab = UnsupportedSpatialAB()
+        for _ in range(2):
+            action, state, info = self.run_step(controller, ab, state,
+                proposal=0, cur=target, training=False)
+        self.assertEqual(action.argmax(-1).item(), 1)
+        action, state, info = self.run_step(controller, ab, state,
+            proposal=0, cur=current(visible=.5, ready=False), training=False)
+        self.assertEqual(info["log_vnext_applied"][0, 0].item(), 0)
+        self.assertTrue(state["pending_interact"].item())
+        self.assertGreater(state["interaction_wait"].item(), 0)
+
     def test_constructor_preserves_random_stream(self):
         torch.manual_seed(73);expected=torch.rand(4)
         torch.manual_seed(73);VNextController(8,config());actual=torch.rand(4)

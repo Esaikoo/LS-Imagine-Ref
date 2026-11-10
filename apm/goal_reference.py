@@ -1,6 +1,7 @@
 """Category reference matching with sparse, training-only supervision."""
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -68,7 +69,7 @@ def _validate_curation(curation, positive, negative):
             raise ValueError("Curated positive must meet the native crop size requirement")
 
 
-def load_reference_bank(root, task, max_references):
+def load_reference_bank(root, task, max_references, *, reviewed_visibility=False):
     """Load only training assets matching the fixed run category."""
     root = Path(root).resolve()
     task_root = root / task
@@ -128,7 +129,56 @@ def load_reference_bank(root, task, max_references):
                   negative_entries=negative_entries, negative_pixels_sha256=_sha(negatives.tobytes()))
     if curation is not None:
         frozen["curation"] = curation
-    return {"manifest": frozen, "pixels": pixels, "negative_pixels": negatives}
+    bank = {"manifest": frozen, "pixels": pixels, "negative_pixels": negatives}
+    path = root / "visibility" / "manifest.json"
+    if reviewed_visibility and path.is_file():
+        review = json.loads(path.read_text(encoding="utf-8-sig"))
+        if review["task_id"] != task:
+            raise ValueError("Whole-frame review task differs from the reference bank")
+        _visibility_folds(review)
+        reviewed = []
+        for entry in review["entries"]:
+            frame = (path.parent / entry["path"]).resolve()
+            if not frame.is_relative_to(path.parent.resolve()) or _sha(frame.read_bytes()) != entry["sha256"]:
+                raise ValueError("Whole-frame review image path or SHA256 is invalid")
+            with Image.open(frame) as image:
+                if image.size not in ((64, 64), (96, 96)):
+                    raise ValueError("Whole-frame review must retain the complete policy or native RGB")
+                rgb = _rgb(np.array(image.convert("RGB")), "cpu")
+                if image.size != (96, 96):
+                    rgb = F.interpolate(rgb, (96, 96), mode="bilinear", align_corners=False)
+                reviewed.append((rgb[0].permute(1, 2, 0)*255.).round().byte().numpy())
+        reviewed = np.stack(reviewed)
+        frozen["visibility_review"] = dict(review, pixels_sha256=_sha(reviewed.tobytes()))
+        bank["visibility_pixels"] = reviewed
+    return bank
+
+
+def _visibility_folds(review):
+    """World and source-frame provenance for verified full-frame RGB labels."""
+    entries = review["entries"]
+    if review.get("version") != 1 or not 1 <= len(entries) <= 32:
+        raise ValueError("Invalid whole-frame review manifest")
+    worlds = {"train": set(), "calibration": set()}
+    frames = set()
+    for entry in entries:
+        fold = entry.get("fold")
+        world = entry.get("world_group")
+        source = entry.get("source_replay", "")
+        digest = entry.get("source_sha256", "")
+        frame = entry.get("frame")
+        if (fold not in worlds or not isinstance(world, int) or world <= 0
+                or not isinstance(entry.get("visible"), bool)
+                or entry.get("source_split") != "train" or entry.get("scope") != "whole_frame"
+                or not isinstance(frame, int) or frame < 0 or not source.endswith(".npz")
+                or not re.fullmatch(r"[0-9a-f]{64}", digest) or not entry.get("annotation")
+                or (digest, frame) in frames):
+            raise ValueError("Whole-frame reviews require unique, verified training provenance")
+        worlds[fold].add(world)
+        frames.add((digest, frame))
+    if worlds["train"] & worlds["calibration"]:
+        raise ValueError("Whole-frame train and calibration worlds must be disjoint")
+    return worlds
 
 
 def _rgb(image, device):
@@ -184,7 +234,9 @@ class GoalReference(nn.Module):
         self.max_candidates = int(getattr(config, "goal_ref_max_candidates", 8))
         if self.max_candidates != 8:
             raise ValueError("D v1 uses eight fixed candidate slots")
-        bank = (load_reference_bank(config.goal_ref_bank_root, task, max_references)
+        self.guidance_revision = int(getattr(config, "goal_guidance_revision", 1))
+        bank = (load_reference_bank(config.goal_ref_bank_root, task, max_references,
+                                    reviewed_visibility=self.guidance_revision >= 2)
                 if bank is None else bank)
         manifest = json.loads(json.dumps(bank["manifest"], sort_keys=True))
         pixels = torch.as_tensor(bank["pixels"]).detach().cpu().contiguous()
@@ -212,11 +264,36 @@ class GoalReference(nn.Module):
             manifest, sort_keys=True, separators=(",", ":")).encode())
         reference_worlds = [_entry_worlds(entry) for entry in entries]
         groups = set().union(*reference_worlds, *map(_entry_worlds, negative_entries))
-        self.register_buffer("bank_world_groups", torch.tensor(sorted(groups), dtype=torch.long),
-                             persistent=False)
         self.register_buffer("cross_world_references", torch.tensor([
             [left.isdisjoint(right) for right in reference_worlds] for left in reference_worlds
         ], dtype=torch.bool), persistent=False)
+        reviewed = manifest.get("visibility_review")
+        review_images = torch.empty((0, 96, 96, 3), dtype=torch.uint8)
+        reviewed_entries = []
+        cal_worlds = set()
+        if reviewed is not None:
+            if reviewed["task_id"] != task:
+                raise ValueError("Checkpoint whole-frame review task mismatch")
+            folds = _visibility_folds(reviewed)
+            if folds["calibration"] & groups:
+                raise ValueError("Whole-frame calibration world is in the reference crop bank")
+            cal_worlds = folds["calibration"]
+            groups |= folds["train"]
+            reviewed_entries = reviewed["entries"]
+            review_images = torch.as_tensor(bank["visibility_pixels"]).detach().cpu().contiguous()
+            if (review_images.shape != (len(reviewed_entries), 96, 96, 3)
+                    or review_images.dtype != torch.uint8
+                    or _sha(review_images.numpy().tobytes()) != reviewed["pixels_sha256"]):
+                raise ValueError("Invalid checkpoint whole-frame review pixels")
+        self.register_buffer("reviewed_visibility_images", review_images.clone(), persistent=False)
+        self.register_buffer("reviewed_visibility_calibration", torch.tensor(
+            [entry["fold"] == "calibration" for entry in reviewed_entries], dtype=torch.bool), persistent=False)
+        self.register_buffer("reviewed_visibility_labels", torch.tensor(
+            [entry["visible"] for entry in reviewed_entries], dtype=torch.bool), persistent=False)
+        self.register_buffer("reviewed_visibility_worlds", torch.tensor(
+            sorted(cal_worlds), dtype=torch.long), persistent=False)
+        self.register_buffer("bank_world_groups", torch.tensor(sorted(groups), dtype=torch.long),
+                             persistent=False)
         self.register_buffer("bank_pixels", pixels.clone())
         self.register_buffer("negative_pixels", negatives.clone())
         self.register_buffer("reference_features", torch.empty(0), persistent=False)
@@ -267,9 +344,12 @@ class GoalReference(nn.Module):
         return self.bank_pixels.device
 
     def export_bank(self):
-        return {"manifest": json.loads(json.dumps(self.bank_manifest)),
+        bank = {"manifest": json.loads(json.dumps(self.bank_manifest)),
                 "pixels": self.bank_pixels.detach().cpu().clone(),
                 "negative_pixels": self.negative_pixels.detach().cpu().clone()}
+        if "visibility_review" in self.bank_manifest:
+            bank["visibility_pixels"] = self.reviewed_visibility_images.detach().cpu().clone()
+        return bank
 
     def _load_from_state_dict(self, state_dict, prefix, *args):
         for name in ("bank_pixels", "negative_pixels"):
@@ -378,8 +458,8 @@ class GoalReference(nn.Module):
         labels, valid = label_pair("goal_region_gt", "goal_region_valid", (GRID, GRID))
         visible, visible_valid = label_pair("goal_visible_gt", "goal_visible_valid")
         interact, interact_valid = label_pair("goal_interaction_outcome", "goal_interaction_valid")
-        # Inventory/success results arrive on the next observation. Predict
-        # their immediate outcome from the source frame of an actual attempt.
+        # The source frame precedes the actual control. The arrival row
+        # contains the new inventory and success outcome.
         interaction_labels = torch.zeros((rows, 2), dtype=torch.bool, device=device)
         if (len(shape) == 2 and shape[-1] > 1 and "log_applied_control" in data
                 and "log_actuator_valid" in data and "is_first" in data):
@@ -389,12 +469,63 @@ class GoalReference(nn.Module):
             attempted = (applied[..., 0] > .5) | (applied[..., 6] > .5)
             good = interact_valid.reshape(shape)[:, 1:] & attempted & (first == 0.) & (actual == 1.)
             interaction_labels = interaction_labels.reshape(*shape, 2)
-            interaction_labels[:, :-1, 0] = interact.reshape(shape)[:, 1:] & good
-            interaction_labels[:, :-1, 1] = good
+            if self.guidance_revision >= 2:
+                interaction_labels[:, :-1] = self._delayed_interaction(
+                    get, shape, applied, first, actual, attempted, interact, interact_valid)
+            else:
+                interaction_labels[:, :-1, 0] = interact.reshape(shape)[:, 1:] & good
+                interaction_labels[:, :-1, 1] = good
             interaction_labels = interaction_labels.reshape(rows, 2)
         frame_labels = torch.stack((torch.stack((visible, visible_valid), -1),
                                     interaction_labels), 1)
-        return labels, valid, frame_labels, get("goal_holdout") == 1.
+        group = get("log_vnext_world_group", dtype=torch.long)
+        review_holdout = (group[:, None] == self.reviewed_visibility_worlds).any(-1)
+        return labels, valid, frame_labels, (get("goal_holdout") == 1.) | review_holdout
+
+    def _delayed_interaction(self, get, shape, applied, first, actual, attempted, outcome, known):
+        """Attribute a pickup to a recent centered, legal actual attempt."""
+        horizon = 6
+        end = shape[-1] - 1
+        safe = ((first == 0.) & (actual == 1.) & torch.isfinite(applied).all(-1)
+                & (get("log_env_error").reshape(shape)[:, 1:] == 0.))
+        world = get("log_vnext_world_group", dtype=torch.long).reshape(shape)
+        safe &= world[:, :-1] == world[:, 1:]
+        inventory = get("goal_inventory_transition_valid").reshape(shape)[:, 1:] == 1.
+        gain = outcome.reshape(shape)[:, 1:] & known.reshape(shape)[:, 1:]
+        center_known = get("search_center_interactable_valid").reshape(shape)[:, :-1] == 1.
+        center_value = get("search_center_interactable").reshape(shape)[:, :-1]
+        center_good = center_known & (center_value == 1.)
+        # Preserve observed same-step attempt positives. Delayed links require
+        # centered contact and cannot cross another possible producing action.
+        turned = applied[..., -2:].abs().sum(-1) > 0.
+        positive = attempted & safe & gain
+        negative = torch.zeros_like(gain)
+        link = attempted & center_good & ~turned
+        clean_window = attempted.clone()
+        for offset in range(min(horizon, end)):
+            count = end - offset
+            dst = slice(offset, end)
+            src = slice(None, count)
+            link[:, src] &= safe[:, dst]
+            if offset:
+                link[:, src] &= ~attempted[:, dst] & ~turned[:, dst]
+                positive[:, src] |= link[:, src] & gain[:, dst]
+            # A second pickup in this window cannot belong to the first link.
+            link[:, src] &= inventory[:, dst] & ~gain[:, dst]
+            clean_window[:, src] &= safe[:, dst] & inventory[:, dst] & ~gain[:, dst]
+            if offset == horizon - 1:
+                negative[:, src] = clean_window[:, src]
+        return torch.stack((positive, positive | negative), -1)
+
+    def _reviewed_visibility_logits(self, references, calibration):
+        split = self.reviewed_visibility_calibration == calibration
+        labels = self.reviewed_visibility_labels[split]
+        if self.guidance_revision < 2 or not len(labels):
+            return references.new_empty(0), labels[:0]
+        rgb = _rgb(self.reviewed_visibility_images[split], self.device)
+        if self.input_size != 96:
+            rgb = F.interpolate(rgb, (self.input_size, self.input_size), mode="bilinear", align_corners=False)
+        return self._match(rgb, references)["visible_logits"], labels
 
     def _loss(self, data, labels, valid, frame_labels, holdout):
         usable = (valid.flatten(1).any(-1) | frame_labels[..., 1].any(-1)) & ~holdout
@@ -435,7 +566,10 @@ class GoalReference(nn.Module):
         loss_candidate = _balanced_bce(candidate_logits, candidate_label, candidate_valid)
         loss_region = .5 * sum(_balanced_bce(head, labels, valid, hard)
                                for head in result["ensemble"].unbind(1))
-        loss_visible = _balanced_bce(result["visible_logits"], visible[:, 0], visible[:, 1])
+        review_logits, review_labels = self._reviewed_visibility_logits(references, calibration=False)
+        loss_visible = _balanced_bce(torch.cat((result["visible_logits"], review_logits)),
+                                     torch.cat((visible[:, 0], review_labels)),
+                                     torch.cat((visible[:, 1], torch.ones_like(review_labels))))
         loss_interact = _balanced_bce(result["interaction_logits"], interact[:, 0], interact[:, 1])
         brier = (_masked_mean((result["region_logits"].sigmoid()-labels.float()).square(), valid)
                  + _masked_mean((result["visible_logits"].sigmoid()-visible[:, 0].float()).square(), visible[:, 1])
@@ -482,6 +616,8 @@ class GoalReference(nn.Module):
                    "D/train_frames": len(indices), "D/region_labels": valid.sum(),
                    "D/positive_regions": (valid & labels).sum(), "D/visible_labels": visible[:, 1].sum(),
                    "D/interaction_labels": interact[:, 1].sum(),
+                   "D/interaction_positive_labels": (interact[:, 0] & interact[:, 1]).sum(),
+                   "D/visible_review_train_frames": len(review_labels),
                    "D/hard_negatives": hard.sum(), "D/crossview_pairs": pairs}
         return loss, metrics
 
@@ -545,13 +681,16 @@ class GoalReference(nn.Module):
         if "log_vnext_world_group" in data:
             group = torch.as_tensor(data["log_vnext_world_group"], device=self.device).reshape(-1).long()
         independent = ~(group[:, None] == self.bank_world_groups).any(-1)
+        # Reviewed calibration worlds are represented by verified unique
+        # frames below, not counted again as random sampled replay rows.
+        independent &= ~(group[:, None] == self.reviewed_visibility_worlds).any(-1)
         eligible = (holdout & independent & (ids >= 0)
                     & (valid.flatten(1).any(-1) | frame_labels[..., 1].any(-1)))
         indices = eligible.nonzero().flatten()
         if not len(indices):
             # Recheck cached examples after training even if this batch contains
             # no new holdout frames. Do not retain stale probabilities.
-            if not bool((self.cal_ids >= 0).any()):
+            if not (bool((self.cal_ids >= 0).any()) or bool(self.reviewed_visibility_calibration.any())):
                 return
         else:
             # Hash collisions retain one frame, never multiply support on repeat.
@@ -571,17 +710,25 @@ class GoalReference(nn.Module):
             self.cal_labels[slots] = torch.stack((labels[indices], valid[indices]), 1)
             self.cal_frame_labels[slots] = frame_labels[indices]
         known = self.cal_ids >= 0
-        outputs = self._match(_rgb(self.cal_images[known], self.device), self._cached_reference())
+        references = self._cached_reference()
         region, region_valid = self.cal_labels[known].unbind(1)
         frame = self.cal_frame_labels[known]
+        if bool(known.any()):
+            outputs = self._match(_rgb(self.cal_images[known], self.device), references)
+        else:
+            outputs = dict(region_logits=references.new_empty((0, GRID, GRID)),
+                           visible_logits=references.new_empty(0), interaction_logits=references.new_empty(0))
+        review_logits, review_labels = self._reviewed_visibility_logits(references, calibration=True)
         for index, (pred, label, mask) in enumerate((
             (outputs["region_logits"], region, region_valid),
-            (outputs["visible_logits"], frame[:, 0, 0], frame[:, 0, 1]),
+            (torch.cat((outputs["visible_logits"], review_logits)),
+             torch.cat((frame[:, 0, 0], review_labels)),
+             torch.cat((frame[:, 0, 1], torch.ones_like(review_labels)))),
             (outputs["interaction_logits"], frame[:, 1, 0], frame[:, 1, 1]),
         )):
             pos, neg = mask & label, mask & ~label
-            pos_count = pos.reshape(len(pos), -1).any(-1).sum()
-            neg_count = neg.reshape(len(neg), -1).any(-1).sum()
+            pos_count = (pos.flatten(1).any(-1) if pos.ndim > 1 else pos).sum()
+            neg_count = (neg.flatten(1).any(-1) if neg.ndim > 1 else neg).sum()
             self.cal_counts[index] = torch.stack((pos_count, neg_count))
             self.reliability[index] = 0.
             if not int(self.updates) or min(int(pos_count), int(neg_count)) < 4:
@@ -619,6 +766,8 @@ class GoalReference(nn.Module):
                 param.requires_grad_(flag)
         self._calibrate(data, *supervision)
         metrics["D/updates"] = self.updates
+        if self.guidance_revision >= 2:
+            metrics["D/visible_review_cal_frames"] = self.reviewed_visibility_calibration.sum()
         worlds = self.cal_world_groups[(self.cal_ids >= 0) & (self.cal_world_groups > 0)].unique()
         metrics["D/heldout_worlds"] = len(worlds)
         for index, name in enumerate(("region", "visible", "interact")):

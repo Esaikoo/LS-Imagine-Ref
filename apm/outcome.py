@@ -45,8 +45,8 @@ def goal_discovery_labels(episode):
     """First genuinely corroborated D confirmation in a complete replay prefix.
 
     Outgoing context is stored on the next result row. A sparse ray at the
-    selected candidate's center can certify that candidate, and other rays
-    never create a frame-wide negative. This counts first *observed D
+    selected candidate's center can certify that candidate. Only an explicit
+    verified whole-frame negative rules out any discovery. This counts first *observed D
     confirmation*, which can happen after the oracle's first-visible event.
     """
     time = len(episode["reward"])
@@ -75,7 +75,12 @@ def goal_discovery_labels(episode):
         if first[i+1] or error[i] or error[i+1] or version[i+1] != 1 or label_version[i] != 1:
             continue
         obs = context[i+1]
-        if not np.isfinite(obs).all() or obs[7] <= .5:
+        if not np.isfinite(obs).all():
+            continue
+        if actual_valid[i] and actual_visible[i] == 0:
+            valid[i] = 1
+            continue
+        if obs[7] <= .5:
             continue
         trusted = obs[6] == 2
         x = min(width-1, int((np.clip(obs[3],-1,1)+1)*.5*width))

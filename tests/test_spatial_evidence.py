@@ -269,9 +269,13 @@ class SpatialDiagnosticsTests(unittest.TestCase):
         data["log_spatial_trajectory_valid"]=np.zeros(4)
         data["log_spatial_memory_available"]=np.array([0,1,1,1.])
         data["log_spatial_local_valid"]=np.array([0,0,1,1.])
+        data["log_spatial_segment"]=np.array([0,0,1,2])
+        data["log_spatial_visited_cells"]=np.array([0,99,2,3])
         result=spatial_episode_diagnostics(data)
         self.assertEqual(result["spatial_memory_available_rate"],1.)
         self.assertAlmostEqual(result["spatial_local_tracking_rate"],2/3)
+        self.assertEqual(result["spatial_qualified_segment_count"],2)
+        self.assertEqual(result["spatial_max_local_segment_visited_cells"],3)
         self.assertEqual(result["spatial_trajectory_available"],0)
         self.assertNotIn("spatial_ate_rmse",result)
 

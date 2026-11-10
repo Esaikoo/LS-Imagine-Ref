@@ -100,7 +100,7 @@ class VisualizationTests(unittest.TestCase):
                 np.testing.assert_array_equal(data["history_frames"],state["history_frames"])
                 self.assertEqual(data["history_frames"].dtype,np.uint8)
 
-    def test_fix3_renders_earlier_segment_when_current_has_no_path(self):
+    def test_fix3_prefers_wider_qualified_segment_over_terminal_fragment(self):
         with tempfile.TemporaryDirectory() as directory:
             viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
             for i in range(5):
@@ -111,8 +111,9 @@ class VisualizationTests(unittest.TestCase):
                               log_spatial_segment=i//2, log_spatial_local_valid=1.)
                 viz.observe("eval", "prior_segment", obs, output, 100)
             state = dict(grid=np.zeros((9,9,6)), pose=[0.,0.,0.,.1], resolution=1.,
-                         tracking_ready=False, local_tracking_ready=False, trajectory_valid=False,
+                         tracking_ready=True, local_tracking_ready=True, trajectory_valid=False,
                          active_segment=2, pose_gap_count=2, first_gap_step=2)
+            state["pose"] = [.01, .01, 0., .1]
             with mock.patch.object(viz, "_render") as render:
                 path = viz.episode_end("eval", "prior_segment", dict(reward=np.zeros(6)), 100,
                                        eval_index=1, eval_total=1, map_state=state)
@@ -131,10 +132,9 @@ class VisualizationTests(unittest.TestCase):
             self.assertIn("earlier qualified",ax.get_title())
             np.testing.assert_allclose(ax.lines[0].get_xdata()[:2],[0.,.2])
             self.assertTrue(np.isnan(ax.lines[0].get_xdata()[2:]).all())
-            detail, = save.call_args.args[0].axes[1].child_axes
-            self.assertIn("Route detail", detail.get_title())
-            self.assertLess(np.ptp(detail.get_xlim()), np.ptp(ax.get_xlim())/3.)
-            self.assertEqual(detail.get_aspect(), ax.get_aspect())
+            self.assertFalse(save.call_args.args[0].axes[1].child_axes)
+            self.assertAlmostEqual(np.ptp(ax.get_xlim()), 24.)
+            self.assertAlmostEqual(np.ptp(ax.get_ylim()), 24.)
 
     def test_pose_gap_does_not_create_complete_path_and_align_names_match_phase(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -192,21 +192,37 @@ class VisualizationTests(unittest.TestCase):
             protocol = dict(seed=1, runs=1, episodes=3, fps=20)
             (root/"manifest.json").write_text(json.dumps(protocol))
             folder = root/"harvest_sand"/"run_00"; folder.mkdir(parents=True)
-            config = dict(seed=1, minedojo_gradle_offline=False)
+            config = dict(seed=1, minedojo_gradle_offline=False, search_eval_evidence=False)
             task = dict(LS_Imagine_specs={})
             sim = dict(world_seed="42", start_time=6000, allow_time_passage=False)
             (folder/"settings.json").write_text(json.dumps(dict(config=config, task_specs=task, sim_specs=sim)))
             args = SimpleNamespace(**protocol, reference_output=root, worker_episode=None,
                                    heatmap_mode="unet", a_control="checkpoint", c_control="checkpoint")
-            changed = dict(config, minedojo_gradle_offline=True)
+            changed = dict(config, minedojo_gradle_offline=True, search_eval_evidence=True)
             result = validate_reference(args, "harvest_sand", 0, changed,
                                         dict(task, minedojo_gradle_offline=True), sim)
             self.assertTrue(result["common_config_matches"])
             self.assertTrue(result["audit_only_differences"]["candidate"]["task"]["minedojo_gradle_offline"])
+            audit = result["audit_only_differences"]
+            self.assertFalse(audit["reference"]["config"]["search_eval_evidence"])
+            self.assertTrue(audit["candidate"]["config"]["search_eval_evidence"])
             with self.assertRaisesRegex(ValueError, "seed"):
                 validate_reference(args, "harvest_sand", 0, dict(changed, seed=2), task, sim)
             with self.assertRaisesRegex(ValueError, "sim_specs"):
                 validate_reference(args, "harvest_sand", 0, changed, task, dict(sim, world_seed="43"))
+
+    def test_evaluation_reaps_remaining_minecraft_processes_when_one_exits(self):
+        import psutil
+        from evaluate_checkpoints import reap_evaluation_process_tree
+
+        parent, live, exited = mock.Mock(), mock.Mock(), mock.Mock()
+        parent.children.return_value = [live, exited]
+        exited.terminate.side_effect = psutil.NoSuchProcess(42)
+        with mock.patch.object(psutil, "wait_procs", side_effect=[([parent, exited], [live]), ([live], [])]):
+            reap_evaluation_process_tree(parent)
+        parent.terminate.assert_called_once_with()
+        live.terminate.assert_called_once_with()
+        live.kill.assert_called_once_with()
 
     def test_standalone_eval_offline_launch_is_runtime_only(self):
         from types import SimpleNamespace
@@ -223,7 +239,8 @@ class VisualizationTests(unittest.TestCase):
 
     def test_standalone_eval_factory_respects_saved_flags_and_root(self):
         flags = dict(search_vnext_enabled=True, vnext_spatial_enabled=True,
-                     vnext_visual_enabled=True, vnext_visual_root="")
+                     vnext_visual_enabled=True, vnext_visual_root="",
+                     vnext_visual_map_all_eval_episodes=True)
         with mock.patch("apm.visualization.SearchVisualizer") as constructor:
             self.assertIsNone(create_search_visualizer({}, "unused"))
             self.assertIsNone(create_search_visualizer(dict(flags, vnext_spatial_enabled=False), "unused"))
@@ -231,6 +248,8 @@ class VisualizationTests(unittest.TestCase):
             constructor.assert_not_called()
             self.assertIs(create_search_visualizer(flags, Path("run")), constructor.return_value)
             self.assertEqual(constructor.call_args.args[0], Path("run"))
+            self.assertFalse(constructor.call_args.kwargs["scheduled_eval_maps"])
+            self.assertTrue(constructor.call_args.args[1]["vnext_visual_map_all_eval_episodes"])
             custom = dict(flags, vnext_visual_root="custom-visual-root")
             create_search_visualizer(custom, "ignored")
             self.assertEqual(constructor.call_args.args[0], Path("custom-visual-root"))
@@ -268,6 +287,64 @@ class VisualizationTests(unittest.TestCase):
         visualizer.episode_end.side_effect = OSError("plot error")
         with self.assertRaisesRegex(OSError, "plot error"):
             finish_search_visual_episode(visualizer, agent, state, terminal, "ep", episode, 100, 3, 3)
+
+    def test_maps_for_selected_eval_round_and_latest_complete_train_episode_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10,
+                                                     vnext_visual_map_all_eval_episodes=True))
+            try:
+                with mock.patch.object(viz, "_render_timeline"), mock.patch.object(viz, "_render_decision"), mock.patch.object(viz, "_render_outcomes"):
+                    self.assertIsNone(viz.episode_end("train", "prefill", dict(reward=[0, 0]), 0))
+                    self.assertIsNone(completed(viz, "train", "learned", 8))
+                    completed(viz, "eval", "ep_1", 10, eval_index=1, eval_total=3)
+                    viz.episode_end("eval", "no_trace", dict(reward=[0, 0]), 10,
+                                    eval_index=2, eval_total=3)
+                    completed(viz, "eval", "ep_3", 10, eval_index=3, eval_total=3)
+                    viz.maybe_export_train(10)
+                    self.assertIsNone(completed(viz, "train", "between_intervals", 16))
+                    for index in (1, 2, 3):
+                        self.assertIsNone(completed(viz, "eval", f"skipped_{index}", 15,
+                                                    eval_index=index, eval_total=3))
+                    viz.close()
+                eval_round = viz.root/"eval/step_000000010"
+                for index in (1, 2):
+                    self.assertEqual({p.name for p in (eval_round/f"episode_{index:02d}").iterdir()},
+                                     {"B_map.png"})
+                self.assertTrue((eval_round/"episode_03/summary.json").is_file())
+                self.assertFalse((viz.root/"eval/step_000000015").exists())
+                self.assertEqual(len(list((viz.root/"eval").glob("**/B_map.png"))), 3)
+                train = viz.root/"train/step_000000010/episode_last"
+                self.assertEqual(list((viz.root/"train").glob("**/B_map.png")), [train/"B_map.png"])
+                self.assertEqual(json.loads((train/"summary.json").read_text())["episode_id"], "learned")
+                self.assertFalse((viz.root/"B_episodes").exists())
+                self.assertEqual(viz.stats["map_exports"], 2)
+                self.assertEqual(viz.stats["map_errors"], 0)
+                with Image.open(eval_round/"episode_02/B_map.png") as blank, Image.open(train/"B_map.png") as route:
+                    self.assertEqual(blank.size, (1200, 840))
+                    self.assertEqual(blank.size, route.size)
+            finally:
+                viz.close()
+
+    def test_b_map_uses_fixed_square_panel_and_a_minimum_world_span(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_map_min_span=24.))
+            for i in range(2):
+                viz.observe("eval", "scale", *fixture(i), 100)
+            with mock.patch.object(viz, "_render") as render:
+                path = viz.episode_end("eval", "scale", dict(reward=[0, 0, 0]), 100,
+                                       eval_index=1, eval_total=1)
+            snap = render.call_args.args[0]
+            bounds = []
+            for span in (0.2, 80.):
+                snap["rows"][-1]["pose"][:2] = [span, 0.]
+                with mock.patch.object(viz, "_save") as save:
+                    viz._render_map(snap, path/"B_map.png")
+                ax = save.call_args.args[0].axes[0]
+                width, height = np.diff(ax.get_xlim()).item(), np.diff(ax.get_ylim()).item()
+                self.assertAlmostEqual(width, height)
+                self.assertGreaterEqual(width, max(24., span))
+                bounds.append(ax.get_position().bounds)
+            np.testing.assert_allclose(*bounds)
 
     def test_eval_only_last_and_real_complete_png_suite(self):
         with tempfile.TemporaryDirectory() as directory:

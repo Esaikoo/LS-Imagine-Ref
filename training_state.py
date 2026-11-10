@@ -155,6 +155,7 @@ def validate_goal_checkpoint(checkpoint, values, *, evaluation=False):
         values["goal_ref_enabled"] = enabled
         if enabled:
             values["goal_ref_border_padding"] = saved.get("goal_ref_border_padding", "zeros")
+            values["goal_guidance_revision"] = saved.get("goal_guidance_revision", 1)
             values.update(search_eval_evidence=False, vnext_visual_audit=False,
                           check_obs_enabled=False)
     elif (enabled != bool(values.get("goal_ref_enabled", False))
@@ -315,6 +316,7 @@ def prepare_resume(config):
         restored["vnext_pose_loss_version"] = saved.get("vnext_pose_loss_version", 1)
     if saved.get("goal_ref_enabled"):
         restored["goal_ref_border_padding"] = saved.get("goal_ref_border_padding", "zeros")
+        restored["goal_guidance_revision"] = saved.get("goal_guidance_revision", 1)
     for key, metadata in (("search_a_model_version", "search_a_version"),
                           ("search_b_model_version", "search_b_version"),
                           ("search_c_model_version", "search_c_version"),

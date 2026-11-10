@@ -29,6 +29,7 @@ GOAL_LABEL_SHAPES = {
     "goal_instance_group": (GOAL_GRID, GOAL_GRID, 1),
     "goal_visible_gt": (), "goal_visible_valid": (),
     "goal_interaction_outcome": (), "goal_interaction_valid": (),
+    "goal_inventory_transition_valid": (),
     "goal_label_version": (), "goal_holdout": (),
 }
 GOAL_LABEL_DTYPES = dict.fromkeys(GOAL_LABEL_SHAPES, np.uint8)
@@ -550,6 +551,7 @@ class SearchEvidenceWrapper(gym.Wrapper):
                                                          for k in ("attack", "use"))
             labels["goal_interaction_outcome"] = np.uint8(gain or success_now)
             labels["goal_interaction_valid"] = np.uint8(gain or success_now or (interact and known_inventory))
+            labels["goal_inventory_transition_valid"] = np.uint8(known_inventory)
             if labels["goal_interaction_valid"]:
                 labels["goal_label_version"] = np.uint8(GOAL_LABEL_VERSION)
             self._goal_succeeded = succeeded or self._goal_succeeded

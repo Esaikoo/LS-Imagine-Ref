@@ -1,15 +1,19 @@
 """Bounded, inference-independent exports of real search decisions.
 
 The collector never changes observations, rewards, RNGs, model state or actions.
-Only a few RGB/heatmap/patch snapshots are retained. Rendering is synchronous at
-selected completed episodes, using Agg figures without changing pyplot state.
+Only a few RGB/heatmap/patch snapshots are retained. Selected episode suites
+render with Agg, and optional map-only exports run in a bounded CPU worker.
 """
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import tempfile
+from threading import Lock
 
 import numpy as np
 
@@ -116,7 +120,7 @@ class SearchVisualizer:
     decision. feedback runs AFTER the corresponding real step. Episode metadata
     may contain privileged audit labels, consumed only after the episode ends.
     """
-    def __init__(self, root, config):
+    def __init__(self, root, config, *, scheduled_eval_maps=True):
         self.config = config
         self.enabled = bool(_get(config, "vnext_visual_enabled", True))
         self.interval = int(_get(config, "vnext_visual_every", 10000))
@@ -129,14 +133,26 @@ class SearchVisualizer:
         task = str(_get(config, "task", "task")).replace("/", "_").replace("\\", "_")
         self.root = Path(root) / "visualizations" / task
         self.strict = bool(_get(config, "vnext_visual_strict", True))
+        self._all_eval_maps = (self.enabled and scheduled_eval_maps and
+                               bool(_get(config, "vnext_visual_map_all_eval_episodes", False)))
+        self.map_min_span = float(_get(config, "vnext_visual_map_min_span", 24.))
+        if not math.isfinite(self.map_min_span) or self.map_min_span <= 0.:
+            raise ValueError("vnext_visual_map_min_span must be positive and finite")
+        self._map_executor = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="B-map")
+                              if self._all_eval_maps else None)
+        self._map_jobs = deque()
+        self._render_lock = Lock()
         self._active = {}
         self._partial_prefixes = set()
         self._latest_train = None
         self._last_exported_train_id = None
         self._next_train = self.interval
+        self._next_eval = 0
+        self._last_eval_step = None
+        self._eval_selected = False
         self.closed = False
         self.stats = dict(exports=0, errors=0, skipped_no_episode=0, skipped_duplicate=0,
-                          incomplete_resets=0, skipped_partial_prefix=0)
+                          incomplete_resets=0, skipped_partial_prefix=0, map_exports=0, map_errors=0)
         self.last_error = None
 
     def set_goal_bank(self, bank):
@@ -154,7 +170,21 @@ class SearchVisualizer:
 
     def set_step(self, step):
         """Start/resume at a real training step; never fabricate past exports."""
-        self._next_train = (max(0, int(step)) // self.interval + 1) * self.interval
+        step = max(0, int(step))
+        self._next_train = (step // self.interval + 1) * self.interval
+        self._next_eval = ((step + self.interval - 1) // self.interval) * self.interval
+        self._last_eval_step = None
+        self._eval_selected = False
+
+    def _scheduled_eval(self, step):
+        # Keep the same decision across the whole round. If eval and visualization
+        # intervals differ, select the first real evaluation at or after a threshold.
+        if step != self._last_eval_step:
+            self._last_eval_step = step
+            self._eval_selected = step >= self._next_eval
+            if self._eval_selected:
+                self._next_eval = (step // self.interval + 1) * self.interval
+        return self._eval_selected
 
     def _open(self):
         if self.closed:
@@ -347,21 +377,59 @@ class SearchVisualizer:
         key = (mode, str(env_id))
         self._partial_prefixes.discard(key)
         ep = self._active.pop(key, None)
-        if not self.enabled or ep is None or not ep.rows:
+        complete_trace = ep is not None and bool(ep.rows)
+        if not self.enabled:
             return None
-        if mode == "eval" and (eval_index is None or eval_total is None):
-            raise ValueError("Evaluation visualization needs 1-based index and total")
-        if mode == "eval" and int(eval_index) != int(eval_total):
-            return None
-        snap = self._complete(ep, episode, env_id, training_step, map_state)
         if mode == "train":
+            if not complete_trace:
+                return None
+            snap = self._complete(ep, episode, env_id, training_step, map_state)
             # A threshold strictly before this completion uses the PREVIOUS
             # complete episode; a completion exactly at the threshold may use it.
             self.maybe_export_train(int(training_step)-1)
             self._latest_train = snap
             return self.maybe_export_train(training_step)
+        if eval_index is None or eval_total is None:
+            raise ValueError("Evaluation visualization needs 1-based index and total")
+        if self._all_eval_maps and not self._scheduled_eval(int(training_step)):
+            return None
+        last = int(eval_index) == int(eval_total)
+        if not self._all_eval_maps and not (last and complete_trace):
+            return None
         path = self.root / "eval" / ("step_%09d" % training_step) / ("episode_%02d" % eval_index)
-        return self._export(snap, path, training_step, "eval")
+        if last and complete_trace:
+            snap = self._complete(ep, episode, env_id, training_step, map_state)
+            return self._export(snap, path, training_step, "eval")
+        # A selected evaluation with no complete trace still gets a status map.
+        # Do not use a partial trace or its terminal position as map geometry.
+        snap = (self._complete(ep, episode, env_id, training_step, map_state) if complete_trace else
+                self._complete(_Episode(), episode, env_id, training_step, None))
+        self._queue_episode_map(snap, path / "B_map.png")
+        return None
+
+    def _queue_episode_map(self, snap, path):
+        # Keep at most four outstanding CPU snapshots. Normal rollouts take
+        # far longer than a render. If the writer falls behind, preserve every
+        # episode with backpressure instead of growing memory or dropping maps.
+        while self._map_jobs and (self._map_jobs[0].done() or len(self._map_jobs) >= 4):
+            self._map_jobs.popleft().result()
+        map_snapshot = {key: snap[key] for key in ("summary", "rows", "map_state", "terminal_pose")}
+        self._map_jobs.append(self._map_executor.submit(self._export_episode_map, map_snapshot, path))
+
+    def _export_episode_map(self, snap, path):
+        if path.is_file():
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix=".map-", dir=path.parent) as tmp:
+                pending = Path(tmp) / path.name
+                with self._render_lock:
+                    self._render_map(snap, pending)
+                os.replace(pending, path)
+            self.stats["map_exports"] += 1
+        except Exception as error:
+            self.stats["map_errors"] += 1
+            print(f"[search visualization] episode map failed: {path} ({error})", file=sys.stderr, flush=True)
 
     def maybe_export_train(self, training_step):
         self._open()
@@ -393,7 +461,8 @@ class SearchVisualizer:
         predicted = [r["step"] for r in ep.rows if r["visible"] >= .7]
         revision = int(_get(self.config, "vnext_spatial_fix_version", 0))
         state_fields = map_state if map_state is not None else {}
-        positions = np.asarray([r["pose"][:2] for r in ep.rows], dtype=float)
+        positions = np.asarray([r["pose"][:2] for r in ep.rows], dtype=float).reshape(-1, 2)
+        last_row = ep.rows[-1] if ep.rows else {}
         terminal_pose = _array(state_fields.get("pose"))
         if terminal_pose is not None:
             terminal_pose = terminal_pose.reshape(-1)
@@ -402,9 +471,9 @@ class SearchVisualizer:
             terminal_pose = terminal_pose[:4].copy()
         include_terminal = terminal_pose is not None and ep.omitted_rows == 0
         local_terminal = bool(_scalar(state_fields, "local_tracking_ready",
-                                      _scalar(state_fields, "tracking_ready", ep.rows[-1]["local_ready"])))
+                                      _scalar(state_fields, "tracking_ready", last_row.get("local_ready", False))))
         continuity_key = "trajectory_valid" if revision >= 3 else "tracking_ready"
-        terminal_tracking_ready = bool(_scalar(state_fields, continuity_key, ep.rows[-1]["pose_ready"]))
+        terminal_tracking_ready = bool(_scalar(state_fields, continuity_key, last_row.get("pose_ready", False)))
         if revision >= 3:
             terminal_tracking_ready &= local_terminal
         localized_fraction = ep.localized_steps/max(1, ep.pose_steps)
@@ -412,7 +481,7 @@ class SearchVisualizer:
         available = np.asarray([row["pose_ready"] for row in ep.rows], bool)
         local_available = np.asarray([row["local_ready"] for row in ep.rows], bool)
         segments = np.asarray([row["segment"] for row in ep.rows], int)
-        active_segment = int(_scalar(state_fields, "active_segment", segments[-1]))
+        active_segment = int(_scalar(state_fields, "active_segment", last_row.get("segment", 0)))
         if include_terminal:
             positions = np.concatenate((positions, terminal_pose[None, :2]), axis=0)
             available = np.r_[available, terminal_tracking_ready]
@@ -428,14 +497,12 @@ class SearchVisualizer:
             moves = local_available[:-1] & local_available[1:] & (segments[:-1] == segments[1:])
             moving_segments = np.unique(segments[1:][moves & (lengths > 1.e-6)])
             available_segments = segments[local_available]
-            if active_segment in moving_segments:
-                rendered_segment = active_segment
-            elif len(moving_segments):
-                # A late fragment may cover only centimetres. Show the widest
-                # earlier qualified segment when the current one has no route.
+            if len(moving_segments):
+                # Prefer the widest qualified route over a nearly stationary
+                # terminal fragment. Keep separate coordinate frames intact.
                 rendered_segment = max(map(int, moving_segments), key=lambda segment: (
                     np.linalg.norm(np.ptp(positions[local_available & (segments == segment)], axis=0)),
-                    segment))
+                    segment == active_segment, segment))
             elif active_segment in available_segments:
                 rendered_segment = active_segment
             elif len(available_segments):
@@ -491,7 +558,8 @@ class SearchVisualizer:
             pose_qualification=state_fields.get("pose_qualification"),
             persistent_memory_available=bool(map_state.get("memory_available",False)) if map_state else False,
             history_slots_retained=(int(np.asarray(map_state.get("history_valid",[])).sum()) if map_state else 0),
-            memory_available_fraction=float(np.mean([r.get("memory_available",False) for r in ep.rows])),
+            memory_available_fraction=(sum(r.get("memory_available", False) for r in ep.rows) /
+                                       max(1, len(ep.rows))),
             map_scope=("single qualified local segment; disconnected history retained separately"
                        if revision>=3 else "episode-origin map"),
             pose_gap_count=max(max((row["pose_gap_count"] for row in ep.rows), default=0), terminal_gap),
@@ -554,7 +622,8 @@ class SearchVisualizer:
             path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix=".render-", dir=path.parent) as tmp:
                 tmp = Path(tmp)
-                self._render(snap, tmp)
+                with self._render_lock:
+                    self._render(snap, tmp)
                 summary = dict(snap["summary"], mode=mode, export_training_step=int(training_step),
                                repeated_complete_episode=bool(repeated),
                                episode_age_at_export_steps=int(training_step)-snap["summary"]["episode_completed_at_training_step"],
@@ -644,8 +713,8 @@ class SearchVisualizer:
         return fig
 
     @staticmethod
-    def _save(fig, path):
-        fig.savefig(path, dpi=120, bbox_inches="tight", facecolor="white")
+    def _save(fig, path, *, tight=True):
+        fig.savefig(path, dpi=120, bbox_inches="tight" if tight else None, facecolor="white")
         fig.clear()
 
     def _render(self, snap, folder):
@@ -667,11 +736,11 @@ class SearchVisualizer:
         from matplotlib import patheffects
         from matplotlib.collections import PatchCollection
         from matplotlib.patches import Rectangle
-        fig = self._figure((11, 7))
-        layout = fig.add_gridspec(1, 2, width_ratios=(3., 1.), left=.10, right=.97,
-                                  top=.84, bottom=.20, wspace=.10)
-        ax = fig.add_subplot(layout[0])
-        sidebar = fig.add_subplot(layout[1])
+        fig = self._figure((10, 7))
+        # Fix the physical panel to 4.55 × 4.55 inches. Both data axes
+        # share the same span so a cell and a metre have consistent scale.
+        ax = fig.add_axes([.12, .18, .455, .65])
+        sidebar = fig.add_axes([.64, .18, .33, .65])
         sidebar.set_axis_off()
         ax.set_facecolor("#ecedef")
         state = snap["map_state"]
@@ -679,7 +748,7 @@ class SearchVisualizer:
         segmented = summary["spatial_fix_version"] >= 3
         segment = summary.get("rendered_segment") if segmented else None
         prior_segment = segmented and segment is not None and segment != summary["active_segment"]
-        poses = np.asarray([r["pose"] for r in snap["rows"]], float)
+        poses = np.asarray([r["pose"] for r in snap["rows"]], float).reshape(-1, 4)
         if segmented:
             available = np.asarray([r["local_ready"] and r["segment"] == segment for r in snap["rows"]], bool)
             terminal_valid = summary["local_tracking_ready"] and segment == summary["active_segment"]
@@ -694,9 +763,12 @@ class SearchVisualizer:
         if not has_pose:
             ax.text(.5, .60, "UNLOCALIZED", ha="center", va="center",
                     fontsize=15, weight="bold", transform=ax.transAxes)
-            ax.text(.5, .51, "No qualified position estimates in this episode.\n"
-                    "Visual history is shown separately when available.",
+            message = ("No qualified positions in this episode." if len(poses) else
+                       "No complete B trace for this episode.")
+            ax.text(.5, .51, message + "\nVisual history is shown when available.",
                     ha="center", va="center", fontsize=9, transform=ax.transAxes)
+            ax.set_xlim(-self.map_min_span/2, self.map_min_span/2)
+            ax.set_ylim(-self.map_min_span/2, self.map_min_span/2)
             ax.set_xticks([]); ax.set_yticks([])
             diagnostic = summary.get("pose_qualification")
             if diagnostic is not None:
@@ -720,7 +792,7 @@ class SearchVisualizer:
             # Only cells from the selected coordinate frame share its origin.
             ledger = None if state is None else state.get("ledger")
             bounds = [poses[available,:2]]
-            resolution = 1. if state is None else float(state.get("resolution", 1.))
+            resolution = float((state or {}).get("resolution", _get(self.config, "vnext_map_resolution", 1.5)))
             if ledger is not None:
                 goal_evidence = np.asarray(ledger.get("goal_evidence", []), dtype=float).reshape(-1, 5)
                 cells = np.asarray(ledger.get("cells", []), dtype=float).reshape(-1, 2)
@@ -754,33 +826,28 @@ class SearchVisualizer:
             first, last = poses[available][[0, -1]]
             x, z, yaw = last[:3]
 
-            def draw_route(axis, extent, margin):
-                axis.plot(drawn[:, 0], drawn[:, 1], color="#284d7a", linewidth=1.5, zorder=3,
-                          path_effects=[patheffects.withStroke(linewidth=2.8, foreground="#edf4fa")])
-                axis.scatter(first[0], first[1], marker="*", s=46, color="#bc5149",
-                             edgecolors="white", linewidths=.4, zorder=4)
-                scale = (float(np.ptp(extent, axis=0).max()) + 2.*margin)*.045
-                axis.arrow(x, z, -math.sin(yaw)*scale, math.cos(yaw)*scale,
-                           width=scale*.08, head_width=scale*.50, color="#1765b0", zorder=5)
-                axis.set_xlim(extent[:, 0].min()-margin, extent[:, 0].max()+margin)
-                axis.set_ylim(extent[:, 1].min()-margin, extent[:, 1].max()+margin)
-                axis.set_aspect("equal", adjustable="box")
-
             xy = np.concatenate(bounds, axis=0)
-            span = float(np.ptp(xy, axis=0).max())
-            route = poses[available, :2]
-            route_span = float(np.ptp(route, axis=0).max())
-            margin = max(.65*resolution, span*.10)
-            draw_route(ax, xy, margin)
+            lower, upper = xy.min(axis=0), xy.max(axis=0)
+            center = (lower + upper) / 2.
+            data_span = float((upper - lower).max())
+            margin = max(resolution, data_span*.08)
+            span = max(self.map_min_span, data_span + 2.*margin)
+            ax.set_xlim(center[0]-span/2., center[0]+span/2.)
+            ax.set_ylim(center[1]-span/2., center[1]+span/2.)
+            ax.set_aspect("equal", adjustable="box")
+            ax.plot(drawn[:, 0], drawn[:, 1], color="#284d7a", linewidth=1.5, zorder=3,
+                    path_effects=[patheffects.withStroke(linewidth=2.8, foreground="#edf4fa")])
+            ax.scatter(first[0], first[1], marker="*", s=46, color="#bc5149",
+                       edgecolors="white", linewidths=.4, zorder=4)
+            arrow = (-math.sin(yaw)*13., math.cos(yaw)*13.)
+            ax.annotate("", xy=(x, z), xytext=(-arrow[0], -arrow[1]), textcoords="offset points",
+                        arrowprops=dict(arrowstyle="-|>", color="#1765b0", lw=1.5,
+                                        shrinkA=0, shrinkB=0), zorder=5)
+            sidebar.text(0., .25, f"View width: {span:.1f} m  |  Cell: {resolution:.2g} m",
+                         fontsize=8, color="#536477")
             label_prefix = "Local-segment" if segmented else "Episode-relative"
             ax.set_xlabel(label_prefix+" x (estimated metres)")
             ax.set_ylabel(label_prefix+" z (estimated metres)")
-            if 1.e-6 < route_span < (span + 2.*margin)/3.:
-                detail = sidebar.inset_axes([.12, .30, .83, .35])
-                detail.set_facecolor("#ecedef")
-                detail.set_title("Route detail (metres)", fontsize=9, pad=6)
-                detail.tick_params(labelsize=7)
-                draw_route(detail, route, max(.015, route_span*.16))
             handles = [Line2D([], [], marker="s", linestyle="", color=c, label=t) for c, t in
                        (("#ecedef", "unknown"), ("#c0d3dd", "directional observation proxy"),
                         ("#486987", "visited"), ("#203e5a", "repeat visits"),
@@ -835,7 +902,7 @@ class SearchVisualizer:
                       "Unlocalized movement remains unknown. Target marks denote observation viewpoints." %
                       (100*summary["localized_fraction"], summary["unlocalized_steps"]))
         fig.text(.08, .02, footer, fontsize=8)
-        self._save(fig, path)
+        self._save(fig, path, tight=False)
 
     def _render_timeline(self, snap, path):
         from matplotlib.colors import ListedColormap
@@ -1182,8 +1249,10 @@ class SearchVisualizer:
         self._save(fig, path)
 
     def close(self):
-        # Synchronous rendering has no pending jobs. Do not export an incomplete
-        # episode or synthesize a final training threshold during shutdown.
+        # Flush maps for completed episodes. An unfinished episode has no export.
+        if self._map_executor is not None:
+            self._map_executor.shutdown(wait=True)
+            self._map_jobs.clear()
         self._active.clear()
         self._partial_prefixes.clear()
         self._latest_train = None
