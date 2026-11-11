@@ -17,7 +17,8 @@ from torch import nn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import tools
 from training_state import (prepare_resume, restore_training_state,
-                            write_resume_manifest, save_training_checkpoint)
+                            write_resume_manifest, save_training_checkpoint,
+                            CODE_VERSION, capture_code_provenance, write_code_provenance)
 
 
 class Scaler:
@@ -117,6 +118,48 @@ def replay(path, identity, steps):
 
 
 class TrainingStateTests(unittest.TestCase):
+    def test_code_provenance_records_actual_revision_and_dirty_tree(self):
+        with mock.patch("training_state.subprocess.check_output", side_effect=[
+                b"1234567abcdef\n", b" M configs.yaml\0?? apm/new.py\0", b"tracked changes"]):
+            record = capture_code_provenance(config("unused", vnext_pose_loss_version=3,
+                                                    goal_guidance_revision=1))
+        self.assertEqual(record["code_version"], CODE_VERSION)
+        self.assertEqual(record["git_commit"], "1234567abcdef")
+        self.assertTrue(record["git_dirty"])
+        self.assertEqual(record["algorithm_revisions"]["vnext_pose_loss_version"], 3)
+        self.assertEqual(record["tracked_diff_sha256"], hashlib.sha256(b"tracked changes").hexdigest())
+        self.assertEqual(record["worktree_status"], [" M configs.yaml", "?? apm/new.py"])
+
+    def test_code_provenance_without_git_is_explicitly_unknown(self):
+        with mock.patch("training_state.subprocess.check_output", side_effect=FileNotFoundError):
+            record = capture_code_provenance(config("unused"))
+        self.assertIsNone(record["git_commit"])
+        self.assertIsNone(record["git_dirty"])
+        self.assertEqual(record["git_capture_error"], "FileNotFoundError")
+
+    def test_provenance_manifest_does_not_overwrite_or_relabel_resume_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(directory)
+            record = dict(code_version=CODE_VERSION, git_commit="new", git_dirty=False)
+            saved = write_code_provenance(cfg, record, dict(step=17,
+                code_provenance=dict(code_version="VN4R1", git_commit="old")))
+            self.assertNotIn("resume_source", record)
+            self.assertEqual(saved["resume_source"], dict(code_version="VN4R1", git_commit="old", step=17))
+            self.assertEqual(json.loads((Path(directory)/"code_provenance.json").read_text()), saved)
+            with self.assertRaises(FileExistsError):
+                write_code_provenance(cfg, record)
+
+    def test_checkpoint_keeps_startup_provenance_without_rereading_git(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, agent, _ = self.fixture(Path(directory)/"source")
+            record = dict(code_version="VN4R3", git_commit="startup", git_dirty=True)
+            agent._code_provenance = record
+            with mock.patch("training_state.subprocess.check_output", side_effect=AssertionError("Git changed during training")):
+                path = save_training_checkpoint(agent, cfg, 100000)
+            checkpoint = torch.load(path, map_location="cpu")
+            self.assertEqual(checkpoint["code_provenance"], record)
+            self.assertEqual(checkpoint["step"], agent._step)
+
     def fixture(self, directory, steps=7):
         cfg = config(directory)
         cfg.traindir.mkdir(parents=True)

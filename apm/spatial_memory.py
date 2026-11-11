@@ -533,6 +533,15 @@ class SpatialMapMemory(nn.Module):
                 confident_static = static_confidence & (raw_motion <= MIN_TRANSLATION)
                 pair_motion_known = (supported | confident_static) & known_control
                 motion_unknown = valid & ~pair_motion_known
+                if self.fix_version >= 3 and getattr(self.config, "vnext_visual_enabled", False):
+                    # Preview the same per-pair evidence before the global pose
+                    # qualification masks the displacement used by memory.
+                    preview_pair = torch.where(supported, 2, confident_static.long())
+                    preview_pair = torch.where(valid & known_control, preview_pair, 0)
+                    preview_delta = torch.cat((
+                        torch.where((preview_pair == 2)[:, None], delta[:, :2], 0.),
+                        (control[:, 8] * (math.pi / 180.))[:, None],
+                    ), dim=-1)
                 # Count loss of a previously continuous segment once, not every
                 # unknown warm-up pair before localization ever began.
                 lost = (motion_unknown & was_tracking) | qualification_lost
@@ -708,6 +717,9 @@ class SpatialMapMemory(nn.Module):
                 log_spatial_pose_model_ready=torch.full_like(u, pose_model_ready),
                 log_spatial_memory_available=state["history_valid"].any(-1).float(),
                 log_spatial_visual_revisit=history_repeated.float())
+        if self.fix_version >= 3 and getattr(self.config, "vnext_visual_enabled", False):
+            info.update(log_spatial_preview_delta=preview_delta,
+                        log_spatial_preview_pair=preview_pair)
         if goal is not None:
             info.update(log_goal_memory=goal_memory, log_goal_direction_novelty=
                         self.goal_direction_novelty(state, directions, map_write))

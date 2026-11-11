@@ -98,6 +98,64 @@ def _map_rgb(grid):
     return out
 
 
+def _pose_preview_pair(mapping, prefix=""):
+    """Decode a pair for plotting without assigning a location to unknown steps."""
+    status_key = prefix + "preview_pair"
+    if status_key not in mapping:
+        return None
+    status = _scalar(mapping, status_key)
+    delta = _array(mapping.get(prefix + "preview_delta"), []).reshape(-1)
+    if status not in (1., 2.) or len(delta) != 3 or not np.isfinite(delta).all():
+        return 0, (0., 0., 0.)
+    dx, dz, yaw = map(float, delta)
+    return int(status), (dx if status == 2. else 0., dz if status == 2. else 0., yaw)
+
+
+def _pose_preview_route(samples):
+    """Use the widest moving fragment with a separate origin for each gap."""
+    counts = np.zeros(3, dtype=int)
+    fragments = []
+    route = []
+    start = None
+    last_step = None
+    for step, pair in samples:
+        if pair is not None:
+            counts[pair[0]] += 1
+        if pair is None or pair[0] == 0 or (route and step != last_step + 1):
+            if route:
+                fragments.append((start, last_step, route))
+            route = []
+        if pair is None or pair[0] == 0:
+            continue
+        if not route:
+            route = [(0., 0., 0.)]
+            start = step - 1
+        dx, dz, dyaw = pair[1]
+        x, z, yaw = route[-1]
+        cos, sin = math.cos(yaw), math.sin(yaw)
+        route.append((x + cos*dx - sin*dz, z + sin*dx + cos*dz, yaw + dyaw))
+        last_step = step
+    if route:
+        fragments.append((start, last_step, route))
+    if not counts.any():
+        return None
+    report = dict(unknown_pairs=int(counts[0]), static_pairs=int(counts[1]),
+                  translation_pairs=int(counts[2]), fragments=len(fragments),
+                  moving_fragments=0, selected_steps=None, selected_extent_m=None)
+    moving = []
+    for start, end, points in fragments:
+        points = np.asarray(points)
+        extent = np.ptp(points[:, :2], axis=0)
+        if extent.max() > 1.e-6:
+            moving.append((float(np.linalg.norm(extent)), start, end, extent, points))
+    report["moving_fragments"] = len(moving)
+    route = None
+    if moving:
+        _, start, end, extent, route = max(moving, key=lambda item: (item[0], item[2]-item[1]))
+        report.update(selected_steps=[start, end], selected_extent_m=extent.tolist())
+    return dict(report=report, route=route)
+
+
 @dataclass
 class _Episode:
     rows: list = field(default_factory=list)
@@ -237,6 +295,10 @@ class SearchVisualizer:
         ep.localized_steps += int(pose_ready)
         ep.local_tracking_steps += int(local_ready)
         phase = int(_scalar(policy_output, "log_vnext_phase"))
+        preview_pair = None if first else _pose_preview_pair(policy_output, prefix="log_spatial_")
+        if preview_pair is not None and (_scalar(obs, "log_env_error") > .5 or
+                _scalar(obs, "log_actuator_valid", 1.) < .5):
+            preview_pair = 0, (0., 0., 0.)
         row = dict(step=index, phase=phase, option=option,
                    actor=int(_scalar(policy_output, "log_vnext_actor_action")),
                    source=int(_scalar(policy_output, "log_vnext_source", -1)),
@@ -244,7 +306,7 @@ class SearchVisualizer:
                    visible=visible, pose=pose.tolist(), pose_ready=pose_ready, reward=0., success=False,
                    pose_gap_count=int(_scalar(policy_output,"log_spatial_pose_gap_count")),
                    segment=int(_scalar(policy_output,"log_spatial_segment")),
-                   local_ready=local_ready,
+                   local_ready=local_ready, preview_pair=preview_pair,
                    pose_model_ready=(bool(_scalar(policy_output, "log_spatial_pose_model_ready"))
                                      if "log_spatial_pose_model_ready" in policy_output else None),
                    memory_available=bool(_scalar(policy_output,"log_spatial_memory_available")),
@@ -413,7 +475,7 @@ class SearchVisualizer:
         # episode with backpressure instead of growing memory or dropping maps.
         while self._map_jobs and (self._map_jobs[0].done() or len(self._map_jobs) >= 4):
             self._map_jobs.popleft().result()
-        map_snapshot = {key: snap[key] for key in ("summary", "rows", "map_state", "terminal_pose")}
+        map_snapshot = {key: snap[key] for key in ("summary", "rows", "map_state", "terminal_pose", "pose_preview")}
         self._map_jobs.append(self._map_executor.submit(self._export_episode_map, map_snapshot, path))
 
     def _export_episode_map(self, snap, path):
@@ -600,6 +662,13 @@ class SearchVisualizer:
             candidate_prediction_count=len(ep.a),
             candidate_prediction_note=("computed action-conditioned predictions" if ep.a else
                                        "No eligible computed candidate prediction in this episode"))
+        preview_samples = [(r["step"], r["preview_pair"]) for r in ep.rows]
+        terminal_preview_pair = _pose_preview_pair(state_fields) if not ep.omitted_rows else None
+        if ep.rows and terminal_preview_pair is not None:
+            preview_samples.append((ep.rows[-1]["step"] + 1, terminal_preview_pair))
+        pose_preview = _pose_preview_route(preview_samples)
+        if pose_preview is not None:
+            summary["pose_preview"] = pose_preview["report"]
         # Ensure the final real decision is represented in the C explanations.
         if ep.last is not None and all(s["row"]["step"] != ep.last["row"]["step"] for s in ep.c):
             ep.c = ([ep.c[0]] if ep.c else []) + [ep.last]
@@ -612,7 +681,8 @@ class SearchVisualizer:
                 goal_conflict_mean=float(np.mean([r["goal_conflict"] for r in ep.rows])),
                 goal_keyframe=self._decision_json(ep.goal))
         return dict(summary=summary, rows=ep.rows, a=ep.a, c=ep.c, map_state=state,
-                    goal=ep.goal, terminal_pose=terminal_pose)
+                    goal=ep.goal, terminal_pose=terminal_pose, pose_preview=pose_preview,
+                    terminal_preview_pair=terminal_preview_pair)
 
     def _export(self, snap, path, training_step, mode, repeated=False):
         if (path / "summary.json").exists():
@@ -634,8 +704,17 @@ class SearchVisualizer:
                 rows = snap["rows"]
                 map_state = snap["map_state"] or {}
                 ledger = map_state.get("ledger", {})
+                preview_pairs = [r["preview_pair"] for r in rows]
+                terminal_preview_pair = snap["terminal_preview_pair"]
                 np.savez_compressed(tmp / "episode_trace.npz",
                     pose=np.asarray([r["pose"] for r in rows], np.float32),
+                    preview_pair=np.asarray([-1 if x is None else x[0] for x in preview_pairs], np.int8),
+                    preview_delta=np.asarray([(0., 0., 0.) if x is None else x[1]
+                                              for x in preview_pairs], np.float32).reshape(-1, 3),
+                    terminal_preview_pair=np.asarray(-1 if terminal_preview_pair is None
+                                                     else terminal_preview_pair[0], np.int8),
+                    terminal_preview_delta=np.asarray([] if terminal_preview_pair is None
+                                                      else terminal_preview_pair[1], np.float32),
                     pose_ready=np.asarray([r["pose_ready"] for r in rows], bool),
                     pose_gap_count=np.asarray([r["pose_gap_count"] for r in rows],np.int16),
                     segment=np.asarray([r["segment"] for r in rows],np.int32),
@@ -760,16 +839,48 @@ class SearchVisualizer:
             available = np.r_[available, terminal_valid]
         available &= np.isfinite(poses).all(-1)
         has_pose = bool(available.any())
+        preview = snap.get("pose_preview")
+        preview_route = preview["route"] if preview is not None else None
+        preview_report = preview["report"] if preview is not None else None
         if not has_pose:
-            ax.text(.5, .60, "UNLOCALIZED", ha="center", va="center",
-                    fontsize=15, weight="bold", transform=ax.transAxes)
-            message = ("No qualified positions in this episode." if len(poses) else
-                       "No complete B trace for this episode.")
-            ax.text(.5, .51, message + "\nVisual history is shown when available.",
-                    ha="center", va="center", fontsize=9, transform=ax.transAxes)
-            ax.set_xlim(-self.map_min_span/2, self.map_min_span/2)
-            ax.set_ylim(-self.map_min_span/2, self.map_min_span/2)
-            ax.set_xticks([]); ax.set_yticks([])
+            if preview_route is None:
+                ax.text(.5, .60, "UNLOCALIZED", ha="center", va="center",
+                        fontsize=15, weight="bold", transform=ax.transAxes)
+                message = ("No supported moving fragment in the recorded pairs." if preview_report else
+                           "No qualified positions in this episode." if len(poses) else
+                           "No complete B trace for this episode.")
+                ax.text(.5, .51, message + "\nVisual history is shown when available.",
+                        ha="center", va="center", fontsize=9, transform=ax.transAxes)
+                ax.set_xlim(-self.map_min_span/2, self.map_min_span/2)
+                ax.set_ylim(-self.map_min_span/2, self.map_min_span/2)
+                ax.set_xticks([]); ax.set_yticks([])
+            else:
+                xy = preview_route[:, :2]
+                center = (xy.min(axis=0) + xy.max(axis=0)) / 2.
+                # A fragment without map cells can use a closer view than the
+                # live grid. Keep a finite minimum span for very short paths.
+                span = max(2., float(np.ptp(xy, axis=0).max()) * 1.20)
+                ax.set_xlim(center[0]-span/2., center[0]+span/2.)
+                ax.set_ylim(center[1]-span/2., center[1]+span/2.)
+                ax.set_aspect("equal", adjustable="box")
+                ax.plot(*xy.T, color="#b56216", linewidth=1.8, linestyle="--")
+                ax.scatter(*xy[0], marker="*", s=60, color="#914714", zorder=4)
+                ax.scatter(*xy[-1], marker="o", s=25, color="#b56216", zorder=4)
+                ax.set_xlabel("Fragment-relative x (estimated metres)")
+                ax.set_ylabel("Fragment-relative z (estimated metres)")
+                steps = preview_report["selected_steps"]
+                sidebar.text(0., .38,
+                             f"Shown fragment: steps {steps[0]}–{steps[1]}\n"
+                             f"View width: {span:.1f} m",
+                             fontsize=8, color="#80511f")
+            if preview_report is not None:
+                sidebar.text(0., .63,
+                             "Observation pairs (entire recorded trace)\n"
+                             f"Translation: {preview_report['translation_pairs']}  "
+                             f"Static: {preview_report['static_pairs']}\n"
+                             f"Unknown: {preview_report['unknown_pairs']}  "
+                             f"Fragments: {preview_report['fragments']}",
+                             fontsize=8, va="top", linespacing=1.45, color="#80511f")
             diagnostic = summary.get("pose_qualification")
             if diagnostic is not None:
                 moving, static = diagnostic["moving_ratio"], diagnostic["static_p95"]
@@ -859,7 +970,8 @@ class SearchVisualizer:
             sidebar.legend(handles=route_handles + handles + goal_handles, loc="upper left",
                            fontsize=8, frameon=False, borderaxespad=0, labelspacing=.30)
         if not has_pose:
-            tracking_status = "no qualified map pose"
+            tracking_status = ("Unqualified pose preview" if preview_route is not None
+                               else "no qualified map pose")
         elif segmented:
             tracking_status = "segment %d (%s)" % (segment, "earlier qualified" if prior_segment else "current")
         else:
@@ -867,7 +979,8 @@ class SearchVisualizer:
         if segmented:
             tracking_status += " | persistent visual history: " + (
                 "active" if summary["persistent_memory_available"] else "unavailable")
-        extent = summary.get("rendered_segment_extent_m")
+        extent = (preview_report["selected_extent_m"] if not has_pose and preview_route is not None
+                  else summary.get("rendered_segment_extent_m"))
         detail_text = "" if extent is None else (
             " | %.2f × %.2f m estimated span" % tuple(extent) if max(extent) > 1.e-6
             else " | no estimated translation in this segment")
@@ -892,7 +1005,12 @@ class SearchVisualizer:
                 preview.set_yticks([])
                 preview.set_title("Observed RGB tokens (%d slots)" % summary["history_slots_retained"],
                                   fontsize=8)
-        if segmented:
+        if not has_pose and preview_route is not None:
+            footer = ("Dashed line shows a visual odometry estimate before qualification. It is for inspection only.\n"
+                      "Unknown motion splits fragments. Coordinates restart at the shown fragment.\n"
+                      "Local tracking: %.1f%% | continuous episode-origin tracking: %.1f%%" %
+                      (100*summary["local_tracking_fraction"], 100*summary["localized_fraction"]))
+        elif segmented:
             footer = ("Local tracking: %.1f%% | continuous episode-origin tracking: %.1f%%\n"
                       "Qualified local segments have separate origins.\n"
                       "Visual history stays active independently of pose. Target marks denote observation viewpoints." %

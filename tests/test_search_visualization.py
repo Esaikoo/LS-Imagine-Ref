@@ -100,6 +100,72 @@ class VisualizationTests(unittest.TestCase):
                 np.testing.assert_array_equal(data["history_frames"],state["history_frames"])
                 self.assertEqual(data["history_frames"].dtype,np.uint8)
 
+    def test_unqualified_preview_uses_separate_fragments_and_terminal_pair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
+            for i, (status, delta) in enumerate((
+                    (2, [8., 0., 0.]), (2, [.2, 0., 0.]), (2, [8., 0., 0.]),
+                    (1, [9., 9., np.pi/2]), (2, [.4, 0., 0.]))):
+                obs, output = fixture(i)
+                if i == 2:
+                    obs["log_env_error"] = 1
+                output.update(log_spatial_trajectory_valid=0., log_spatial_local_valid=0.,
+                              log_spatial_preview_pair=status, log_spatial_preview_delta=delta)
+                viz.observe("eval", "preview", obs, output, 100)
+            state = dict(grid=np.zeros((9, 9, 6)), pose=[0., 0., 0., .1],
+                         tracking_ready=False, local_tracking_ready=False, trajectory_valid=False,
+                         preview_pair=2, preview_delta=[.4, 0., 0.])
+            with mock.patch.object(viz, "_render") as render:
+                path = viz.episode_end("eval", "preview", dict(reward=np.zeros(6)), 100,
+                                       eval_index=1, eval_total=1, map_state=state)
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertIsNone(summary["rendered_segment"])
+            self.assertEqual(summary["local_tracking_fraction"], 0.)
+            self.assertFalse(summary["trajectory_length_valid"])
+            self.assertEqual(summary["pose_preview"]["selected_steps"], [2, 5])
+            self.assertEqual(summary["pose_preview"]["unknown_pairs"], 1)
+            self.assertEqual(summary["pose_preview"]["static_pairs"], 1)
+            self.assertEqual(summary["pose_preview"]["translation_pairs"], 3)
+            self.assertEqual(summary["pose_preview"]["moving_fragments"], 2)
+            with np.load(path/"episode_trace.npz", allow_pickle=False) as trace:
+                np.testing.assert_array_equal(trace["preview_pair"], [-1, 2, 0, 1, 2])
+                np.testing.assert_array_equal(trace["preview_delta"][3, :2], [0., 0.])
+                self.assertEqual(trace["terminal_preview_pair"], 2)
+            with mock.patch.object(viz, "_save") as save:
+                viz._render_map(render.call_args.args[0], path/"B_map.png")
+            ax = save.call_args.args[0].axes[0]
+            self.assertIn("Unqualified pose preview", ax.get_title())
+            self.assertEqual(ax.lines[0].get_linestyle(), "--")
+            self.assertEqual(len(ax.images), 0)
+            np.testing.assert_allclose(ax.lines[0].get_xdata(), [0., 0., 0., 0.], atol=1.e-7)
+            np.testing.assert_allclose(ax.lines[0].get_ydata(), [0., 0., .4, .8])
+            self.assertAlmostEqual(np.ptp(ax.get_xlim()), np.ptp(ax.get_ylim()))
+
+    def test_preview_without_supported_motion_reports_counts_without_a_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
+            for i in range(4):
+                obs, output = fixture(i)
+                if i == 2:
+                    obs["log_actuator_valid"] = 0
+                output.update(log_spatial_trajectory_valid=0., log_spatial_local_valid=0.,
+                              log_spatial_preview_pair=1, log_spatial_preview_delta=[0., 0., 0.])
+                viz.observe("eval", "static", obs, output, 100)
+            with mock.patch.object(viz, "_render") as render:
+                path = viz.episode_end("eval", "static", dict(reward=np.zeros(5)), 100,
+                                       eval_index=1, eval_total=1)
+            summary = json.loads((path/"summary.json").read_text())
+            self.assertEqual(summary["pose_preview"]["unknown_pairs"], 1)
+            self.assertEqual(summary["pose_preview"]["static_pairs"], 2)
+            self.assertEqual(summary["pose_preview"]["moving_fragments"], 0)
+            self.assertIsNone(summary["pose_preview"]["selected_steps"])
+            with mock.patch.object(viz, "_save") as save:
+                viz._render_map(render.call_args.args[0], path/"B_map.png")
+            ax = save.call_args.args[0].axes[0]
+            self.assertFalse(ax.lines)
+            self.assertTrue(any("No supported moving fragment" in x.get_text() for x in ax.texts))
+            self.assertTrue(any("Unknown: 1" in x.get_text() for x in save.call_args.args[0].axes[1].texts))
+
     def test_fix3_prefers_wider_qualified_segment_over_terminal_fragment(self):
         with tempfile.TemporaryDirectory() as directory:
             viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
@@ -108,7 +174,8 @@ class VisualizationTests(unittest.TestCase):
                 if i >= 2:
                     output["log_spatial_pose"][:2] = [(.01 if i == 3 else 0.), 0.]
                 output.update(log_spatial_trajectory_valid=float(i < 2),
-                              log_spatial_segment=i//2, log_spatial_local_valid=1.)
+                              log_spatial_segment=i//2, log_spatial_local_valid=1.,
+                              log_spatial_preview_pair=2, log_spatial_preview_delta=[.5, 0., 0.])
                 viz.observe("eval", "prior_segment", obs, output, 100)
             state = dict(grid=np.zeros((9,9,6)), pose=[0.,0.,0.,.1], resolution=1.,
                          tracking_ready=True, local_tracking_ready=True, trajectory_valid=False,

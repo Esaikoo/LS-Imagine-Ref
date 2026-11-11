@@ -482,15 +482,19 @@ def simulate(
         else:
             action = np.array(action)
         assert len(action) == len(envs)
+        live = np.flatnonzero(active)
         if visualizer is not None:
             repeat = getattr(getattr(base_agent,"_config",None),"action_repeat",1)
             before_step = int(logger.step) - (len(envs)*repeat if is_training else 0)
-            for i in np.flatnonzero(active):
-                if isinstance(action[i],dict):
+        for i in live:
+            if isinstance(action[i], dict):
+                if visualizer is not None:
                     visualizer.observe(visual_mode,envs[i].id,obs[i],action[i],before_step)
+                # Diagnostic pose estimates belong to the collector.
+                action[i].pop("log_spatial_preview_delta", None)
+                action[i].pop("log_spatial_preview_pair", None)
 
         # step envs
-        live = np.flatnonzero(active)
         pending = [envs[i].step(action[i]) for i in live]
         results = {i: future() for i, future in zip(live, pending)}
         if hasattr(base_agent, "observe_vnext_results"):

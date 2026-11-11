@@ -7,16 +7,19 @@ not reconstructed from old checkpoints.
 """
 import collections
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
 import random
 import re
+import subprocess
 
 import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
+CODE_VERSION = "VN4R3"
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
@@ -26,6 +29,44 @@ _CLOCKS = ("_should_train", "_should_log", "_should_reset")
 _SCALERS = ("_wm._model_opt", "_wm._a_opt", "_task_behavior._actor_opt",
             "_task_behavior._value_opt", "_search_c._actor_opt", "_search_c._value_opt",
             "_vnext._a_opt", "_vnext._b_opt", "_vnext_control._q_opt")
+
+
+def capture_code_provenance(config, project_root=None):
+    """Capture startup identity once; it must not follow later Git pulls."""
+    root = Path(project_root) if project_root is not None else Path(__file__).resolve().parent
+    record = dict(code_version=CODE_VERSION, git_commit=None, git_dirty=None,
+                  tracked_diff_sha256=None, worktree_status=[], capture="startup",
+                  algorithm_revisions={key: getattr(config, key, None) for key in (
+                      "vnext_spatial_fix_version", "vnext_pose_loss_version",
+                      "goal_guidance_revision", "goal_ref_version")})
+    def git(*args):
+        return subprocess.check_output(["git", "--no-optional-locks", "-C", str(root), *args],
+                                       stderr=subprocess.DEVNULL, timeout=10)
+    try:
+        record["git_commit"] = git("rev-parse", "HEAD").decode().strip()
+        status = git("status", "--porcelain=v1", "-z", "--untracked-files=normal")
+        record["git_dirty"] = bool(status)
+        record["worktree_status"] = [item for item in status.decode(errors="replace").split("\0") if item]
+        # Store a digest, never source text or credentials. Untracked paths are
+        # declared above, but their contents are not claimed to be snapshotted.
+        record["tracked_diff_sha256"] = hashlib.sha256(git("diff", "--no-ext-diff", "--binary", "HEAD")).hexdigest()
+    except (OSError, subprocess.SubprocessError) as error:
+        record["git_capture_error"] = type(error).__name__
+    return record
+
+
+def write_code_provenance(config, record, source=None):
+    """Write a small run manifest, independently of model/resume compatibility."""
+    record = copy.deepcopy(record)
+    if source is not None:
+        origin = source.get("code_provenance") or {}
+        record["resume_source"] = dict(code_version=origin.get("code_version"),
+                                      git_commit=origin.get("git_commit"), step=source.get("step"))
+    path = Path(config.logdir) / "code_provenance.json"
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(record, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
+    return record
 
 
 def _path(value):
@@ -559,6 +600,8 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
     controller, c = getattr(agent, "_search_a", None), getattr(agent, "_search_c", None)
     goal = getattr(agent, "_goal_reference", None)
     payload = dict(agent_state_dict=agent.state_dict(),
+        code_provenance=copy.deepcopy(getattr(agent, "_code_provenance",
+            dict(code_version=CODE_VERSION, capture="unavailable"))),
         goal_ref_version=1 if goal is not None else None,
         goal_controller_version=3 if getattr(config, "goal_search_enabled", False) else None,
         goal_reference_bank=goal.export_bank() if goal is not None else None,

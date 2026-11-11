@@ -207,6 +207,7 @@ class LS_Imagine(nn.Module):
         if memory is None:
             return None
         memory = {key: value[index:index+1].detach().clone() for key,value in memory.items()}
+        terminal_info = {}
         if terminal_obs is not None:
             feat = self._wm.dynamics.get_feat({key:value[index:index+1] for key,value in state[0].items()})
             control = state[3]["previous_control"][index:index+1]
@@ -222,9 +223,16 @@ class LS_Imagine(nn.Module):
                 extra.update(goal_context=goal["context"], goal_peak_rejected=goal["peak_rejected"])
             if int(getattr(self._config,"vnext_spatial_fix_version",0)) >= 2:
                 extra["camera_pitch"] = state[3]["actuator"][index:index+1,2]
-            _,memory,_ = self._vnext.b.online(feat,inputs["image"],inputs["heatmap"],memory,
-                previous_control=control,reward=terminal_obs.get("obs_reward",0.),**extra)
-        return self._vnext.b.visualization_state(memory)
+            _, memory, terminal_info = self._vnext.b.online(
+                feat, inputs["image"], inputs["heatmap"], memory,
+                previous_control=control, reward=terminal_obs.get("obs_reward", 0.), **extra)
+        snapshot = self._vnext.b.visualization_state(memory)
+        if "log_spatial_preview_pair" in terminal_info:
+            valid = (float(terminal_obs.get("log_env_error", 0)) == 0
+                     and float(terminal_obs.get("log_actuator_valid", 1)) == 1)
+            snapshot["preview_pair"] = int(terminal_info["log_spatial_preview_pair"][0]) if valid else 0
+            snapshot["preview_delta"] = terminal_info["log_spatial_preview_delta"][0].cpu().numpy()
+        return snapshot
 
     def _policy(self, obs, state, training):
         if self._vnext is not None:
@@ -708,8 +716,10 @@ def save_active_replay(envs, cache, directory):
 def main(config): # config is namespace
 
     from training_state import (prepare_resume, restore_training_state,
-                                write_resume_manifest, save_training_checkpoint)
+                                write_resume_manifest, save_training_checkpoint,
+                                capture_code_provenance, write_code_provenance)
     resume_plan = prepare_resume(config)
+    code_provenance = capture_code_provenance(config)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
@@ -731,6 +741,13 @@ def main(config): # config is namespace
     logdir.mkdir(parents=True, exist_ok=True)
     config.traindir.mkdir(parents=True, exist_ok=True)
     config.evaldir.mkdir(parents=True, exist_ok=True)
+    code_provenance = write_code_provenance(config, code_provenance,
+        resume_plan["checkpoint"] if resume_plan else None)
+    code_commit = code_provenance["git_commit"]
+    code_status = {True: "modified", False: "clean", None: "unknown"}[code_provenance["git_dirty"]]
+    print(f"[code] {code_provenance['code_version']} | git={code_commit[:7] if code_commit else 'unknown'} "
+          f"| worktree={code_status} | pose_loss={getattr(config, 'vnext_pose_loss_version', 'n/a')} "
+          f"| guidance={getattr(config, 'goal_guidance_revision', 'n/a')}", flush=True)
     step = resume_plan["environment_step"] if resume_plan else count_steps(config.traindir)
 
     logger = tools.Logger(config, logdir, config.action_repeat * step)
@@ -845,6 +862,7 @@ def main(config): # config is namespace
     ).to(config.device)
 
     agent.requires_grad_(requires_grad=False)
+    agent._code_provenance = code_provenance
 
     if config.search_vnext_enabled and getattr(config,"vnext_spatial_enabled",False) and config.vnext_visual_enabled:
         from apm.visualization import SearchVisualizer

@@ -410,6 +410,33 @@ class SpatialMemoryTests(unittest.TestCase):
         self.assertGreater(float(info['log_spatial_summary'][0,11]),.9)
         self.assertAlmostEqual(float(state['pose'][0,2]),math.radians(10),places=5)
 
+    def test_unqualified_pose_preview_does_not_enter_memory(self):
+        settings = config(vnext_spatial_fix_version=3, vnext_visual_enabled=True)
+        model = SpatialMapMemory(24, settings)
+        f, image, heat, control = inputs()
+        _, state, reset_log = model.online(f, image, heat, is_first=torch.tensor([True]))
+        self.assertEqual(int(reset_log["log_spatial_preview_pair"][0]), 0)
+        control[:, 1] = 1.
+        control[:, 8] = 10.
+        prediction = dict(delta=torch.tensor([[0., .2, .11]]), sigma=torch.full((1, 3), .01),
+                          motion_probability=torch.tensor([.99]))
+        with mock.patch.object(model.pose, "forward", return_value=prediction):
+            context, output_state, logs = model.online(f, image + 1., heat, state, previous_control=control)
+            settings.vnext_visual_enabled = False
+            without_context, without_state, without_logs = model.online(
+                f, image + 1., heat, state, previous_control=control)
+        self.assertFalse(model.pose.ready)
+        self.assertEqual(int(logs["log_spatial_preview_pair"][0]), 2)
+        torch.testing.assert_close(logs["log_spatial_preview_delta"],
+                                   torch.tensor([[0., .2, math.radians(10)]]))
+        self.assertEqual(int(logs["log_spatial_map_write"][0]), 0)
+        self.assertEqual(int(output_state["ledger_used"][0]), 0)
+        torch.testing.assert_close(context, without_context, rtol=0, atol=0)
+        for key in output_state:
+            torch.testing.assert_close(output_state[key], without_state[key], rtol=0, atol=0)
+        for key in without_logs:
+            torch.testing.assert_close(logs[key], without_logs[key], rtol=0, atol=0)
+
     def test_always_static_classifier_cannot_qualify_from_unused_good_raw_means(self):
         model=PoseNet(hidden=16,min_samples=4,min_calibration=4,min_moving=2,cache_size=64)
         target=torch.zeros(8,3);target[[0,1,4,5],0]=.2

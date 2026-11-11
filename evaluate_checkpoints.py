@@ -1334,7 +1334,8 @@ def worker(args, manifest):
                                     agent._logger.step, rgb=capture.frame, heatmap=capture.heatmap)
                             search_log = {k: convert(v[0]) for k, v in result.items()
                                           if k.startswith(('log_search_', 'log_b_', 'log_vnext_', 'log_spatial_'))
-                                          and k != 'log_spatial_patch'}
+                                          and k != 'log_spatial_patch'
+                                          and not k.startswith('log_spatial_preview_')}
                             search_actions += int(search_log.get('log_search_override', 0))
                             search_decisions += int(search_log.get('log_search_decision', 0))
                             obs, reward, done, info = env.step({'action': action})
