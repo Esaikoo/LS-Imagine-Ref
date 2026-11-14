@@ -1,0 +1,534 @@
+{
+  "version": 1,
+  "task_id": "shear_sheep",
+  "entries": [
+    {
+      "path": "train_01.png",
+      "review_id": "T01",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含白色羊毛块和背景；位于无目标取景区，核对全图。",
+      "sha256": "5f00f3a3f95ec5ad7ef4d4e2f78e2326d7047038ba514fc907b66f67ff7a4f8f",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 12,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "4b6e3f71f810a238fe0c7c6470a867279fa4f9161ee422cb724b5361afc0c0fe",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wool",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "train_02.png",
+      "review_id": "T02",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含雪块和背景；位于无目标取景区，核对全图。",
+      "sha256": "a25ec7e2bdfcb24a3fdfea69a89fcb4926ff99b50383f6a2b0cad4ad8771e66a",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 15,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "ddc04c8e5913cdc417755389d3f5e9a2a83ffe09b6e2bcdd656ca5606fd81e90",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "snow",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "train_03.png",
+      "review_id": "T03",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含鸡和背景；位于无目标取景区，核对全图。",
+      "sha256": "a6911885666374c597e990f3ec50501a678e4eb51747a7ce13e2f3fa09d399e3",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 16,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "181897891d93ad17455fad247ed906ed207949bf7d669d9825fb3ebe40ef2b3a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "chicken"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.2800 -0.0000 27.7904"
+    },
+    {
+      "path": "train_04.png",
+      "review_id": "T04",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含石英块和背景；位于无目标取景区，核对全图。",
+      "sha256": "928e47f9b5a4e97f5c849d0e154656c3c83e7f09acd246b525cc3caaa892e5ad",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 19,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "fb8773b3bb91667e2f4cdcf9562a165e7eeed4a7497a9a29c0979020bf343d48",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "block of quartz",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 47.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "train_05.png",
+      "review_id": "T05",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含牛和背景；位于无目标取景区，核对全图。",
+      "sha256": "a85a598abc75beeb987a071351d2758c0da11b16bffbcc6c122c1eda5e7a9557",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 22,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "124ed5aa6b47cf6fdba382b6ac0423ba037b11b5a133fb65a607369012ffe5e9",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "cow"
+      },
+      "source_camera": "/tp @p 80.5000 4.0000 43.2800 -0.0000 20.2727"
+    },
+    {
+      "path": "train_06.png",
+      "review_id": "T06",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含白花与草丛和背景；位于无目标取景区，核对全图。",
+      "sha256": "f9cb03b4a035040e3bf67ebde66d0fab2ff7fe9d74385a50941498b9d1e98256",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 25,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "e12b3378a5d0b21f47787aa7465e0112f4212a2ba567348819d5bd4b7da545dc",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 95.8000 4.0000 42.9600 -13.8462 26.2114"
+    },
+    {
+      "path": "calibration_01.png",
+      "review_id": "C01",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见白羊，按全图审核。",
+      "sha256": "b1b19163511c2baedfbffd678899b1dce0579c8ee92b414ff25f81012435e36e",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 0,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "0cd5ed27c6d017ff404735070d7062cb1a3813769991270068a04ff5cc59dd90",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "path": "calibration_02.png",
+      "review_id": "C02",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见白羊，按全图审核。",
+      "sha256": "9def650e5c90dd7d98f3563916545d5b375ae264d9f38e5a700c0200ac9b113e",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 2,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d64aa90da1f324261bdcfabe590d2fb18f909f8733567802259499b1887309cd",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 1.5000 4.0000 1.4000 25.4633 15.3846"
+    },
+    {
+      "path": "calibration_03.png",
+      "review_id": "C03",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见白羊，按全图审核。",
+      "sha256": "50607c3d36256e855e8c5cbfe7e5441c5d1a730b0f5669de246b3d22a609573a",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 4,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "10c461d258ca843fa499fe8c7cfbdaf177688173512e911ebcdcab1a9cbad220",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "path": "calibration_04.png",
+      "review_id": "C04",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见白羊，按全图审核。",
+      "sha256": "aa5da853c5769d5f276c1eee95015b51f18417f53bd5de888d9fc2288ec2854c",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 6,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "0c8edf0acb4e8bd33a4db43eebb59e5df151bd1ed8cbb91cbfc605bef9d19001",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 17.5000 4.0000 1.4000 25.4633 15.3846"
+    },
+    {
+      "path": "calibration_05.png",
+      "review_id": "C05",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见白羊，按全图审核。",
+      "sha256": "ea9f414558eecf649b8be2f2c0b1db48c769e4e14d90b9d59b1bf3f2398fc10f",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 9,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "b4ae445fc87ad8f22f759fe8fac707858af54a43b2dcbc83669ecfd951ecf097",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 31.6500 4.0000 1.5600 -23.6604 16.8130"
+    },
+    {
+      "path": "calibration_06.png",
+      "review_id": "C06",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含白色羊毛块和背景；位于无目标取景区，核对全图。",
+      "sha256": "3d20244175ab988a05cab50d4f9a1f07a9ff36ce4d4f2282dd447dd03ff4ff01",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 13,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "5a18d40f5b4a49a9d3489c9abc2031fb4ecd025ba88a4c6bf8d29d370e888c84",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wool",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "calibration_07.png",
+      "review_id": "C07",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含雪块和背景；位于无目标取景区，核对全图。",
+      "sha256": "87b3b759c372c9502af5a60b9162dc5a57f66d854847f18509bd91af3f66e57a",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 14,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d5bd765e18def0f1bdea03c3d92bc522d366c2b2ad4f7d5e46eb4792266b2de7",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "snow",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "calibration_08.png",
+      "review_id": "C08",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含鸡和背景；位于无目标取景区，核对全图。",
+      "sha256": "02aa0fc58a178756b2bc57279a90f3312c8e25c19d801cd76d811020929935fa",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 17,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "298b694473d7ac47e7aafef9af9a212f9182b0bbe51f879035871ff7cb7c0b39",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "chicken"
+      },
+      "source_camera": "/tp @p 31.8000 4.0000 42.9600 -15.4077 23.9448"
+    },
+    {
+      "path": "calibration_09.png",
+      "review_id": "C09",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草地和背景；位于无目标取景区，核对全图。",
+      "sha256": "21b5a9a7aedc0295d54bfe06b30efa023f537079eca3907359101ac0d387586c",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 20,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "76caf03a7a627612c7ecc321399584cce21d18dd131231f386d63ceceeafe051",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 64.5000 4.0000 43.2800 -0.0000 33.0558"
+    },
+    {
+      "path": "calibration_10.png",
+      "review_id": "C10",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含牛和背景；位于无目标取景区，核对全图。",
+      "sha256": "160fc9bc1a16a3a621cc76be33ed86387bca6992ee0324b61b28eaf7b66c2c5b",
+      "world_group": 8737905,
+      "world_seed": 7413402,
+      "source_replay": "shear_sheep-fixture-7413402.npz",
+      "frame": 23,
+      "source_sha256": "f6f1685988fe77590d8df2502ac27017667521a168ba87159a1ba4c18c4fe476",
+      "mission_sha256": "c0d445744ca506de5442e0e94a8f3d611f5c7795b8201f5526b01e7b292ec67d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "f286471c1757b8ef2c721b454b0b72929eb1abe4d29d55dc01549e29cd0d81b2",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "cow"
+      },
+      "source_camera": "/tp @p 79.8000 4.0000 42.9600 -15.4077 17.2878"
+    }
+  ]
+}

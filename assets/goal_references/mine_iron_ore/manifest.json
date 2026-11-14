@@ -1,0 +1,933 @@
+{
+  "version": 1,
+  "task_id": "mine_iron_ore",
+  "curation": {
+    "protocol": "compact_v1",
+    "positive": 12,
+    "negative": 8,
+    "positive_min_side": 20
+  },
+  "bank_revision": "PSCVBANK2",
+  "entries": [
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_stone_ledge_001.png",
+      "review_id": "P01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        21,
+        26,
+        75,
+        64
+      ],
+      "source_roi_normalized": [
+        0.21875,
+        0.2708333333333333,
+        0.78125,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见俯视石阶铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "cc65fc7eefaba7b07eed47db1507c68b23a0685d88bc93560069ae873c05a4ee",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 0,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "8ca80cb5198882dc032aa3f2c37243e34f020fd14605952d4776fad422bf76c8",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 1.3000 -2.9866 48.6827"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_stone_ledge_002.png",
+      "review_id": "P02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        21,
+        28,
+        76,
+        62
+      ],
+      "source_roi_normalized": [
+        0.21875,
+        0.2916666666666667,
+        0.7916666666666666,
+        0.6458333333333334
+      ],
+      "annotation": "原生 RGB 可见俯视石阶铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "2c383a1cdda1ef2ec11a1ffb993c8df9506b442da5c732c9a8b040b327bdaa14",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 1,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "2bd29654f6e248ebc83e4f360b61617669b2a42617d64d1d2928605a0d1867e1",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.3000 4.0000 1.6000 -24.7024 49.9614"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_stone_ledge_003.png",
+      "review_id": "P03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        24,
+        29,
+        77,
+        69
+      ],
+      "source_roi_normalized": [
+        0.25,
+        0.3020833333333333,
+        0.8020833333333334,
+        0.71875
+      ],
+      "annotation": "原生 RGB 可见俯视石阶铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "cb3bd5362af3d3e82810f1347036c8ac4d4c4c3d723ddaf0edd85f72eaad434b",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 3,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "ac4cab548c325c00717fea0363b60ead7d23a544e6cc85367bfaa05a4aefa64b",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.7500 4.0000 1.3500 -31.3368 44.8443"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_andesite_ledge_004.png",
+      "review_id": "P04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        23,
+        77,
+        64
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.23958333333333334,
+        0.8020833333333334,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见俯视石阶铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "e2649b5790913a2eb64f8bb0990b5a8f127a4200fa8c924969743c2bcd5e657e",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 2,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d1895dcaabf50963d3620d5a5606b25c642cbcbddf68ec7d7d2356331f856a93",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 1.4000 4.0000 1.8500 24.0232 53.8227"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_granite_cave_005.png",
+      "review_id": "P05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        9,
+        69,
+        60
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.09375,
+        0.71875,
+        0.625
+      ],
+      "annotation": "原生 RGB 可见花岗岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "9574f063562956de1bce14631e92bf7c7747a45ff613d35eae50819150997ac7",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 4,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "fcdedd98aa316f9a13e464e170bd2e718e1cc987f60389b5a3b47486d06feb6d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 2.7500 -0.0000 15.2163"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_granite_cave_006.png",
+      "review_id": "P06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        25,
+        16,
+        69,
+        62
+      ],
+      "source_roi_normalized": [
+        0.2604166666666667,
+        0.16666666666666666,
+        0.71875,
+        0.6458333333333334
+      ],
+      "annotation": "原生 RGB 可见花岗岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "0271b8f7f4c05035bc56070358fa37326dc9559519707fec23775cded68f22b9",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 5,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "9869de7497c101323c9b88746bf8d79364d334f1883e4f8301f3c4f226b73371",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.8000 4.0000 2.4600 -24.4440 0.6774"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_granite_cave_007.png",
+      "review_id": "P07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        10,
+        16,
+        79,
+        67
+      ],
+      "source_roi_normalized": [
+        0.10416666666666667,
+        0.16666666666666666,
+        0.8229166666666666,
+        0.6979166666666666
+      ],
+      "annotation": "原生 RGB 可见花岗岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "fdbdd2062729fe9523eeb140cbee8916f44588d66a329797f6360d48d22cd29a",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 6,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d3aaf292df72d5bdfc6fd591fbe3f10e5a7384cf53ab2702487a1ea4cef70e56",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 17.3200 4.0000 2.1400 23.7908 17.4765"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_andesite_cave_008.png",
+      "review_id": "P08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        25,
+        9,
+        69,
+        62
+      ],
+      "source_roi_normalized": [
+        0.2604166666666667,
+        0.09375,
+        0.71875,
+        0.6458333333333334
+      ],
+      "annotation": "原生 RGB 可见安山岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "d07f8c726d7cedbcfbd22b6662c436ec1a259cb547bafbe39fbe75a48e6ecc4c",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 8,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "e2fc93fd80a687edb6c59659b88b5edcbb2fa15681c46014ea731e3a98cd63cd",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 2.7500 -0.0000 15.2163"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_andesite_cave_009.png",
+      "review_id": "P09",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        17,
+        12,
+        69,
+        64
+      ],
+      "source_roi_normalized": [
+        0.17708333333333334,
+        0.125,
+        0.71875,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见安山岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "f6bd97ffbfd877bd0cb1240d05f280d4c76919d4c35459a0a5f367f8ef464ecc",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 10,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "6258cebdbd522450202e8d6e0eb6c82afd04ce45a67dd472ba45eaa07de968ff",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 33.3200 4.0000 2.1400 23.7908 17.4765"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_stone_cave_010.png",
+      "review_id": "P10",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        13,
+        69,
+        62
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.13541666666666666,
+        0.71875,
+        0.6458333333333334
+      ],
+      "annotation": "原生 RGB 可见石洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "b6558dfb3a593a8a7236e34c66da9cb3afaa6581244bdf53df39a0f5aa7c8bf1",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 5,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "cb1bdf13b8dda5b9992cf1478e886d31a7ba38b37acfd2e9d0cb4301e227e07f",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.8000 4.0000 2.4600 -24.4440 0.6774"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_diorite_cave_011.png",
+      "review_id": "P11",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        19,
+        11,
+        74,
+        63
+      ],
+      "source_roi_normalized": [
+        0.19791666666666666,
+        0.11458333333333333,
+        0.7708333333333334,
+        0.65625
+      ],
+      "annotation": "原生 RGB 可见闪长岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "dc8090df94863cccad70047be2738fe2ba26b86e8b5b674a9db4344f79fd9bc6",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 8,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "092c091332b97fb3646512e0c7b7b40fbbcdf687c57625db3a5fb08f9ff3aaf3",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 2.7500 -0.0000 15.2163"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_iron_diorite_cave_012.png",
+      "review_id": "P12",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        15,
+        16,
+        77,
+        65
+      ],
+      "source_roi_normalized": [
+        0.15625,
+        0.16666666666666666,
+        0.8020833333333334,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见闪长岩洞铁矿，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "3c9d9cb75806c0ea8c8b6ec29ec9ffcf5da2082a23baf400d9c1620a78a4ad40",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 10,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "0e197b6c0c45b813b2e7db7f1a17cbf148a5286f3226b460f34370dd506503e7",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 33.3200 4.0000 2.1400 23.7908 17.4765"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_stone_001.png",
+      "review_id": "N01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        12,
+        78,
+        65
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.125,
+        0.8125,
+        0.6770833333333334
+      ],
+      "annotation": "石头干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "ca0d0f3cdf48870b7c683cd94646e425b9fa1342db3b171e0736fa34f7150e4e",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 13,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d8647840566cd3ab5602cf8f47caf717f07788f9a02c1a101514d1d124699d1c",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_granite_002.png",
+      "review_id": "N02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        21,
+        14,
+        69,
+        63
+      ],
+      "source_roi_normalized": [
+        0.21875,
+        0.14583333333333334,
+        0.71875,
+        0.65625
+      ],
+      "annotation": "花岗岩干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "0b920579591e00f45a1ed999a2d65c8d882b90c24d2609e411056c66c0a12b05",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 14,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "1f8dac330e87e39838c1faf08b95c3cb37aa636259c2df96bc91030c4ddc9e41",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_coal_ore_003.png",
+      "review_id": "N03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        20,
+        12,
+        76,
+        65
+      ],
+      "source_roi_normalized": [
+        0.20833333333333334,
+        0.125,
+        0.7916666666666666,
+        0.6770833333333334
+      ],
+      "annotation": "煤矿石干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "08fae88b65ae41acdd65c90552505c60354eb3e5d3b074b44148b766771d6b6c",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 17,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d36980bd0ec9a61b1e09be26dba085e7a40b898a0e333db0eb1d283f6cbdb595",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "coal ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 31.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_gravel_004.png",
+      "review_id": "N04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        21,
+        81,
+        65
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.21875,
+        0.84375,
+        0.6770833333333334
+      ],
+      "annotation": "沙砾干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "ce0a62c41a4f9af6362c6b5a21dde79cfd551a9a4c19d3a6bd66bd1adab31d39",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 19,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "2641591bf2a03c1012664d1c6e6a8800cb2fcb73e7523dd8671b32eee532c0c1",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "gravel",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 47.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_andesite_005.png",
+      "review_id": "N05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        18,
+        15,
+        74,
+        61
+      ],
+      "source_roi_normalized": [
+        0.1875,
+        0.15625,
+        0.7708333333333334,
+        0.6354166666666666
+      ],
+      "annotation": "安山岩干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "a118cf057de4c704f24ce3589bf18eb2a6e44cabfa91865149de4ca9461c7d20",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 20,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "31bada7ab3cacd7c206429608d78478ca5cfdce09ce12718a07a011c361d6c42",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 64.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_gold_ore_006.png",
+      "review_id": "N06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        12,
+        76,
+        65
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.125,
+        0.7916666666666666,
+        0.6770833333333334
+      ],
+      "annotation": "金矿石干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "8cece1d09afcb3b2fe7dc739ccdac7f609f8cd41117e078e750503573e5187c6",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 23,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "77db0393377930dac801f1ff6a64ef97c4a058627931ba912a79e8fe7b3f69cf",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "gold ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 79.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_diorite_007.png",
+      "review_id": "N07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        25,
+        9,
+        81,
+        62
+      ],
+      "source_roi_normalized": [
+        0.2604166666666667,
+        0.09375,
+        0.84375,
+        0.6458333333333334
+      ],
+      "annotation": "闪长岩干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "9f43b3733d535fdf0744f77be70fd327cf4b0e25f29b6c68c0de086d644482f1",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 25,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "be9fa685064062c4d43096b02681f0a25bb3ba2582625fc3542a410d33384c0d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 95.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "mine_iron_ore",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_cobblestone_008.png",
+      "review_id": "N08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        19,
+        17,
+        75,
+        66
+      ],
+      "source_roi_normalized": [
+        0.19791666666666666,
+        0.17708333333333334,
+        0.78125,
+        0.6875
+      ],
+      "annotation": "圆石干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "8856244e719bd11abc4e9cdf5014eefa8d63f10452acd12bcc3bcfa624736c5f",
+      "world_group": 5940593,
+      "world_seed": 7413300,
+      "source_replay": "mine_iron_ore-fixture-7413300.npz",
+      "frame": 26,
+      "source_sha256": "2b03206ce046dc458c360081746c04f4c96410dd2f9d8b1dd98e92f66d86e079",
+      "mission_sha256": "29c8c31c877f9074765bb5a747a34a820b618b6c76b04b12749c391b6d7b4d0d",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "e74c51e976d2ca24bc8afdcd6580ffdb481244e15d875478fc3d4805ce4e32ce",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "cobblestone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 112.5000 4.0000 43.2800 -0.0000 10.2169"
+    }
+  ]
+}

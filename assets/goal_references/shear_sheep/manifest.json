@@ -1,0 +1,933 @@
+{
+  "version": 1,
+  "task_id": "shear_sheep",
+  "curation": {
+    "protocol": "compact_v1",
+    "positive": 12,
+    "negative": 8,
+    "positive_min_side": 20
+  },
+  "bank_revision": "PSCVBANK2",
+  "entries": [
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_001.png",
+      "review_id": "P01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        31,
+        27,
+        66,
+        65
+      ],
+      "source_roi_normalized": [
+        0.3229166666666667,
+        0.28125,
+        0.6875,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "826bc17268b234c1f59468121c13ec5f4799c179a5ed2226a7fb3845bfc168b2",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 0,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "db47d5bc4a8e8b9d9bc759bd7d7d9cc16e0a2f6869399a23bfb0ed327c5bfe9f",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_002.png",
+      "review_id": "P02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        29,
+        31,
+        66,
+        66
+      ],
+      "source_roi_normalized": [
+        0.3020833333333333,
+        0.3229166666666667,
+        0.6875,
+        0.6875
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "e2a091a6a2d889c56ddadeecab6012030f3fcfd8faaf6ff31826cdba5fd7d0a9",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 1,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "cda25180304f9cb36f6d43ff03c4b92c22b8093a85d8c6f555ec6a13aeaa1567",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p -0.3500 4.0000 1.5600 -23.6604 16.8130"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_003.png",
+      "review_id": "P03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        33,
+        32,
+        64,
+        67
+      ],
+      "source_roi_normalized": [
+        0.34375,
+        0.3333333333333333,
+        0.6666666666666666,
+        0.6979166666666666
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "f392b9624c98826db74cb965ac0dcb19d336d2720810eed9d40c2055d65083ad",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 2,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "1bc9cb054828b643647c0e717c511cd2e9c1ad76ce257aac3fd8a344249c2147",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 1.5000 4.0000 1.4000 25.4633 15.3846"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_004.png",
+      "review_id": "P04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        26,
+        26,
+        75,
+        65
+      ],
+      "source_roi_normalized": [
+        0.2708333333333333,
+        0.2708333333333333,
+        0.78125,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "96d1da22ce57cb633d93c286cefbd597680ebba8ca786af85c8ff7b1b75e95f6",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 4,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "1de92dafb453aa6df7134a73d46a460c12b85aa489fc83feffeccc5dbd656fa7",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_005.png",
+      "review_id": "P05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        30,
+        31,
+        65,
+        66
+      ],
+      "source_roi_normalized": [
+        0.3125,
+        0.3229166666666667,
+        0.6770833333333334,
+        0.6875
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "41591bc6ca25aac9386c10b07cb5c92172f770c44969fd41cbfc307209e473b4",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 5,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "97ce534a72926acddbe0624280196a1ab4eb7ea76016aedaf74805b8817e65d5",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 15.6500 4.0000 1.5600 -23.6604 16.8130"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_006.png",
+      "review_id": "P06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        31,
+        73,
+        63
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.3229166666666667,
+        0.7604166666666666,
+        0.65625
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "bc5b9f034f81c4e1f8d08cc9f7d84749df6b5992a7e02d9530a7924477a44916",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 6,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "261aae886a02ce005a9bd18420a8c87b283aa2ae9859f07867782c2c8a990eda",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 17.5000 4.0000 1.4000 25.4633 15.3846"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_007.png",
+      "review_id": "P07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        28,
+        69,
+        66
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.2916666666666667,
+        0.71875,
+        0.6875
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "5b66292447f7ac937ec68255b598103c911ae427f8c37d953ff43e907d46afdc",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 9,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "46741836f987bf00def3edf83e4803c18d6cf31f9f3671121cf732b02621e064",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 31.6500 4.0000 1.5600 -23.6604 16.8130"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_008.png",
+      "review_id": "P08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        29,
+        31,
+        70,
+        67
+      ],
+      "source_roi_normalized": [
+        0.3020833333333333,
+        0.3229166666666667,
+        0.7291666666666666,
+        0.6979166666666666
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "9691a7fd4e0359760ae9b9090be0fa97be8969bd791b2dfafa513b8d3eb4cc6c",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 11,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "91ee2e8e3846e4f703f537040ad7a393e93c834ba857debe1a668e22c0e85021",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 32.0500 4.0000 0.7300 -9.2274 12.8470"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_009.png",
+      "review_id": "P09",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        29,
+        68,
+        64
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.3020833333333333,
+        0.7083333333333334,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "7b791374e8eb3eae5238002b259fd35104a53b739fac0f57f06f5187e24aa441",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 0,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "4738bc9bac968faf0a30abc79d71410a9a0ac9fda7ae9be82d4e2de651b2d79a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_010.png",
+      "review_id": "P10",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        25,
+        25,
+        75,
+        65
+      ],
+      "source_roi_normalized": [
+        0.2604166666666667,
+        0.2604166666666667,
+        0.78125,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "d79d9aa28f4d7d449be2d4c7e29f866ef649b76312e53701c6c33706311d1e3d",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 4,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "93ecb790caa7ce9edd2d902c2b3156f4a274cd8855df455a3dd360e9782d7d12",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_011.png",
+      "review_id": "P11",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        24,
+        27,
+        70,
+        65
+      ],
+      "source_roi_normalized": [
+        0.25,
+        0.28125,
+        0.7291666666666666,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "a28b39055d324b97a0b65015f665efed18206cc9cce82aa37aac6f81b8b6792c",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 8,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "7e83c2a81218377174f64cd39c15f20ca1fbc19c999e7b3297b6b3352d03aeb8",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 2.0000 -0.0000 23.1063"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_white_sheep_012.png",
+      "review_id": "P12",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        31,
+        33,
+        67,
+        66
+      ],
+      "source_roi_normalized": [
+        0.3229166666666667,
+        0.34375,
+        0.6979166666666666,
+        0.6875
+      ],
+      "annotation": "原生 RGB 可见白羊，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "f3112e2c4713f67fcca715a7bd3a6b8191ab81fdba9d865ce6638bda6d20f501",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 11,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "6c9b4d4c4697e005557689488e64066cf3d1b0dc933c2591910303d71e8aef87",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "sheep"
+      },
+      "source_camera": "/tp @p 32.0500 4.0000 0.7300 -9.2274 12.8470"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_white_wool_001.png",
+      "review_id": "N01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        14,
+        70,
+        59
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.14583333333333334,
+        0.7291666666666666,
+        0.6145833333333334
+      ],
+      "annotation": "白色羊毛块干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "4577b6638f7ef66c45e0a01ecb911580e700064c946d9d26d7f4a3514813640a",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 13,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "4735815fc53661aeb51215de933ae13672b83507770b75a2ce80e5bfdadbc23b",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wool",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_snow_002.png",
+      "review_id": "N02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        20,
+        18,
+        74,
+        59
+      ],
+      "source_roi_normalized": [
+        0.20833333333333334,
+        0.1875,
+        0.7708333333333334,
+        0.6145833333333334
+      ],
+      "annotation": "雪块干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "65a4ee4831a9148d964fb5eae4b74f3e27ca7a576e7d633776ed83a7674bf6a2",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 14,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "927971526e680d46e2a5c83ced4baaf1b54f6a8ed10ea40cc5fd382a79b478d7",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "snow",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_chicken_003.png",
+      "review_id": "N03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        33,
+        34,
+        65,
+        62
+      ],
+      "source_roi_normalized": [
+        0.34375,
+        0.3541666666666667,
+        0.6770833333333334,
+        0.6458333333333334
+      ],
+      "annotation": "鸡干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "b60096a35901e07578bf95d1e6793856be8b8b433f71b7772d1ec29019ebd071",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 16,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "6f98242956ef71d6f18938d8090b9d540cdc2c3917426a2b01a810093c0ac90f",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "chicken"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.2800 -0.0000 27.7904"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_quartz_004.png",
+      "review_id": "N04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        24,
+        13,
+        75,
+        61
+      ],
+      "source_roi_normalized": [
+        0.25,
+        0.13541666666666666,
+        0.78125,
+        0.6354166666666666
+      ],
+      "annotation": "石英块干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "36cc3e03e83e69d9ed719a7b7135f32b6709405bfd0b61024e5f75fb300018d9",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 19,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "fb8773b3bb91667e2f4cdcf9562a165e7eeed4a7497a9a29c0979020bf343d48",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "block of quartz",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 47.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_grass_005.png",
+      "review_id": "N05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        24,
+        25,
+        73,
+        65
+      ],
+      "source_roi_normalized": [
+        0.25,
+        0.2604166666666667,
+        0.7604166666666666,
+        0.6770833333333334
+      ],
+      "annotation": "草地干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "a0c7aa332dc1554f4a27a9000f5a2fe29e6567a427ab9c97eee46167f4fd6d0d",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 20,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "956a63400ea5fd255f44b16705791e066cb62300cf662c40332a2f19c3298b8f",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 64.5000 4.0000 43.2800 -0.0000 33.0558"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_cow_006.png",
+      "review_id": "N06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        33,
+        27,
+        65,
+        68
+      ],
+      "source_roi_normalized": [
+        0.34375,
+        0.28125,
+        0.6770833333333334,
+        0.7083333333333334
+      ],
+      "annotation": "牛干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "0d660a97da8a409fa0bc37f89dd7d1c52a00be52b9c1d4504bd7a129c4665073",
+      "world_group": 11694845,
+      "world_seed": 7413401,
+      "source_replay": "shear_sheep-fixture-7413401.npz",
+      "frame": 22,
+      "source_sha256": "e7ee025e3b2d0ae651224a392cc1a3c14f46fd6cfc2370797f3abe1750b298d4",
+      "mission_sha256": "caaf20935d623b5685ebe5f9b83afae10e6226896d1aae0f47788b474d5722d7",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "124ed5aa6b47cf6fdba382b6ac0423ba037b11b5a133fb65a607369012ffe5e9",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "cow"
+      },
+      "source_camera": "/tp @p 80.5000 4.0000 43.2800 -0.0000 20.2727"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_white_flower_007.png",
+      "review_id": "N07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        19,
+        25,
+        86,
+        62
+      ],
+      "source_roi_normalized": [
+        0.19791666666666666,
+        0.2604166666666667,
+        0.8958333333333334,
+        0.6458333333333334
+      ],
+      "annotation": "白花与草丛干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "cfa0a1c0863e2b70d63f6df8538eaed99a3af9a48ff6fd1dfa7cdd6073872854",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 25,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "b67d7ac8fff4e7391ed339302f737b2fc796ea7b734946565d561e5e1078310e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 95.8000 4.0000 42.9600 -13.8462 26.2114"
+    },
+    {
+      "task_id": "shear_sheep",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_pig_008.png",
+      "review_id": "N08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        32,
+        36,
+        66,
+        69
+      ],
+      "source_roi_normalized": [
+        0.3333333333333333,
+        0.375,
+        0.6875,
+        0.71875
+      ],
+      "annotation": "猪干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "13aac8c7131652cb6f7f40b7bfbeeca7db52a596ddb6cee666dc58b6bd9e4129",
+      "world_group": 2511982,
+      "world_seed": 7413400,
+      "source_replay": "shear_sheep-fixture-7413400.npz",
+      "frame": 26,
+      "source_sha256": "3f3c7153f3d29dee3dbd9d05cc49db2126aaca9302053f8518e7d91f1be54df7",
+      "mission_sha256": "bc280c7ab61251d04bd0ee32ee243b9eeecb1da7a7806e325fd18f4af97ece29",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "87f44343fbbae372df46bad0287621680976f69665122bdd3649b588379d3b5a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "pig"
+      },
+      "source_camera": "/tp @p 112.5000 4.0000 43.2800 -0.0000 20.2727"
+    }
+  ]
+}

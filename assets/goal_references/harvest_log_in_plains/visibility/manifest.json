@@ -1,0 +1,534 @@
+{
+  "version": 1,
+  "task_id": "harvest_log_in_plains",
+  "entries": [
+    {
+      "path": "train_01.png",
+      "review_id": "T01",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草原草丛和背景；位于无目标取景区，核对全图。",
+      "sha256": "b43d18f63597ab5455859708cbc67cc2d29c573d96126d6d82029a49b4fd480a",
+      "world_group": 13256350,
+      "world_seed": 7414100,
+      "source_replay": "harvest_log_in_plains-fixture-7414100.npz",
+      "frame": 1,
+      "source_sha256": "911f49396075773a9c73dc1b878b14e107e46f96596051652dab481dd09a366a",
+      "mission_sha256": "bb00e964eac93392974cfacc939b784856e6f390b81145d798bcfa32925c7b16",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "f4e3687ebf8f920d6c115c27dbc9e4d2732d2c9f9517862247bcc5a6f1cb1651",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_0",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2000 4.0000 42.9600 -13.8462 26.2114"
+    },
+    {
+      "path": "train_02.png",
+      "review_id": "T02",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含高草和背景；位于无目标取景区，核对全图。",
+      "sha256": "54f8dda222a5df11356ce6a89463e04acd9278b65b3a5cf50db1d3c3770ea534",
+      "world_group": 13256350,
+      "world_seed": 7414100,
+      "source_replay": "harvest_log_in_plains-fixture-7414100.npz",
+      "frame": 2,
+      "source_sha256": "911f49396075773a9c73dc1b878b14e107e46f96596051652dab481dd09a366a",
+      "mission_sha256": "bb00e964eac93392974cfacc939b784856e6f390b81145d798bcfa32925c7b16",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "6851972e8f24fa9eb8706233e6370894af94791b176f52cdcc8de81c45084836",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_0",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.2800 -0.0000 29.7449"
+    },
+    {
+      "path": "train_03.png",
+      "review_id": "T03",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草地坡缘和背景；位于无目标取景区，核对全图。",
+      "sha256": "67b9233c969260d3a7ed0d4c0b4ac706fe97800d6043dd800c02bda6ffd9a932",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 16,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "a58294cae5f8d3211fc4dfb4bfe607cefa7b9c14f1e0aca955819ae3430fed9c",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.2800 -0.0000 24.3411"
+    },
+    {
+      "path": "train_04.png",
+      "review_id": "T04",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草丛与花和背景；位于无目标取景区，核对全图。",
+      "sha256": "d5ac187ada0a10a7631811c8dc1af651d9a2eaba673057155b7abaf0ac5e3b91",
+      "world_group": 13256350,
+      "world_seed": 7414100,
+      "source_replay": "harvest_log_in_plains-fixture-7414100.npz",
+      "frame": 6,
+      "source_sha256": "911f49396075773a9c73dc1b878b14e107e46f96596051652dab481dd09a366a",
+      "mission_sha256": "bb00e964eac93392974cfacc939b784856e6f390b81145d798bcfa32925c7b16",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "8eb113a3fbbaa6094ed55838cf81a51bce89e183309de96a5b1f31cdfcfb00ce",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_0",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 48.5000 4.0000 43.2800 -0.0000 29.7449"
+    },
+    {
+      "path": "train_05.png",
+      "review_id": "T05",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含泥土和背景；位于无目标取景区，核对全图。",
+      "sha256": "ff3ee3ee0867f5eb56bbebc4014007a68d3da277e60da2f4b2befd0179740044",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 21,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "a08a22add6eb6649d2fd230ad3e8fe52252e67d57b57581a14e3f3fa73fd7775",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "dirt",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 63.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "train_06.png",
+      "review_id": "T06",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含石头和背景；位于无目标取景区，核对全图。",
+      "sha256": "04e4366571c0cbb1d245b0fda4fd283faba44004dfa872afacdec735fb2b86a2",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 23,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "69354cf0d8a02a26226572f26fdea67fc1d859942e724190d78ccc566631e684",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 79.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "calibration_01.png",
+      "review_id": "C01",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见橡木，按全图审核。",
+      "sha256": "ad992799d86229885709b4e7f6e5fe68678e14ee89a2404af81412c22b666dcc",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 1,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "b87ca529e18b814253efb2cbb8ada6850085cd937934c8275cf0987f39cb6f2e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2500 4.0000 2.3500 -24.4440 -4.1026"
+    },
+    {
+      "path": "calibration_02.png",
+      "review_id": "C02",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见橡木，按全图审核。",
+      "sha256": "83cfa76c43dc8530ee1b076675d54e108503446dabf2bd972b57d1d3360420b5",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 3,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "a383a50e0c64a6c51c756312c40d0074cf190130f9bd200168e679d4e752801f",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.8000 4.0000 -0.1000 4.1849 -8.0306"
+    },
+    {
+      "path": "calibration_03.png",
+      "review_id": "C03",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见橡木，按全图审核。",
+      "sha256": "df99cb378169248dff714c303f7222740638f45cdf58033af4eab7b4ecabc17e",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 5,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "ad6b16cd7aa47910581c93433a1656e233e2cafac19680daa7d13cee4447bcd0",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.7500 4.0000 2.3500 -24.4440 -4.1026"
+    },
+    {
+      "path": "calibration_04.png",
+      "review_id": "C04",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见橡木，按全图审核。",
+      "sha256": "fd12a28c8ffeba6ce5ee9c6e3b2a26c4778c479d3861c539f87f54dbd916a513",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 8,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "1844f3bae98cc99462b6b6e5fc606f86279e5009ad15b6deff2a1b67df3a245a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 2.7000 -0.0000 5.2739"
+    },
+    {
+      "path": "calibration_05.png",
+      "review_id": "C05",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见橡木，按全图审核。",
+      "sha256": "61c56aac26887cc0e85eb428efdd4c83321ad844600b1f990e23916e1726bbbb",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 11,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "534d830549c8d3b5c77c14f07caab65a83d646b0dce4137a99a9bbc6afd750fb",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.8000 4.0000 -0.1000 4.1849 -8.0306"
+    },
+    {
+      "path": "calibration_06.png",
+      "review_id": "C06",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草原草丛和背景；位于无目标取景区，核对全图。",
+      "sha256": "72bbed47f0fbcae93d404f417bae3221347e1c19434c3790f5ddc5ea759c8ccd",
+      "world_group": 9419948,
+      "world_seed": 7414102,
+      "source_replay": "harvest_log_in_plains-fixture-7414102.npz",
+      "frame": 1,
+      "source_sha256": "6c89eeb4db3a09794aff3e6d5ae5459b915e5e1bc4f55257b072d022cdca1085",
+      "mission_sha256": "51416b35789fa7dc52c7760d38b45dea0ea882742d6c90257a72041208643f43",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "69901a6590756c4fe82b15cf2e9479b4839afd11b62a6e072e60c6e5519869a4",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_2",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2000 4.0000 42.9600 -13.8462 26.2114"
+    },
+    {
+      "path": "calibration_07.png",
+      "review_id": "C07",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含高草和背景；位于无目标取景区，核对全图。",
+      "sha256": "cf68de4c538e4f7e0a7e54e9c95d42891e64ce4735c38c2859304afd05f0bd48",
+      "world_group": 9419948,
+      "world_seed": 7414102,
+      "source_replay": "harvest_log_in_plains-fixture-7414102.npz",
+      "frame": 2,
+      "source_sha256": "6c89eeb4db3a09794aff3e6d5ae5459b915e5e1bc4f55257b072d022cdca1085",
+      "mission_sha256": "51416b35789fa7dc52c7760d38b45dea0ea882742d6c90257a72041208643f43",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d64608e5f1a560bbd6b0f2519952e20d3fa18be8524cca70995a23db05ad6565",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_2",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.2800 -0.0000 29.7449"
+    },
+    {
+      "path": "calibration_08.png",
+      "review_id": "C08",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草地坡缘和背景；位于无目标取景区，核对全图。",
+      "sha256": "bf813e84b0733d45590400fc23156ad0b8a24e08f4cef2451293c764650c488e",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 17,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "9a55df22d43b58d7badc142435cf3cf1d1243b86e5be673f7a415f4b7b95a3cf",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 31.8000 4.0000 42.9600 -13.8462 21.2931"
+    },
+    {
+      "path": "calibration_09.png",
+      "review_id": "C09",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草丛与花和背景；位于无目标取景区，核对全图。",
+      "sha256": "22b6591aa2e2c9786c69c51c7cbadff630ef01f9137183848e9002013393d754",
+      "world_group": 9419948,
+      "world_seed": 7414102,
+      "source_replay": "harvest_log_in_plains-fixture-7414102.npz",
+      "frame": 6,
+      "source_sha256": "6c89eeb4db3a09794aff3e6d5ae5459b915e5e1bc4f55257b072d022cdca1085",
+      "mission_sha256": "51416b35789fa7dc52c7760d38b45dea0ea882742d6c90257a72041208643f43",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "52e82a1e4b1883c3958ab59db95af2dac5be84a8121244927b40ae3c1dd6e808",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_2",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 48.5000 4.0000 43.2800 -0.0000 29.7449"
+    },
+    {
+      "path": "calibration_10.png",
+      "review_id": "C10",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含天空与地平线和背景；位于无目标取景区，核对全图。",
+      "sha256": "9b3613b79fd2ca890b2ad7f0753eff50e60f5fc568659c11c4513c398d05b738",
+      "world_group": 2052314,
+      "world_seed": 7413102,
+      "source_replay": "harvest_log_in_plains-fixture-7413102.npz",
+      "frame": 24,
+      "source_sha256": "8a9cbe050a7684589fe64bb2857712f8ac09367aa458ba029aa2064a7825048f",
+      "mission_sha256": "dbc00f004bd69568c58bd8e8dfbc261cd2cd9c514a9a6dbcc3d476d9be4511dc",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d8556a5ee7156aaf1329a7cc29c6e40b887f513df872ca56f02465a881867e55",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 96.5000 4.0000 43.1000 0.0000 -7.0000"
+    }
+  ]
+}

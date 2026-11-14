@@ -1,0 +1,933 @@
+{
+  "version": 1,
+  "task_id": "harvest_water_with_bucket",
+  "curation": {
+    "protocol": "compact_v1",
+    "positive": 12,
+    "negative": 8,
+    "positive_min_side": 20
+  },
+  "bank_revision": "PSCVBANK2",
+  "entries": [
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_sand_001.png",
+      "review_id": "P01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        18,
+        30,
+        81,
+        68
+      ],
+      "source_roi_normalized": [
+        0.1875,
+        0.3125,
+        0.84375,
+        0.7083333333333334
+      ],
+      "annotation": "原生 RGB 可见沙岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "22628b4a3d35175002d33f14b1d3949ddf54a61952df91a576359fa8ac49c6e8",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 0,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "eef52ea05d26749ad932e27997af66510f7d5ddf714c78a75ea2df890a4e10fa",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 1.4000 -0.0000 32.7995"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_sand_002.png",
+      "review_id": "P02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        10,
+        24,
+        84,
+        64
+      ],
+      "source_roi_normalized": [
+        0.10416666666666667,
+        0.25,
+        0.875,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见沙岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "392d0c5f8f660a417a1c2615e297d4abe87bdbee519e9952608b8b94511a5782",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 1,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "48b028030326d94b0250746f35cbbbfb4fdc41691845646f131f399c861f44b9",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -1.5000 4.0000 1.1500 -34.1359 26.0220"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_sand_003.png",
+      "review_id": "P03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        18,
+        32,
+        79,
+        70
+      ],
+      "source_roi_normalized": [
+        0.1875,
+        0.3333333333333333,
+        0.8229166666666666,
+        0.7291666666666666
+      ],
+      "annotation": "原生 RGB 可见沙岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "ac0d0add664daede6f53c5238acf3286252c4318660658143977d92ecedf0cb1",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 3,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "977e81bc1274488c7ef52da4391561b10adf98b7007f7225572a57156129fa2d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.1000 5.0000 0.8500 -7.0165 39.9214"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_gravel_004.png",
+      "review_id": "P04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        11,
+        25,
+        85,
+        64
+      ],
+      "source_roi_normalized": [
+        0.11458333333333333,
+        0.2604166666666667,
+        0.8854166666666666,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见沙砾岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "807cd8700871165b94d52ddeb3923abd6cad3db7a00e8d9af82ec2292bf425a5",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 5,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "e438e01ddcd3e028cfa58466adb04aa5b8b24cac90e7bd649931dcc33770ef16",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 14.5000 4.0000 1.1500 -34.1359 26.0220"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_gravel_005.png",
+      "review_id": "P05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        28,
+        85,
+        66
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.2916666666666667,
+        0.8854166666666666,
+        0.6875
+      ],
+      "annotation": "原生 RGB 可见沙砾岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "bcf31075a64794a7f6b9cf0061d5dd9193f115c97eb596d14a146189f2ac23be",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 6,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "ff790be4ec945dd3c8646bd18fa5771e20de1c85d240ac0ab56abca6bb849bcf",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 18.9000 4.0000 0.1000 30.9638 20.4560"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_gravel_006.png",
+      "review_id": "P06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        17,
+        27,
+        79,
+        68
+      ],
+      "source_roi_normalized": [
+        0.17708333333333334,
+        0.28125,
+        0.8229166666666666,
+        0.7083333333333334
+      ],
+      "annotation": "原生 RGB 可见沙砾岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "39c78bb0786a73babf1859a4e6a6211cb38a49c4a4245bcf3b21204979bcafe6",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 7,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "33907b5bf626d232a4d6b5a0f93141c3c897d38b61748004c244bacb89b88206",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.1000 5.0000 0.8500 -7.0165 39.9214"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_stone_007.png",
+      "review_id": "P07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        11,
+        33,
+        83,
+        65
+      ],
+      "source_roi_normalized": [
+        0.11458333333333333,
+        0.34375,
+        0.8645833333333334,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见石岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "bdc9cf6764d2b9556bf5dde999b652834e55505ee7477a3e90249626980fc8dd",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 8,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d05826449cf36e95b61840528d4c47f9f12fb4f8b074d5e55c9f3e7783e7baaf",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 1.4000 -0.0000 32.7995"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_stone_008.png",
+      "review_id": "P08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        13,
+        22,
+        91,
+        69
+      ],
+      "source_roi_normalized": [
+        0.13541666666666666,
+        0.22916666666666666,
+        0.9479166666666666,
+        0.71875
+      ],
+      "annotation": "原生 RGB 可见石岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "97775dbfd583d96cfef396b7e4b6c9935eb1e0b1e1ef30f92ddc0caa4a30f1e4",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 10,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "1531ce489f667f5f1eed46f4087383dc53173f2c22d04a1785316569299596c3",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 34.9000 4.0000 0.1000 30.9638 20.4560"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_stone_009.png",
+      "review_id": "P09",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        14,
+        30,
+        84,
+        67
+      ],
+      "source_roi_normalized": [
+        0.14583333333333334,
+        0.3125,
+        0.875,
+        0.6979166666666666
+      ],
+      "annotation": "原生 RGB 可见石岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "b1e2835a1bb579299d3a637a1edf418aef9ccf968b5d4ad248e589c1fe277ba6",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 4,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "b973d00813ba3511c141e0c9085c361f812fc840ea48886c39a361d1c9b956c4",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 1.4000 -0.0000 32.7995"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_dirt_010.png",
+      "review_id": "P10",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        12,
+        26,
+        83,
+        67
+      ],
+      "source_roi_normalized": [
+        0.125,
+        0.2708333333333333,
+        0.8645833333333334,
+        0.6979166666666666
+      ],
+      "annotation": "原生 RGB 可见泥岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "774643746a1a3eec1bd6cb380d983a56099ea02f254d6174739b4e933bd09dd7",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 0,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "a22bbb197fe0a5dcdd8b919ed00a1cee0b762a9c6e7d8eb29db0bfb7b3cda5c3",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 1.4000 -0.0000 32.7995"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_dirt_011.png",
+      "review_id": "P11",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        16,
+        26,
+        86,
+        68
+      ],
+      "source_roi_normalized": [
+        0.16666666666666666,
+        0.2708333333333333,
+        0.8958333333333334,
+        0.7083333333333334
+      ],
+      "annotation": "原生 RGB 可见泥岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "790ca8412ff1f8c64d3a370095ee0b524f0f895bce0d95520df9dfeb1408269a",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 2,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "2309109dc5acbedd5cbc54d809bcd1f0c4224c6d23375095701f3129e1736e41",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 2.9000 4.0000 0.1000 30.9638 20.4560"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_water_sand_012.png",
+      "review_id": "P12",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        12,
+        24,
+        87,
+        65
+      ],
+      "source_roi_normalized": [
+        0.125,
+        0.25,
+        0.90625,
+        0.6770833333333334
+      ],
+      "annotation": "原生 RGB 可见沙岸水面，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "68cec707c87c971af781260f000c2910d745419213463c27970cb8ca48519dfb",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 11,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "f4bf8f687ca498c6d2727e33f5dcc9ef456eeb8a59dce01600bcee53b8cff27d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.1000 5.0000 0.8500 -7.0165 39.9214"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_clear_sky_001.png",
+      "review_id": "N01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        10,
+        7,
+        84,
+        64
+      ],
+      "source_roi_normalized": [
+        0.10416666666666667,
+        0.07291666666666667,
+        0.875,
+        0.6666666666666666
+      ],
+      "annotation": "开阔蓝天干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "a504819127e5b76e062756a36b64482541745ec53cc6d9a69811d3c3259eb5ea",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 12,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "c39ef4fc0e886116f7cda00a9bafc9d3586cd7ef97b0926967c24f3614a5780e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 43.1000 32.0000 -57.0000"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_cloud_sky_002.png",
+      "review_id": "N02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        11,
+        8,
+        87,
+        74
+      ],
+      "source_roi_normalized": [
+        0.11458333333333333,
+        0.08333333333333333,
+        0.90625,
+        0.7708333333333334
+      ],
+      "annotation": "浅蓝天空斜视干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "dbf243f65fb7ba4c96600f34d60343b40e9b204410d6da3c759edf95dad9c53d",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 13,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "852ac921b741abfce95bccc8b341c9d43330b1cff413f3ef98cab163a2fd8571",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.1000 11.0000 -30.0000"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_sky_grass_003.png",
+      "review_id": "N03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        10,
+        21,
+        86,
+        68
+      ],
+      "source_roi_normalized": [
+        0.10416666666666667,
+        0.21875,
+        0.8958333333333334,
+        0.7083333333333334
+      ],
+      "annotation": "天空与草地干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "8d95592dcbc1ec49816043c9e49fbff1bbaaa27fcd4d5a3f1aa19e327ad557ae",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 14,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "36d0f65ab877239e6413ac0a5836675ce403ee69ff214f7b082176865d4e30d9",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.1000 0.0000 -9.0000"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_sky_tree_edge_004.png",
+      "review_id": "N04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        8,
+        15,
+        81,
+        69
+      ],
+      "source_roi_normalized": [
+        0.08333333333333333,
+        0.15625,
+        0.84375,
+        0.71875
+      ],
+      "annotation": "天空与树冠边缘干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "6bbd8ae6ee9cfbe6ecbfa4bfd96974bc05afa7e415984b365b534e44164c0659",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 15,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "208045b9fab5f70fdc3f7673e071fa887e6c65b4191ff1ccbd96cf1e61b85cce",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 48.5000 4.0000 43.1000 0.0000 -21.0000"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_sky_stone_edge_005.png",
+      "review_id": "N05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        12,
+        16,
+        86,
+        69
+      ],
+      "source_roi_normalized": [
+        0.125,
+        0.16666666666666666,
+        0.8958333333333334,
+        0.71875
+      ],
+      "annotation": "天空与石壁边缘干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "3920f4106934d37dddc984046d67c0efe4010e4f358623d5e731c837286b4bc2",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 16,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "96d191f18442fcf57be4983c7df4c739dc40ebabb807d386cfedb30b24457b20",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 64.5000 4.0000 43.1000 0.0000 -13.0000"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_ice_006.png",
+      "review_id": "N06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        14,
+        78,
+        63
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.14583333333333334,
+        0.8125,
+        0.65625
+      ],
+      "annotation": "冰干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "ff402a0554aaf4a12e98a52d424b19cc04f5852618511456d27b0bb3a5e76316",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 17,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "598558b411e9b1f9c5eb4bb482aa8fe0997e26ac2ac78ac77a242774bc889083",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "ice",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 80.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_grass_007.png",
+      "review_id": "N07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        18,
+        29,
+        82,
+        66
+      ],
+      "source_roi_normalized": [
+        0.1875,
+        0.3020833333333333,
+        0.8541666666666666,
+        0.6875
+      ],
+      "annotation": "草地干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "fa0fcb0c9590d1a23e6a76ef3adf8e8e26747a6c2d987456a3db3c332578568e",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 20,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "f938544dcebb25f513f13e6a5c14b34c341c97415c3194357ef31c1cf33e99c9",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 95.8000 4.0000 42.9600 -13.8462 29.2787"
+    },
+    {
+      "task_id": "harvest_water_with_bucket",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_stone_008.png",
+      "review_id": "N08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        13,
+        74,
+        64
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.13541666666666666,
+        0.7708333333333334,
+        0.6666666666666666
+      ],
+      "annotation": "石头干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "45fd2f909331f317c8c8d0d0a6a9d8cab8dc048922f0e36d8ce4fad0fbbba472",
+      "world_group": 12084366,
+      "world_seed": 7413200,
+      "source_replay": "harvest_water_with_bucket-fixture-7413200.npz",
+      "frame": 22,
+      "source_sha256": "ded12ddb3cb1b658c651e1269a778b8249ef3e2c9c6bf031bcfc1dd4a41c6827",
+      "mission_sha256": "c587f9800a2825820cc44a0143d2892562835ba14df7b444e7aae6020be8fc51",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "ab47a70846ce1d2ee0e6ade6fba672b80b585bfac3b6af104b2d1218d002b819",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 111.8000 4.0000 42.9600 -18.9390 8.1794"
+    }
+  ]
+}

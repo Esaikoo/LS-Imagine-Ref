@@ -1,0 +1,933 @@
+{
+  "version": 1,
+  "task_id": "harvest_log_in_plains",
+  "curation": {
+    "protocol": "compact_v1",
+    "positive": 12,
+    "negative": 8,
+    "positive_min_side": 20
+  },
+  "bank_revision": "PSCVBANK2",
+  "entries": [
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_001.png",
+      "review_id": "P01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        31,
+        18,
+        66,
+        64
+      ],
+      "source_roi_normalized": [
+        0.3229166666666667,
+        0.1875,
+        0.6875,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "fcf83513638b96caee093db75f428d13d2cbaaf3fe1c4d5f47927693fb991b84",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 0,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "7d7e167139e5fd2ebcfad0b5dd0e11aeca66e9cab2819390925dd2d0f028f554",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 2.7000 -0.0000 5.2739"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_002.png",
+      "review_id": "P02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        30,
+        23,
+        65,
+        67
+      ],
+      "source_roi_normalized": [
+        0.3125,
+        0.23958333333333334,
+        0.6770833333333334,
+        0.6979166666666666
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "0d24c1bc920567f88998dfe02051ae73afb87ae3517f31bef38946753cbd24cf",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 1,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "9802460384a8d66cdcf2346a9db6c5c77bfefdf845bcdee726aab29cdd2389db",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2500 4.0000 2.3500 -24.4440 -4.1026"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_003.png",
+      "review_id": "P03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        23,
+        27,
+        76,
+        66
+      ],
+      "source_roi_normalized": [
+        0.23958333333333334,
+        0.28125,
+        0.7916666666666666,
+        0.6875
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "ba388d87021518a1e6a988c1cae7fd26e663af0c9696f494fe14b9cc48d2d58d",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 2,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "aaf7835dffa3b475d97f5134c0bc9b16456f3a03d00f0bc42be045782f0da22b",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 1.3500 4.0000 1.7500 20.6955 -8.9780"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_004.png",
+      "review_id": "P04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        29,
+        8,
+        66,
+        64
+      ],
+      "source_roi_normalized": [
+        0.3020833333333333,
+        0.08333333333333333,
+        0.6875,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "08f0b0641b3b0c78e37a06eeb2eb6d66bdf056823d99d02edb74124347eb4cc9",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 4,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d1ff193409b42cea902631b144d8b48095caf5271966d845f352553773927c4a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 2.7000 -0.0000 5.2739"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_005.png",
+      "review_id": "P05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        33,
+        18,
+        62,
+        62
+      ],
+      "source_roi_normalized": [
+        0.34375,
+        0.1875,
+        0.6458333333333334,
+        0.6458333333333334
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "6257cd571874eb4c3f71f65e234f223a6a5462f5f2f79ac3fca0506bb325241b",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 5,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "3508e2f7cedb180c3a4fd53a0c05cc7c935f7fffe886b6fab9858f4b21fae69f",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.7500 4.0000 2.3500 -24.4440 -4.1026"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_006.png",
+      "review_id": "P06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        13,
+        2,
+        83,
+        73
+      ],
+      "source_roi_normalized": [
+        0.13541666666666666,
+        0.020833333333333332,
+        0.8645833333333334,
+        0.7604166666666666
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "85ed978be23f5308c2ad29114c790c66705fed3d2de73aaa9502cbdc84b3dac2",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 7,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "8d8df99c755c9a65555422d88a4e8cbabe9bc78324b9977327144ca08cd60f01",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.8000 4.0000 -0.1000 4.1849 -8.0306"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_007.png",
+      "review_id": "P07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        27,
+        8,
+        68,
+        62
+      ],
+      "source_roi_normalized": [
+        0.28125,
+        0.08333333333333333,
+        0.7083333333333334,
+        0.6458333333333334
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "8318865f48bd9fbe8cb249d28103f2ac5cfcd917ad3326efc0676e7c70390c74",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 8,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "9cab30049067b2c6a884bab17d59b76647613e916fe72ad4cc91e6354365ccab",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 2.7000 -0.0000 5.2739"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_008.png",
+      "review_id": "P08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        18,
+        15,
+        72,
+        71
+      ],
+      "source_roi_normalized": [
+        0.1875,
+        0.15625,
+        0.75,
+        0.7395833333333334
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "78f723df0fd32e8d49d19465be386679186df436d009bee8f4eff7b5b5bea1b6",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 10,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "e6b6a9223f7506b3269575bc0cb6321053d2840615806ef1a6a9ea32f05c8d3d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 33.3500 4.0000 1.7500 20.6955 -8.9780"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_009.png",
+      "review_id": "P09",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        30,
+        7,
+        65,
+        63
+      ],
+      "source_roi_normalized": [
+        0.3125,
+        0.07291666666666667,
+        0.6770833333333334,
+        0.65625
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "2e0d4be62634b44487d3617d887fcdb284ba94b54071fdbb9756a38a9813a19a",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 0,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "cd29afddb2bdaf84ca457eb0d2a1f2484278668b4664dfe52123c240b800289a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 2.7000 -0.0000 5.2739"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_010.png",
+      "review_id": "P10",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        22,
+        12,
+        77,
+        63
+      ],
+      "source_roi_normalized": [
+        0.22916666666666666,
+        0.125,
+        0.8020833333333334,
+        0.65625
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "741269451d51f5a0ca366b5e8291875ccfd3e53328d4834ed8f9896786f30236",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 2,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "cba03401871e66d246551daa099f6d63d50b5f738df1edd4623f06c7c4b5054e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 1.3500 4.0000 1.7500 20.6955 -8.9780"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_011.png",
+      "review_id": "P11",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        28,
+        17,
+        69,
+        70
+      ],
+      "source_roi_normalized": [
+        0.2916666666666667,
+        0.17708333333333334,
+        0.71875,
+        0.7291666666666666
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "5351272807c76d23613aeabb4fc54a8575589a3a386256a2787a9681f0fba60a",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 5,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "0215904a111b21bade5ae9a2a725d9d787ead898c14c2bf1d8b3f0bffeec708d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.7500 4.0000 2.3500 -24.4440 -4.1026"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "positive",
+      "path": "positive_oak_012.png",
+      "review_id": "P12",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        20,
+        17,
+        73,
+        64
+      ],
+      "source_roi_normalized": [
+        0.20833333333333334,
+        0.17708333333333334,
+        0.7604166666666666,
+        0.6666666666666666
+      ],
+      "annotation": "原生 RGB 可见橡木，裁剪保留目标，使用正式训练 HUD 遮罩。",
+      "sha256": "a5ffeec320c22081149717648d2fab42ee2c0b1be91fe7f1ac06826a080c3bbf",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 10,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "8e70f1b0a6b00a3bdae50fcf927e2adab63912881f2c8508d861a9fdda04a390",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "wood",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 33.3500 4.0000 1.7500 20.6955 -8.9780"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_meadow_001.png",
+      "review_id": "N01",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        12,
+        22,
+        84,
+        62
+      ],
+      "source_roi_normalized": [
+        0.125,
+        0.22916666666666666,
+        0.875,
+        0.6458333333333334
+      ],
+      "annotation": "草原草丛干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "86a68d2ade967b350d1565d6909171468fc194d952ed9ce32bed0b0e72c8f334",
+      "world_group": 13256350,
+      "world_seed": 7414100,
+      "source_replay": "harvest_log_in_plains-fixture-7414100.npz",
+      "frame": 0,
+      "source_sha256": "911f49396075773a9c73dc1b878b14e107e46f96596051652dab481dd09a366a",
+      "mission_sha256": "bb00e964eac93392974cfacc939b784856e6f390b81145d798bcfa32925c7b16",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "46805f2b8f8ac243cc43ceb250563db85cf8ab3f3a36bba8a21beaceb2b2e56d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_0",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 43.2800 -0.0000 29.7449"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_tall_grass_002.png",
+      "review_id": "N02",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        19,
+        28,
+        73,
+        68
+      ],
+      "source_roi_normalized": [
+        0.19791666666666666,
+        0.2916666666666667,
+        0.7604166666666666,
+        0.7083333333333334
+      ],
+      "annotation": "高草干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "6af0ed14c5ebd3f2632d153d06342b01ff316fd31e4fb0ca2b588682678b14ae",
+      "world_group": 13256350,
+      "world_seed": 7414100,
+      "source_replay": "harvest_log_in_plains-fixture-7414100.npz",
+      "frame": 3,
+      "source_sha256": "911f49396075773a9c73dc1b878b14e107e46f96596051652dab481dd09a366a",
+      "mission_sha256": "bb00e964eac93392974cfacc939b784856e6f390b81145d798bcfa32925c7b16",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "800215648c324d05efdd2d2f2eccd1f4b3068a8e652ca555df377ac15138555b",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_0",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.8000 4.0000 42.9600 -13.8462 26.2114"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_grass_edge_003.png",
+      "review_id": "N03",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        15,
+        22,
+        83,
+        69
+      ],
+      "source_roi_normalized": [
+        0.15625,
+        0.22916666666666666,
+        0.8645833333333334,
+        0.71875
+      ],
+      "annotation": "草地坡缘干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "66c555a807ae7f7faba4a2d482101950614a59ebe70bea5ec7745a03053614e6",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 17,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "2774a7a8a883794583f804d42579926075d7abaefaec665b27c88dd5fb46e59a",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 31.8000 4.0000 42.9600 -13.8462 21.2931"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_grass_flowers_004.png",
+      "review_id": "N04",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        13,
+        28,
+        86,
+        65
+      ],
+      "source_roi_normalized": [
+        0.13541666666666666,
+        0.2916666666666667,
+        0.8958333333333334,
+        0.6770833333333334
+      ],
+      "annotation": "草丛与花干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "268cec36c529e592871e3ab3321e1eadd76f322801a70d1ce5bc4c962c46752e",
+      "world_group": 13256350,
+      "world_seed": 7414100,
+      "source_replay": "harvest_log_in_plains-fixture-7414100.npz",
+      "frame": 7,
+      "source_sha256": "911f49396075773a9c73dc1b878b14e107e46f96596051652dab481dd09a366a",
+      "mission_sha256": "bb00e964eac93392974cfacc939b784856e6f390b81145d798bcfa32925c7b16",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "61089b22c63cfcc36381f9f3a9cdf4fd7781651dcd604574cc9686564310ecf7",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": "green_0",
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 47.8000 4.0000 42.9600 -13.8462 26.2114"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_dirt_005.png",
+      "review_id": "N05",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        24,
+        11,
+        76,
+        62
+      ],
+      "source_roi_normalized": [
+        0.25,
+        0.11458333333333333,
+        0.7916666666666666,
+        0.6458333333333334
+      ],
+      "annotation": "泥土干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "e26b36618506c9a905b10c6edce6a545e8a76bf4f4a605d13b5a51e520ccfdad",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 21,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "4123f0c2f45234287b9d93a970d0a0d200e9742659c2869670ae6d54403ddf73",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "dirt",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 63.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_stone_006.png",
+      "review_id": "N06",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        19,
+        12,
+        78,
+        65
+      ],
+      "source_roi_normalized": [
+        0.19791666666666666,
+        0.125,
+        0.8125,
+        0.6770833333333334
+      ],
+      "annotation": "石头干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "c6422f950964e6d1619673767e471fa543898ee00636610454d74a7f6e08de57",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 22,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "b65fc7dea01481ab84a66767122f247f79631f3f94c226a1c9dd67729b37ca3d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 80.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_sky_horizon_007.png",
+      "review_id": "N07",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        14,
+        20,
+        81,
+        65
+      ],
+      "source_roi_normalized": [
+        0.14583333333333334,
+        0.20833333333333334,
+        0.84375,
+        0.6770833333333334
+      ],
+      "annotation": "天空与地平线干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "bfa1e3c5186ba54d31801f9a4dc06546bcc1f54d3c97e040eacc398d31dd5bac",
+      "world_group": 5955741,
+      "world_seed": 7413100,
+      "source_replay": "harvest_log_in_plains-fixture-7413100.npz",
+      "frame": 24,
+      "source_sha256": "e0b62a98f7d0b7bce4e6f6340302d8dae631131927cb6093ebf80e23496ae8eb",
+      "mission_sha256": "c0096aff2ec9d2b4953fdcf4860993cdffcf14165816857690c57cb1f939c37a",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "e6de36a76f0ac5b2e9e26af4a5c111588fc1e50f5802d5b41791beb7f987a566",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 0,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 96.5000 4.0000 43.1000 0.0000 -7.0000"
+    },
+    {
+      "task_id": "harvest_log_in_plains",
+      "split": "train",
+      "role": "negative",
+      "path": "negative_gravel_008.png",
+      "review_id": "N08",
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "source_roi_xyxy": [
+        24,
+        12,
+        78,
+        64
+      ],
+      "source_roi_normalized": [
+        0.25,
+        0.125,
+        0.8125,
+        0.6666666666666666
+      ],
+      "annotation": "沙砾干扰样本，画面取自独立的无目标取景区。",
+      "sha256": "5bf5bbbf15f45fa7755cd9316f0ff965b68c902de871e7c6175d0a04d2d48a99",
+      "world_group": 1881940,
+      "world_seed": 7413101,
+      "source_replay": "harvest_log_in_plains-fixture-7413101.npz",
+      "frame": 26,
+      "source_sha256": "3cdf308e4111013292801fc2947ab9923f3c2e4241c588684baa74686694972c",
+      "mission_sha256": "93c72808065da2fb4da661b16d5b44ad758b0fad185fccf78ba3750308b787e0",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "fc250d7224a39141f70c6177e8af2f3f7e74590ebd43a9e863637a2f75410f54",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "gravel",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 111.8000 4.0000 42.9600 -18.9390 8.1794"
+    }
+  ]
+}

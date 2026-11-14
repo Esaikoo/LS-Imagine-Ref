@@ -1,0 +1,534 @@
+{
+  "version": 1,
+  "task_id": "harvest_water_with_bucket",
+  "entries": [
+    {
+      "path": "train_01.png",
+      "review_id": "T01",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含开阔蓝天和背景；位于无目标取景区，核对全图。",
+      "sha256": "d12d5bb5d1ed8a9aaec85ece86fe1416572d25d93b360f28487a1d4c55660462",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 12,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "c39ef4fc0e886116f7cda00a9bafc9d3586cd7ef97b0926967c24f3614a5780e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 43.1000 32.0000 -57.0000"
+    },
+    {
+      "path": "train_02.png",
+      "review_id": "T02",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含浅蓝天空斜视和背景；位于无目标取景区，核对全图。",
+      "sha256": "b0bbf3e96ef4f1f32943a4186fa8cd2a2ec3a1b3b58f6ef6746b6de329e11b84",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 13,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "2abe8f74d7eba98375a2932ada7b177dba95b896b4fd1244d74a6ec034ad499e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.1000 32.0000 -30.0000"
+    },
+    {
+      "path": "train_03.png",
+      "review_id": "T03",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含天空与草地和背景；位于无目标取景区，核对全图。",
+      "sha256": "86a329384f4cfd6e2e97aaf08ff33b2ce6c9b5a71c8443f4b378fd51f94fcf44",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 14,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "36d0f65ab877239e6413ac0a5836675ce403ee69ff214f7b082176865d4e30d9",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.1000 0.0000 -9.0000"
+    },
+    {
+      "path": "train_04.png",
+      "review_id": "T04",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含天空与树冠边缘和背景；位于无目标取景区，核对全图。",
+      "sha256": "726f4ac09392ce89a35bd9820dbbdaa6f0fcc59c001cd024595d81815e40debd",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 15,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "0785a24d72cc118d93ac7bdcfc27fe01d8dc93a91d89700e8f52e520d191c009",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 48.5000 4.0000 43.1000 0.0000 -21.0000"
+    },
+    {
+      "path": "train_05.png",
+      "review_id": "T05",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含天空与石壁边缘和背景；位于无目标取景区，核对全图。",
+      "sha256": "1e55c7325e2fd0a5981e889e3a337f50d51e519c1718c150f68e4718fc35f4d8",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 16,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "96d191f18442fcf57be4983c7df4c739dc40ebabb807d386cfedb30b24457b20",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 64.5000 4.0000 43.1000 0.0000 -13.0000"
+    },
+    {
+      "path": "train_06.png",
+      "review_id": "T06",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含冰和背景；位于无目标取景区，核对全图。",
+      "sha256": "229e8caced911c6f7a716e726e02fe03346ac05bcf2be1aaee57a2f4492933df",
+      "world_group": 6463620,
+      "world_seed": 7413201,
+      "source_replay": "harvest_water_with_bucket-fixture-7413201.npz",
+      "frame": 18,
+      "source_sha256": "79c698de69701a2738afcc4d91c15e3c8f971046f39cf49e6fa3512c55d84665",
+      "mission_sha256": "22b0725adba05800124a2d3d078fce35ca2e0a6c488dbd219684e6631b6974a5",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "ed9be7849bbc7998a7c317c9cd670fc39620f9ca1124a9ddbe4d423e30211fa4",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "ice",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 79.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "calibration_01.png",
+      "review_id": "C01",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见沙砾岸水面，按全图审核。",
+      "sha256": "e582f06f81ab9ff9429acab3120f71be07ae8a74daab26765b8ed012cbe4e844",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 0,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d2d0045f407371bc0ef1c3fc11a10549b68fe67ef7b8846c504a1e183bd426d5",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 1.4000 -0.0000 32.7995"
+    },
+    {
+      "path": "calibration_02.png",
+      "review_id": "C02",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见沙砾岸水面，按全图审核。",
+      "sha256": "02e54acadbb871c27449866b5a72ed9feabb124a16e60568aca38cc61e4f0528",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 2,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "61a456e540d7fca99e52020d01d1fdae3d2d80fe337cd22e5a6cde841177b424",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 2.9000 4.0000 0.1000 30.9638 20.4560"
+    },
+    {
+      "path": "calibration_03.png",
+      "review_id": "C03",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见泥岸水面，按全图审核。",
+      "sha256": "cae46e73a0ffb2df0201edf563a6be28bcfe35983873b04edc77e458add0a656",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 5,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "a95b39f11f206df0df61255e1da4e538766e7c22069debbd68efcdb736b9eb9b",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 14.5000 4.0000 1.1500 -34.1359 26.0220"
+    },
+    {
+      "path": "calibration_04.png",
+      "review_id": "C04",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见沙岸水面，按全图审核。",
+      "sha256": "4776224015224ad7877fa1658e5e3ce1f3ec7994d48b05dc430d8992f10a7dc8",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 9,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "89c197e884b7a102adde9d8be9a05b37d3c6997888fc0b3340a96b5c431cd9a3",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 30.5000 4.0000 1.1500 -34.1359 26.0220"
+    },
+    {
+      "path": "calibration_05.png",
+      "review_id": "C05",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见沙岸水面，按全图审核。",
+      "sha256": "ed40d77b9e13bdd92a96584f28285001d4caf62a4b7223eceb231d8d15a538da",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 11,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "311f6111f6e289d47cd0c52ff71ae1d8e880ff97bd7f5a094a54b40dc205ec26",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "water",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.1000 5.0000 0.8500 -7.0165 39.9214"
+    },
+    {
+      "path": "calibration_06.png",
+      "review_id": "C06",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含开阔蓝天和背景；位于无目标取景区，核对全图。",
+      "sha256": "62d977c551419fb4ccb679f4fbbe97c089fbc3a9da90c5ac0c83de88b2e3485f",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 12,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "47e2f9e04abcc22abd014b638144a5f0e92d1b137702d877835cdb629e4ce0f0",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 43.1000 53.0000 -57.0000"
+    },
+    {
+      "path": "calibration_07.png",
+      "review_id": "C07",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含天空与草地和背景；位于无目标取景区，核对全图。",
+      "sha256": "34abab1380d2db799d94d7d840be1c7f46508f4c84f5f5aba8e8e4e0525e3ab6",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 14,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "54d99a333dada790065736c165bd431c9dfbdb02ef3c2f98c45afd49fe3aecbe",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.1000 0.0000 -9.0000"
+    },
+    {
+      "path": "calibration_08.png",
+      "review_id": "C08",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含天空与树冠边缘和背景；位于无目标取景区，核对全图。",
+      "sha256": "61c8e067350920ea14b62388586864b40050186de6c2b76279b90a10ff886376",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 15,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "4ea0cb1d9bea25cf74966ba72e36b6fc6af0a0646d13cf2c1f63ce9735d1a346",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "air",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 48.5000 4.0000 43.1000 0.0000 -21.0000"
+    },
+    {
+      "path": "calibration_09.png",
+      "review_id": "C09",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含冰和背景；位于无目标取景区，核对全图。",
+      "sha256": "856a425e6c358ddf192ab0df818281deebc84d90e42746dbd007abb1630374ae",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 17,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "598558b411e9b1f9c5eb4bb482aa8fe0997e26ac2ac78ac77a242774bc889083",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "ice",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 80.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "calibration_10.png",
+      "review_id": "C10",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含草地和背景；位于无目标取景区，核对全图。",
+      "sha256": "c3d11af546aca91db3434c174397f73ca6c198e8d08c600a12b8c1def625c954",
+      "world_group": 1792152,
+      "world_seed": 7413202,
+      "source_replay": "harvest_water_with_bucket-fixture-7413202.npz",
+      "frame": 19,
+      "source_sha256": "b3ccf38a5291897474a478607501be11b7fefef7f297beadd2453c145cc11472",
+      "mission_sha256": "6fbd969f1ccefc9993fcf84e2a22e31d4cb1f55cea8d3f9a874e5e791cb2bcbb",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "16d044ee0c1e5d36c6ccde83627e39a47ceeb2466551f49a515927c002461dad",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "grass block",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 96.5000 4.0000 43.2800 -0.0000 33.0558"
+    }
+  ]
+}

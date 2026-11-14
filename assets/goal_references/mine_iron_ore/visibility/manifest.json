@@ -1,0 +1,534 @@
+{
+  "version": 1,
+  "task_id": "mine_iron_ore",
+  "entries": [
+    {
+      "path": "train_01.png",
+      "review_id": "T01",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含石头和背景；位于无目标取景区，核对全图。",
+      "sha256": "2d330f6e114c95b60a649d54d89bd70f589612b7ad70bc1f05245d2defc6014b",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 13,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d8647840566cd3ab5602cf8f47caf717f07788f9a02c1a101514d1d124699d1c",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.2000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "train_02.png",
+      "review_id": "T02",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含花岗岩和背景；位于无目标取景区，核对全图。",
+      "sha256": "3f42820bf3154e94fd1a1420cf8bde8a2d90a4f25acd3983215c61fce7fec769",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 14,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "720f2a6e27ef893729403796018e6e4ee31929f55fff80211be26c338ee049d0",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 16.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "train_03.png",
+      "review_id": "T03",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含煤矿石和背景；位于无目标取景区，核对全图。",
+      "sha256": "6a194c4db8b59940a7ad920dcecbe1b894adce6613c8c87ce56c9edb2596ccb8",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 16,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d367c03947008ef42724830f552a1e5a0f5375d72c0c3639fde5f5a30b6721bd",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "coal ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "train_04.png",
+      "review_id": "T04",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含安山岩和背景；位于无目标取景区，核对全图。",
+      "sha256": "00b02909a1957cb026940b4c7e438f2d0ba36f1b1305c8e10ddca851190be7f8",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 21,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "0bc64a0c4194a80d01ac83ce032e527390ce778b8ea1a80f9cf21581640e9efb",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 63.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "train_05.png",
+      "review_id": "T05",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含金矿石和背景；位于无目标取景区，核对全图。",
+      "sha256": "c03ed1c165d11c8af603c279dea7227033562932258fceb83c7fee2461eb5bb7",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 23,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "f82e9ed328e3df4816c7dc3765fcc9adfbab42876f303a0888291039f97ca0d3",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "gold ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 79.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "train_06.png",
+      "review_id": "T06",
+      "fold": "train",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含圆石和背景；位于无目标取景区，核对全图。",
+      "sha256": "2d9a5d735691d4845547b70e7190742f4198f028577a6e943fbef996b49f1576",
+      "world_group": 2411935,
+      "world_seed": 7413301,
+      "source_replay": "mine_iron_ore-fixture-7413301.npz",
+      "frame": 26,
+      "source_sha256": "43c68d2c7fd81564fd036a79672cb6f8ef692c80ea58b49cd58cacaefa667a9c",
+      "mission_sha256": "bc99050d1c5b15d9c134d1128bbdf47cb9f65c775b9fb397e7802014eacdb87b",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "f647ffd89633186ecc182ed4faf42c6d6baa506a64087774d772cd3c246367a2",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 1,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "cobblestone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 112.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "calibration_01.png",
+      "review_id": "C01",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见俯视石阶铁矿，按全图审核。",
+      "sha256": "c80f05b9b9da22c5c46dbaa51623be1cbdd00fd135594f67eb56195b22819cef",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 1,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "86dca326732bc9cb9e4540e8d23c5daa622915a12ad3ab3ee63714857915ee8e",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p -0.3000 4.0000 1.6000 -24.7024 49.9614"
+    },
+    {
+      "path": "calibration_02.png",
+      "review_id": "C02",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见俯视石阶铁矿，按全图审核。",
+      "sha256": "82dd13898468852d80c3b4a8886dbd80ae20df1c4cf00f5c6ac151924fe88354",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 2,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "fd05be560d21e761492d64523ddf2328ba91a208b16611baadbb4ddc935d6112",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 1.4000 4.0000 1.8500 24.0232 53.8227"
+    },
+    {
+      "path": "calibration_03.png",
+      "review_id": "C03",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见闪长岩洞铁矿，按全图审核。",
+      "sha256": "a66488e5210324db05e9865e6c45439939994f8d92ea9b1891fb4b09ea4d1d0c",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 5,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "cc7342e95d5195959363869bfa7e5e12e34a2f35a3a8e3b972ebcfeab77f9492",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.8000 4.0000 2.4600 -24.4440 0.6774"
+    },
+    {
+      "path": "calibration_04.png",
+      "review_id": "C04",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见花岗岩洞铁矿，按全图审核。",
+      "sha256": "d5bbdb2a9636f67e0251d6b37984069f6b73fd025c28e140a20f470beabe2bb6",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 8,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "4f53094e3429c241f2ad9566c73b9efab041295a5da60e6a4820ae50be636bc6",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 32.5000 4.0000 2.7500 -0.0000 15.2163"
+    },
+    {
+      "path": "calibration_05.png",
+      "review_id": "C05",
+      "fold": "calibration",
+      "visible": true,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧中可见花岗岩洞铁矿，按全图审核。",
+      "sha256": "2ce8834b6ce56253540b09f79708703d95d1652e5cade6a6ab68a6926ad619cc",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 10,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "40b0c10df7d0e0a8720aca4d97d5a95b0e2c6999fae5f2c9e4f8eff4f58ad0f6",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "iron ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 33.3200 4.0000 2.1400 23.7908 17.4765"
+    },
+    {
+      "path": "calibration_06.png",
+      "review_id": "C06",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含石头和背景；位于无目标取景区，核对全图。",
+      "sha256": "aa79b754ec8f504c93cd25ee64d663e8ce904adad18313190175495236408baa",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 12,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "d8112e8e58de6dc2752e4bd7471e916a0f7cfb1bdc17da03b35d6dc2030c6040",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 0.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "calibration_07.png",
+      "review_id": "C07",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含花岗岩和背景；位于无目标取景区，核对全图。",
+      "sha256": "8d011913c75e231c715c0ee7fa14d726fed9ec5181015a87b9e72b66112be695",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 15,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "182553cde30c7b56aad6ce4d0b6741112d24e97a4a3e624b3f9807b56e72bb6b",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 15.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "calibration_08.png",
+      "review_id": "C08",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含煤矿石和背景；位于无目标取景区，核对全图。",
+      "sha256": "751412f51e4cc6ca17af02791c9c6e82b66f6f984406adf1ac51012801c06c90",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 17,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "c66e35fb6dd4f43da6f9022a07bdff0d4d224703ef8cb21949b5e2c76f09fe1d",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "coal ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 31.8000 4.0000 42.9600 -18.9390 8.1794"
+    },
+    {
+      "path": "calibration_09.png",
+      "review_id": "C09",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含金矿石和背景；位于无目标取景区，核对全图。",
+      "sha256": "d1595e43c4bfe82f885336d2cca3284712724da519ba29cd0d5cc491eee5ba6e",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 22,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "13bcc18f89b593ffecb722c9e99f216d84f109709b4269360d9987a30f84af84",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "gold ore",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 80.5000 4.0000 43.2800 -0.0000 10.2169"
+    },
+    {
+      "path": "calibration_10.png",
+      "review_id": "C10",
+      "fold": "calibration",
+      "visible": false,
+      "source_split": "train",
+      "scope": "whole_frame",
+      "source_size": [
+        96,
+        96
+      ],
+      "annotation": "完整帧仅含闪长岩和背景；位于无目标取景区，核对全图。",
+      "sha256": "cef57e11aa5ace5eb91f2395556ec369d1abdacc208f7fd170494d19f9b42505",
+      "world_group": 12797835,
+      "world_seed": 7413302,
+      "source_replay": "mine_iron_ore-fixture-7413302.npz",
+      "frame": 25,
+      "source_sha256": "f45c8690b1be0084d0b4cc389ef59f32cbfd3185d127dfaa695bef7a6a8a201b",
+      "mission_sha256": "64dc498bfde0090fbe7ec1767d830cf40cbf8cc9f569ac5e0d0262b0d9e6bb7f",
+      "source_rgb_size": [
+        96,
+        96
+      ],
+      "source_frame_rgb_sha256": "9055e396c08d2dff12a4a1799f8aec63c02dc691cee619c4110f604c00c17391",
+      "source_kind": "MineDojo authored training reference scene",
+      "source_scene": 2,
+      "hud_mask_sha256": "1bf96e7cc3b2b8d32210e01ada32af3d2beca1d223713b908a03b1ff5f4bba82",
+      "center_ray": {
+        "block": "stone",
+        "entity": "null"
+      },
+      "source_camera": "/tp @p 95.8000 4.0000 42.9600 -18.9390 8.1794"
+    }
+  ]
+}
