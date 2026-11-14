@@ -733,6 +733,8 @@ def main(config): # config is namespace
     config.evaldir.mkdir(parents=True, exist_ok=True)
     step = resume_plan["environment_step"] if resume_plan else count_steps(config.traindir)
 
+    from training_state import configure_tensorboard
+    configure_tensorboard(config, resume_plan, logdir)
     logger = tools.Logger(config, logdir, config.action_repeat * step)
 
     if config.offline_traindir: # False

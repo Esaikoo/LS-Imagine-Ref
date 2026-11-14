@@ -142,7 +142,9 @@ class Logger:
                 except Exception as error:
                     raise RuntimeError("TensorBoard video encoding failed. Check moviepy and imageio in the training environment.") from error
                 print("TensorBoard video encoding ready.", flush=True)
-            self._writer = SummaryWriter(log_dir=str(logdir), max_queue=1000)
+            # Only event files can follow the original run; JSON and Replay stay separate.
+            event_dir = getattr(config, "tensorboard_logdir", None) or logdir
+            self._writer = SummaryWriter(log_dir=str(event_dir), max_queue=1000)
 
     def scalar(self, name, value):
         self._scalars[name] = float(value)

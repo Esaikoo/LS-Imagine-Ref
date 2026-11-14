@@ -17,8 +17,9 @@ import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
+CODE_VERSION = "VN4R2T1"
 _RUNTIME_KEYS = {
-    "resume_from", "resume_upgrade_spatial", "logdir", "traindir", "evaldir", "offline_traindir",
+    "resume_from", "resume_upgrade_spatial", "resume_tensorboard", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
     "use_wandb", "wandb_key", "results_dir", "name", "debug",
 }
@@ -53,6 +54,27 @@ def _check_destination(directory, source_runs):
         if _under(destination, _path(source)):
             raise ValueError("Resume output must be outside the read-only source run: " + str(source))
     return destination
+
+
+def configure_tensorboard(config, plan, logdir):
+    """Append events on request, without redirecting any other training files."""
+    target = _path(logdir)
+    if getattr(config, "resume_tensorboard", False):
+        if plan is None:
+            raise ValueError("resume_tensorboard requires resume_from")
+        if getattr(config, "use_wandb", False):
+            raise ValueError("resume_tensorboard requires the TensorBoard logging backend")
+        sources = _unique_paths(plan["source_runs"])
+        prior = plan["checkpoint"].get("config", {}).get("tensorboard_logdir")
+        target = _path(prior) if prior else sources[0]
+        if target not in sources or not target.is_dir():
+            raise ValueError("Original TensorBoard run is missing or outside the resume lineage")
+        print(f"[resume] TensorBoard continues: {target}", flush=True)
+        print(f"[resume] New checkpoints and replay: {logdir}", flush=True)
+    config.tensorboard_logdir = str(target)
+    print(f"[code] {CODE_VERSION} | pose_loss={getattr(config, 'vnext_pose_loss_version', 'n/a')} "
+          f"| guidance={getattr(config, 'goal_guidance_revision', 'n/a')}", flush=True)
+    return target
 
 
 def _config_dict(config):
@@ -503,6 +525,9 @@ def write_resume_manifest(plan, config):
     if path.exists():
         raise FileExistsError("Refusing to overwrite a resume manifest: " + str(path))
     record = dict(schema_version=SCHEMA_VERSION,
+        runtime_code_version=CODE_VERSION,
+        tensorboard_logdir=getattr(config, "tensorboard_logdir", str(config.logdir)),
+        tensorboard_continuity=bool(getattr(config, "resume_tensorboard", False)),
         source_checkpoint=str(plan["checkpoint_path"]),
         source_run=str(plan["source_run"]),
         model_checkpoint_step=plan["model_step"],

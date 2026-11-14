@@ -1521,7 +1521,7 @@ fix2虽然恢复了A未来损失和梯度，但一帧未知运动就关闭余下
 
 ### 参考库和真实训练数据
 
-默认采沙库已随项目保存于 `assets/goal_references/harvest_sand`，含来自三个真实训练世界的24 张复核正图和 9 张复核难例。新采沙实验可直接使用默认 `BANK=assets/goal_references`。其余四个任务可按下述方式准备各自的库。
+默认采沙库已随项目保存于 `assets/goal_references/harvest_sand`，现行 `compact_v1` 含来自 7 个训练世界组的 12 张复核正图和 8 张困难负样本。新采沙实验可直接使用默认 `BANK=assets/goal_references`。其余四个任务可按下述方式准备各自的库。
 
 每个任务使用固定类别库，包含可采目标的多实例、多视角 RGB 与可选困难负样本。任务映射为原木、场景水面、沙子、铁矿和羊。训练中 D 可从同一原始相机帧取得 96×96 图像，老 Replay 或不可用帧回退到 64×64。水和羊的视觉存在与交互结果分别监督。
 
@@ -1643,3 +1643,35 @@ nohup env A_MODE=vnext4 NTFY_TOPIC="$NTFY_TOPIC" TRAIN_LOG_FILE="$LOG_FILE" \
 - D 的整帧可见性额外读取采沙图库下的 `visibility/manifest.json`。6 张经复核的训练负帧进入损失，另外 5 正、5 负来自独立训练世界，只用于校准。清单记录每帧的来源、审核描述与哈希，并随权重内嵌。没有该清单的任务仍按实际射线监督；稀疏射线漏检保留为未知。延迟拾取用实际执行、居中可交互和连续已知库存来配对，最多 6 步。
 - C 可在持续缺少可信线索时恢复有限 SEARCH，在确认缺席与证据未知之间保留独立指标。高仰角下连续出现蓝色低纹理准星区域时，可以纠正上仰或朝该区域攻击。D 的居中证据只辅助 A 已校准的交互探针；目标打掉后可完成已排定的单步拾取，失去资格时中止余下攻击。
 - B 的静止监督对齐已有写图门槛，继续拒绝不可靠的位移。B_map 选择跨度最大的合格局部段，局部段数和单段最大访问格数单独记录。定期导出的频率与上一节所述配置一致。
+
+
+## VN4R2T1：服务器旧版本续训保留同一条曲线（2026-11-12）
+
+本次经用户明确授权直接修改服务器 c8a0482 工作树。没有导入本地 VN4R4 的算法改动，没有提交 Git 或自动启动训练。保留 pose loss 4、goal guidance 2 和 checkpoint 内嵌参考库。
+
+新增 --resume_tensorboard True：只向原 TensorBoard run 追加新事件文件，原事件和 JSON 不重写；新模型、训练/评测回放、metrics.jsonl 和可视化仍保存在新建的 _resume 目录。默认 False 保持旧行为。续训配置保存事件目录，多次续训沿用同一目录，resume.json 保存来源与权重/环境步差异。590k权重恢复、已消耗600k环境步的断点不伪装成连续600k权重。无需 purge、复制或合并旧事件文件。
+
+实例额度100GiB；核查时memory.events的max/oom/oom_kill均为0。停止后约36GiB中约32GiB为文件缓存、约2.9GiB为匿名内存；本轮现有训练NPZ解压总量约44.9GiB。高内存占用值得关注，但本次退出日志明确为600k写检查点时磁盘ENOSPC。磁盘现已扩容至99GB，剩余23GB。未修改Replay容量或任何训练预算。
+
+验证：18项CPU回归通过，包含同run真实事件追加、旧文件哈希不变、多次续训、默认隔离、模型/优化器恢复和目标融合兼容；Python语法、Shell语法与git diff检查通过。未启动正式训练。
+
+## 36. 后续训练分支 esaiko-pscv（2026-11-14）
+
+PSCV 指 Prediction（动作后果预测）、Spatial Memory（空间记忆）、Control（动作控制）和 Verification（目标验证）。本分支固定服务器的 VN4R2T1 训练代码，以 `c8a0482` 和同一 TensorBoard run 续训补丁为基线。默认 vNext4 配置为 pose loss 4、goal guidance 2。VN4R4 的预测资格、脱困和目标校准改动另存于 `esaiko-apm`；既有训练和下面的评测使用 VN4R2T1。
+
+- 原采沙实验 `20261110T111537` 在约 600k 步写检查点时遇到磁盘空间不足，从 590k 权重恢复。续训 `20261112T091801_resume` 的环境步预算沿用已消耗步数，最终检查点为 1,000,000 步。评测检查点 SHA-256 为 `7aca1483469d3ab51c1b324132b1f0c274c1879d653a6ab34ddb452837fd6739`。
+- 50 张新地图使用种子 `2026111600–2026111649`，每图两模型各跑一局，每局最多 1000 步。VN4R2T1 为 35/50，原版为 29/50。地形、出生点和朝向逐图核对，首帧像素差异单独记录。第 45 图水下初始氧气差 9，去掉这一对后为 34/49 和 28/49。11 月 9 日旧的 20 图组两边各为 16/20；绕墙案例原版 1000 步超时，VN4R2T1 389 步采集成功。以上是固定检查点比较。
+- 独立评测使用同源代码的本地副本，补充了 D 的 `minedojo_test_*` 任务名映射，并在配置核验中排除仅供训练调试的 `check_obs_enabled`。逐步轨迹无损压缩。水下氧气容差在 44 对完成后加入，只允许两个水下初始值均不低于 200、低于满值 300、相差最多 10，其余初始状态仍须核对。训练分支保留服务器程序。
+
+从头训练请切换到 `esaiko-pscv`，激活相应 Conda 环境，显式设置 `A_MODE=vnext4`。脚本的默认模式仍为 vNext。以下示例使用项目内置的采沙图库：
+
+```bash
+TASK=harvest_sand
+BANK=assets/goal_references
+mkdir -p "logs/train/$TASK"
+LOG_FILE="logs/train/$TASK/train_$(date +%Y%m%d_%H%M%S).log"
+nohup env A_MODE=vnext4 NTFY_TOPIC="$NTFY_TOPIC" TRAIN_LOG_FILE="$LOG_FILE" \
+  sh ./scripts/train.sh "$TASK" --goal_ref_bank_root "$BANK" > "$LOG_FILE" 2>&1 &
+```
+
+如需通知，启动前将 `NTFY_TOPIC` 设为手机订阅的主题。原木、取水、铁矿、剪羊毛使用各自的任务名、Swin U-Net 权重和目标参考库，共用 MineCLIP 权重。项目只随附采沙图库。其他任务先按 §27 从该任务的训练画面建库，再用 `--goal_ref_bank_root` 选定，评测地图不得用于建库。恢复本分支实验时使用相同任务和 `--resume_from <未跑完的检查点或运行目录>`。需沿用原 TensorBoard run 时追加 `--resume_tensorboard True`，JSON、回放和检查点仍写入新续训目录。已跑满 1M 的采沙检查点用于评测，新任务从头训练。

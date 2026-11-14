@@ -117,6 +117,50 @@ def replay(path, identity, steps):
 
 
 class TrainingStateTests(unittest.TestCase):
+    def test_tensorboard_continues_original_events_without_overwriting_history(self):
+        from training_state import configure_tensorboard
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        with tempfile.TemporaryDirectory() as tmp:
+            source, destination = Path(tmp)/"old", Path(tmp)/"resume"
+            source.mkdir(); destination.mkdir()
+            oldcfg = config(source, use_wandb=False)
+            old = tools.Logger(oldcfg, source, 590000)
+            old.scalar("eval_success", .5); old.write(); old._writer.close()
+            history = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source.iterdir()}
+            incoming = config(destination, use_wandb=False, resume_tensorboard=True)
+            plan = dict(source_runs=[source], checkpoint={"config": vars(oldcfg)})
+            self.assertEqual(configure_tensorboard(incoming, plan, destination), source)
+            resumed = tools.Logger(incoming, destination, 600000)
+            resumed.scalar("eval_success", .75); resumed.write(); resumed._writer.close()
+            for name, digest in history.items():
+                self.assertEqual(hashlib.sha256((source/name).read_bytes()).hexdigest(), digest)
+            events = EventAccumulator(str(source)).Reload().Scalars("scalars/eval_success")
+            self.assertEqual([x.step for x in events], [590000, 600000])
+            self.assertEqual([x.value for x in events], [.5, .75])
+            self.assertFalse(list(destination.glob("events.out.tfevents.*")))
+            self.assertEqual(json.loads((destination/"metrics.jsonl").read_text())["step"], 600000)
+
+    def test_tensorboard_repeated_resume_and_default_separation(self):
+        from training_state import configure_tensorboard
+        with tempfile.TemporaryDirectory() as tmp:
+            original, previous, current = [Path(tmp)/n for n in ("old", "r1", "r2")]
+            for p in (original, previous, current): p.mkdir()
+            plan = dict(source_runs=[original,previous], checkpoint={"config":{"tensorboard_logdir":str(original)}})
+            cfg = config(current, resume_tensorboard=True)
+            self.assertEqual(configure_tensorboard(cfg, plan, current), original)
+            cfg.resume_tensorboard = False
+            self.assertEqual(configure_tensorboard(cfg, plan, current), current)
+            cfg.resume_tensorboard = True
+            with self.assertRaisesRegex(ValueError, "requires resume_from"):
+                configure_tensorboard(cfg, None, current)
+            cfg.use_wandb = True
+            with self.assertRaisesRegex(ValueError, "backend"):
+                configure_tensorboard(cfg, plan, current)
+            cfg.use_wandb = False
+            plan["checkpoint"]["config"]["tensorboard_logdir"] = str(Path(tmp)/"unrelated")
+            with self.assertRaisesRegex(ValueError, "lineage"):
+                configure_tensorboard(cfg, plan, current)
+
     def fixture(self, directory, steps=7):
         cfg = config(directory)
         cfg.traindir.mkdir(parents=True)

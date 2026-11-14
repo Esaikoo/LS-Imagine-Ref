@@ -9,6 +9,7 @@ defaults:
   offline_traindir: ''
   offline_evaldir: ''
   resume_from: ''
+  resume_tensorboard: False  # Continue source TensorBoard events; keep new checkpoints/replay separate.
   resume_upgrade_spatial: False  # Explicit fix2 -> fix3 warm start; ordinary resume preserves its revision.
   search_vnext_enabled: False
   vnext_spatial_enabled: False
