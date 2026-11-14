@@ -42,6 +42,32 @@ def obs(heat, first=False):
 
 
 class GoalGuidanceTests(unittest.TestCase):
+    def test_uncalibrated_selected_peak_cannot_promote_or_amplify_actor_heat(self):
+        model = MatchedRegions()
+        model.guidance_revision = 3
+        model.candidate_ready = False
+        model.region.fill_(.95)
+        state = None
+        for i in range(4):
+            raw = obs(180, i == 0)
+            fused, evidence, state = build_policy_observation(raw, model, state)
+            self.assertEqual(evidence["state"].item(), 1)
+            torch.testing.assert_close(fused["heatmap"], raw["heatmap"])
+
+    def test_confirmation_requires_consecutive_qualified_not_just_candidate_frames(self):
+        model = MatchedRegions()
+        model.guidance_revision = 3
+        model.candidate_ready = True
+        model.region.fill_(.65)
+        state = None
+        for i in range(3):
+            _, evidence, state = build_policy_observation(obs(100, i == 0), model, state)
+        model.region.fill_(.95)
+        _, evidence, state = build_policy_observation(obs(100), model, state)
+        self.assertEqual(evidence["state"].item(), 1)
+        _, evidence, state = build_policy_observation(obs(100), model, state)
+        self.assertEqual(evidence["state"].item(), 2)
+
     def test_rgb_proposal_outside_unet_hotspot(self):
         heat = torch.zeros((1,1,64,64))
         heat[:,:,:12,:12] = 1

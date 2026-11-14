@@ -140,6 +140,7 @@ class VisualizationTests(unittest.TestCase):
             np.testing.assert_allclose(ax.lines[0].get_xdata(), [0., 0., 0., 0.], atol=1.e-7)
             np.testing.assert_allclose(ax.lines[0].get_ydata(), [0., 0., .4, .8])
             self.assertAlmostEqual(np.ptp(ax.get_xlim()), np.ptp(ax.get_ylim()))
+            self.assertGreaterEqual(np.ptp(ax.get_xlim()), 24.)
 
     def test_preview_without_supported_motion_reports_counts_without_a_route(self):
         with tempfile.TemporaryDirectory() as directory:

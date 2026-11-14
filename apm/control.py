@@ -66,7 +66,8 @@ GOAL_FIELDS = dict(log_goal_context=(8,), log_goal_forecast=(N_OPTIONS,2),
     log_goal_direction_novelty=(N_OPTIONS,), log_goal_verify_used=(), log_goal_reject_used=(),
     log_goal_absence_confirmed=(),
     log_goal_search_eligible=(), log_goal_search_learned_used=(), log_goal_search_probe_used=(),
-    log_goal_unresolved_search=(), log_goal_visual_sky_recovery=(), log_goal_pickup_continuation=())
+    log_goal_unresolved_search=(), log_goal_visual_sky_recovery=(), log_goal_pickup_continuation=(),
+    log_goal_pursuit_exhausted=())
 
 
 def cfg(config,key):
@@ -225,6 +226,7 @@ class VNextController(nn.Module):
         self.guidance_fix = self.spatial and int(getattr(config,"vnext_spatial_fix_version",1)) >= 3
         self.goal_search = bool(getattr(config, "goal_search_enabled", False))
         self.goal_guidance_fix = self.goal_search and int(getattr(config, "goal_guidance_revision", 1)) >= 2
+        self.goal_reliability_fix = self.goal_search and int(getattr(config, "goal_guidance_revision", 1)) >= 3
         self.version = GOAL_SEARCH_VERSION if self.goal_search else SPATIAL_VERSION if self.spatial else VERSION
         if self.goal_search:
             if not self.guidance_fix:
@@ -331,6 +333,8 @@ class VNextController(nn.Module):
                 goal_conflict_run=z().long(),
                 goal_verify_trials=z().long(), goal_verify_cooldown=z().long(),
                 goal_verify_active=z().bool(), goal_reject_active=z().bool())
+            if self.goal_reliability_fix:
+                state.update(goal_pursuit_age=z().long(), goal_pursuit_cooldown=z().long())
         return state
 
     @staticmethod
@@ -755,6 +759,7 @@ class VNextController(nn.Module):
         goal_context = None
         goal_verify = goal_reject = goal_trusted = torch.zeros_like(high)
         visual_sky = unresolved_search = pickup_continuation = torch.zeros_like(high)
+        pursuit_exhausted = torch.zeros_like(high)
         goal_novelty = feat.new_zeros(batch,N_OPTIONS)
         if self.goal_search:
             from apm.outcome import goal_context_tensor
@@ -815,6 +820,23 @@ class VNextController(nn.Module):
                 interaction_probe &= interaction_allowed
             interaction_probe &= state["interaction_probe_trials"]<int(cfg(self.config,"vnext_interaction_probe_limit"))
             act |= interaction_probe
+        if self.goal_reliability_fix:
+            # Credibility alone must not make ALIGN an absorbing state. The
+            # bounded pursuit expires only without independent movement,
+            # actual reward, or qualified interaction; it never authorizes an attack.
+            duration = max(3, 3*int(cfg(self.config, "vnext_align_probe_limit")))
+            pursuing = goal_trusted | goal_verify
+            reset_pursuit = moving_progress | progress | act
+            state["goal_pursuit_cooldown"] = (state["goal_pursuit_cooldown"]-1).clamp_min(0)
+            state["goal_pursuit_cooldown"][reset_pursuit] = 0
+            counting = pursuing & ~reset_pursuit & (state["goal_pursuit_cooldown"] == 0)
+            state["goal_pursuit_age"] = torch.where(counting, state["goal_pursuit_age"]+1,
+                                                   torch.zeros_like(state["goal_pursuit_age"]))
+            expired = state["goal_pursuit_age"] >= duration
+            state["goal_pursuit_cooldown"][expired] = duration
+            pursuit_exhausted = state["goal_pursuit_cooldown"] > 0
+            high &= ~pursuit_exhausted
+            goal_verify &= ~pursuit_exhausted
         if self.goal_guidance_fix:
             unresolved = ~high & ~goal_verify & ~act & ~progress
             state["goal_unresolved_run"] = torch.where(
@@ -871,7 +893,11 @@ class VNextController(nn.Module):
             phase[released]=torch.where(high[released],
                 torch.full_like(phase[released],ALIGN),torch.full_like(phase[released],SEARCH))
         if self.goal_search:
-            phase[goal_trusted & high & ~act & ~progress] = ALIGN
+            align_target = goal_trusted & high & ~act & ~progress
+            if self.goal_reliability_fix:
+                align_target &= ~recovery_lease & ~bounded_dead
+                phase[pursuit_exhausted & ~recovery_lease & ~act & ~progress] = SEARCH
+            phase[align_target] = ALIGN
             phase[goal_verify & ~act & ~progress & ~recovery_lease] = ALIGN
             if self.goal_guidance_fix:
                 phase[unresolved_search & (phase == ALIGN) & ~recovery_lease] = SEARCH
@@ -1100,7 +1126,11 @@ class VNextController(nn.Module):
                     goal_forecast[calculate] = result.get("goal_events", goal_forecast[calculate]).detach()
                     if "new_area" in result:
                         goal_new_area[calculate] = result["new_area"].detach()
-                    goal_q_inputs = dict(goal_context=goal_context[calculate],goal_prediction=goal_forecast[calculate])
+                    q_forecast = goal_forecast[calculate]
+                    if self.goal_reliability_fix:
+                        q_forecast = torch.where(result.get("goal_supported", torch.zeros_like(q_forecast, dtype=torch.bool)),
+                                                 q_forecast, .5)
+                    goal_q_inputs = dict(goal_context=goal_context[calculate],goal_prediction=q_forecast)
                 else:
                     goal_q_inputs = {}
                 descriptor[calculate]=result["descriptor"].detach()
@@ -1410,6 +1440,8 @@ class VNextController(nn.Module):
                 info.update(log_goal_unresolved_search=(unresolved_search & (phase == SEARCH)).float(),
                             log_goal_visual_sky_recovery=(visual_sky & state["goal_reject_active"] & extra).float(),
                             log_goal_pickup_continuation=(pickup_continuation & (option == 8)).float())
+            if self.goal_reliability_fix:
+                info["log_goal_pursuit_exhausted"] = pursuit_exhausted.float()
         return F.one_hot(command,12).to(actor_action.dtype),state,info
 
 
@@ -1454,6 +1486,9 @@ class VNextController(nn.Module):
                     remaining=remaining,option_ids=torch.arange(N_OPTIONS,device=device),**goal_inputs)
             if self.goal_search:
                 goal_prediction[rows] = pred.get("goal_events",goal_prediction[rows]).detach()
+                if self.goal_reliability_fix:
+                    goal_prediction[rows] = torch.where(pred.get("goal_supported", torch.zeros_like(goal_prediction[rows], dtype=torch.bool)),
+                                                        goal_prediction[rows], .5)
             output[rows]=pred["descriptor"].detach()
             if self.spatial:score[rows]=self.prediction_score(pred,output[rows])[0]
             return output,score,goal_prediction

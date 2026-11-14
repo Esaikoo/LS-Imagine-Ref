@@ -74,6 +74,37 @@ def replay(batch=1,time=10):
 
 
 class VNextControlTests(unittest.TestCase):
+    def test_trusted_but_unproductive_target_cannot_lock_alignment_forever(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,goal_guidance_revision=3,vnext_probe_probability=0.,vnext_align_probe_limit=2))
+        cur = current(visible=.9,joint=0.,ready=False)
+        cur["goal_context"] = torch.tensor([[.9,.8,.1,0.,0.,0.,2.,1.]])
+        state = None
+        for i in range(7):
+            action,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,
+                proposal=0,cur=cur,training=False,first=i==0)
+        self.assertEqual(info["log_goal_pursuit_exhausted"].item(),1)
+        self.assertEqual(info["log_vnext_phase"].item(),SEARCH)
+        self.assertEqual(info["log_vnext_mask"][0,8].item(),0)
+        self.assertEqual(info["log_goal_absence_confirmed"].item(),0)
+        # Qualified real interaction overrides the timeout, preserving the Actor attack.
+        cur = current(visible=.95,joint=.99,ready=True)
+        cur["goal_context"] = torch.tensor([[.95,.8,.1,0.,0.,0.,2.,1.]])
+        action,state,info = self.run_step(controller,UnsupportedSpatialAB(),state,
+            proposal=1,cur=cur,training=False)
+        self.assertEqual(action.argmax(-1).item(),1)
+        self.assertEqual(info["log_goal_pursuit_exhausted"].item(),0)
+
+    def test_stalled_trusted_peak_does_not_override_recovery_phase(self):
+        controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
+            goal_search_enabled=True,goal_guidance_revision=3,vnext_probe_probability=0.,vnext_stall_steps=8))
+        state = controller.initial(1,"cpu");state["stalled"][:]=10
+        cur = current(visible=.9,joint=0.)
+        cur["goal_context"] = torch.tensor([[.9,.8,.1,0.,0.,0.,2.,1.]])
+        _,_,info = self.run_step(controller,UnsupportedSpatialAB(),state,
+            proposal=0,cur=cur,training=False)
+        self.assertEqual(info["log_vnext_phase"].item(),RECOVERY)
+
     def run_step(self,c,ab,state=None,proposal=10,cur=None,first=False,training=True,obs=None,step=100000,batch=1):
         feat=torch.ones(batch,8);mem=torch.zeros(batch,4)
         return c.choose(ab,feat,mem,cur or current(batch),obs or {},

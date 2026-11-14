@@ -327,7 +327,9 @@ class GoalReference(nn.Module):
         self.hard_negatives = bool(getattr(config, "goal_ref_hard_negative_enabled", True))
         # Fixed, unique frame IDs. Allocate separate halves so a rare visible
         # category is not immediately evicted by commonly observed background.
-        capacity = 64
+        # Selected peaks have sparse ray labels. A 64-frame cache can contain
+        # too few actually labeled peaks even after a long run.
+        capacity = 256 if self.guidance_revision >= 3 else 64
         self.register_buffer("cal_ids", torch.full((capacity,), -1, dtype=torch.long))
         self.register_buffer("cal_world_groups", torch.full((capacity,), -1, dtype=torch.long),
                              persistent=False)
@@ -338,6 +340,16 @@ class GoalReference(nn.Module):
         self.register_buffer("reliability", torch.zeros(3))
         self.register_buffer("cal_counts", torch.zeros((3, 2), dtype=torch.long))
         self.register_buffer("cal_brier", torch.full((3,), .25))
+        if self.guidance_revision >= 3:
+            self.register_buffer("candidate_operating", torch.zeros(3))  # selected, precision, Wilson lower
+            self.register_buffer("cal_heatmaps", torch.zeros((capacity, 64, 64), dtype=torch.uint8))
+
+    @property
+    def candidate_ready(self):
+        if self.guidance_revision < 3:
+            return True
+        count, precision, lower = self.candidate_operating
+        return bool((count >= 8) & (precision >= .8) & (lower > .5))
 
     @property
     def device(self):
@@ -517,15 +529,19 @@ class GoalReference(nn.Module):
                 negative[:, src] = clean_window[:, src]
         return torch.stack((positive, positive | negative), -1)
 
-    def _reviewed_visibility_logits(self, references, calibration):
+    def _reviewed_visibility_logits(self, references, calibration, return_all=False):
         split = self.reviewed_visibility_calibration == calibration
         labels = self.reviewed_visibility_labels[split]
         if self.guidance_revision < 2 or not len(labels):
+            if return_all:
+                return dict(visible_logits=references.new_empty(0),
+                            ensemble=references.new_empty(0, 2, GRID, GRID)), labels[:0]
             return references.new_empty(0), labels[:0]
         rgb = _rgb(self.reviewed_visibility_images[split], self.device)
         if self.input_size != 96:
             rgb = F.interpolate(rgb, (self.input_size, self.input_size), mode="bilinear", align_corners=False)
-        return self._match(rgb, references)["visible_logits"], labels
+        result = self._match(rgb, references)
+        return (result if return_all else result["visible_logits"]), labels
 
     def _loss(self, data, labels, valid, frame_labels, holdout):
         usable = (valid.flatten(1).any(-1) | frame_labels[..., 1].any(-1)) & ~holdout
@@ -566,7 +582,15 @@ class GoalReference(nn.Module):
         loss_candidate = _balanced_bce(candidate_logits, candidate_label, candidate_valid)
         loss_region = .5 * sum(_balanced_bce(head, labels, valid, hard)
                                for head in result["ensemble"].unbind(1))
-        review_logits, review_labels = self._reviewed_visibility_logits(references, calibration=False)
+        review_outputs, review_labels = self._reviewed_visibility_logits(references, calibration=False, return_all=True)
+        review_logits = review_outputs["visible_logits"]
+        review_region_loss = loss_region*0
+        if self.guidance_revision >= 3 and bool((~review_labels).any()):
+            # A manually verified target-free complete frame supplies genuine
+            # region negatives. Positive frames do NOT label every pixel positive.
+            negatives = review_outputs["ensemble"][~review_labels]
+            review_region_loss = .5*(F.softplus(negatives).mean()
+                + F.softplus(negatives.flatten(2).topk(4, dim=-1).values).mean())
         loss_visible = _balanced_bce(torch.cat((result["visible_logits"], review_logits)),
                                      torch.cat((visible[:, 0], review_labels)),
                                      torch.cat((visible[:, 1], torch.ones_like(review_labels))))
@@ -603,6 +627,7 @@ class GoalReference(nn.Module):
             contrast = F.softplus(negative_mass - positive_logits).mean()
         crossview, temporal, pairs = self._paired_loss(data, indices, result, labels, valid)
         loss = self.loss_weight * (loss_visible + loss_region + .5 * loss_interact
+                                   + .25 * review_region_loss
                                    + .5 * loss_candidate + .25 * loss_reference_assets
                                    + .125 * (loss_negative_assets + loss_negative_asset_peaks)
                                    + .2 * contrast + .2 * crossview + .1 * temporal + .1 * brier)
@@ -618,6 +643,7 @@ class GoalReference(nn.Module):
                    "D/interaction_labels": interact[:, 1].sum(),
                    "D/interaction_positive_labels": (interact[:, 0] & interact[:, 1]).sum(),
                    "D/visible_review_train_frames": len(review_labels),
+                   "D/negative_frame_region_loss": review_region_loss,
                    "D/hard_negatives": hard.sum(), "D/crossview_pairs": pairs}
         return loss, metrics
 
@@ -697,6 +723,15 @@ class GoalReference(nn.Module):
             half = len(self.cal_ids)//2
             positive = (labels[indices] & valid[indices]).flatten(1).any(-1)
             slots = (ids[indices]*31 + ids[indices]//17).remainder(half) + positive.long()*half
+            if self.guidance_revision >= 3:
+                # Successful interactions are much rarer than visible regions.
+                # Retain their real held-out frames instead of evicting them
+                # with ordinary visible/background samples. No extra labels.
+                half = 3*len(self.cal_ids)//8
+                rare = frame_labels[indices, 1, 0] & frame_labels[indices, 1, 1]
+                hashed = ids[indices]*31 + ids[indices]//17
+                slots = torch.where(rare, 2*half + hashed.remainder(len(self.cal_ids)-2*half),
+                                    hashed.remainder(half) + positive.long()*half)
             order = slots.argsort(stable=True)
             slots, indices = slots[order], indices[order]
             keep = torch.ones_like(slots, dtype=torch.bool)
@@ -707,6 +742,10 @@ class GoalReference(nn.Module):
             self.cal_ids[slots] = ids[indices]
             self.cal_world_groups[slots] = group[indices]
             self.cal_images[slots] = rgb
+            if self.guidance_revision >= 3:
+                heat = _heatmap(data["heatmap"], tuple(data["image"].shape[:-3]), self.device)
+                self.cal_heatmaps[slots] = (F.interpolate(heat[indices], (64,64), mode="bilinear",
+                                                        align_corners=False)[:,0]*255).round().byte()
             self.cal_labels[slots] = torch.stack((labels[indices], valid[indices]), 1)
             self.cal_frame_labels[slots] = frame_labels[indices]
         known = self.cal_ids >= 0
@@ -718,7 +757,8 @@ class GoalReference(nn.Module):
         else:
             outputs = dict(region_logits=references.new_empty((0, GRID, GRID)),
                            visible_logits=references.new_empty(0), interaction_logits=references.new_empty(0))
-        review_logits, review_labels = self._reviewed_visibility_logits(references, calibration=True)
+        reviewed, review_labels = self._reviewed_visibility_logits(references, calibration=True, return_all=True)
+        review_logits = reviewed["visible_logits"]
         for index, (pred, label, mask) in enumerate((
             (outputs["region_logits"], region, region_valid),
             (torch.cat((outputs["visible_logits"], review_logits)),
@@ -743,6 +783,43 @@ class GoalReference(nn.Module):
             score = .5*((1.-plus[best].sigmoid()).square().mean() + minus[best].sigmoid().square().mean())
             self.cal_brier[index] = score
             self.reliability[index] = (1.-score/.25).clamp(0., 1.)
+        if self.guidance_revision >= 3:
+            from .goal_guidance import proposals
+            probability = (outputs["region_logits"]/self.temperature[0]).sigmoid()
+            candidates = None
+            if bool(known.any()):
+                candidates, _, _ = proposals(self.cal_heatmaps[known,None].float()/255.,
+                                             .5*(outputs["saliency"]+probability), probability)
+            self._calibrate_candidates(outputs["region_logits"], region, region_valid,
+                                       reviewed, review_labels, candidates)
+
+    @torch.no_grad()
+    def _calibrate_candidates(self, logits, labels, valid, reviewed, review_labels, candidates=None):
+        """Qualify the selected high peak, not average accuracy on easy pixels."""
+        probability = (logits/self.temperature[0]).sigmoid().flatten(1)
+        if len(probability):
+            if candidates is None:
+                peak, index = probability.max(-1)
+            else:
+                scores = probability.gather(1, candidates)
+                peak, choice = scores.max(-1)
+                index = candidates.gather(1, choice[:,None]).squeeze(1)
+            truth = labels.flatten(1).gather(1, index[:, None]).squeeze(1)
+            known = valid.flatten(1).gather(1, index[:, None]).squeeze(1) & (peak >= .72)
+            correct, count = (truth & known).sum().float(), known.sum().float()
+        else:
+            correct = count = self.temperature.new_zeros(())
+        if len(review_labels) and bool((~review_labels).any()):
+            negative = reviewed["region_logits"][~review_labels]
+            negative_peak = (negative/self.temperature[0]).sigmoid().flatten(1).amax(-1)
+            count = count + (negative_peak >= .72).sum()
+        precision = correct/count.clamp_min(1)
+        z = 1.6448536269514722
+        lower = ((precision+z*z/(2*count.clamp_min(1))
+                  - z*(precision*(1-precision)/count.clamp_min(1)
+                       + z*z/(4*count.clamp_min(1).square())).clamp_min(0).sqrt())
+                 / (1+z*z/count.clamp_min(1)))
+        self.candidate_operating.copy_(torch.stack((count, precision, lower.clamp_min(0))))
 
     def train_batch(self, data):
         """A separate optimizer owns all gradients and refreshes reference cache."""
@@ -768,6 +845,10 @@ class GoalReference(nn.Module):
         metrics["D/updates"] = self.updates
         if self.guidance_revision >= 2:
             metrics["D/visible_review_cal_frames"] = self.reviewed_visibility_calibration.sum()
+        if self.guidance_revision >= 3:
+            metrics.update({"D/candidate_operating_samples": self.candidate_operating[0],
+                            "D/candidate_precision": self.candidate_operating[1],
+                            "D/candidate_ready": float(self.candidate_ready)})
         worlds = self.cal_world_groups[(self.cal_ids >= 0) & (self.cal_world_groups > 0)].unique()
         metrics["D/heldout_worlds"] = len(worlds)
         for index, name in enumerate(("region", "visible", "interact")):

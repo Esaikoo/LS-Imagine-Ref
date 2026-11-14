@@ -857,9 +857,9 @@ class SearchVisualizer:
             else:
                 xy = preview_route[:, :2]
                 center = (xy.min(axis=0) + xy.max(axis=0)) / 2.
-                # A fragment without map cells can use a closer view than the
-                # live grid. Keep a finite minimum span for very short paths.
-                span = max(2., float(np.ptp(xy, axis=0).max()) * 1.20)
+                # Keep the same minimum scale as qualified maps. Previewing an
+                # uncertain tiny fragment must not make it look like a long route.
+                span = max(self.map_min_span, float(np.ptp(xy, axis=0).max()) * 1.20)
                 ax.set_xlim(center[0]-span/2., center[0]+span/2.)
                 ax.set_ylim(center[1]-span/2., center[1]+span/2.)
                 ax.set_aspect("equal", adjustable="box")

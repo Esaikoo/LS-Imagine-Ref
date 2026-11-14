@@ -58,6 +58,65 @@ def labeled():
 
 
 class ReferenceTests(unittest.TestCase):
+    def test_revision3_retains_real_rare_interaction_calibration_frames(self):
+        model = GoalReference(config(goal_guidance_revision=3), bank())
+        data = labeled()
+        data["goal_holdout"] = np.ones((2,4), bool)
+        data["goal_interaction_valid"] = np.ones((2,4), bool)
+        data["goal_interaction_outcome"] = np.zeros((2,4), bool)
+        data["goal_interaction_outcome"][0,1] = True
+        data["log_applied_control"][0,1,0] = 1
+        labels = model._supervision(data)
+        model._calibrate(data, *labels)
+        selected = (model.cal_ids >= 0) & model.cal_frame_labels[:,1,0] & model.cal_frame_labels[:,1,1]
+        self.assertEqual(int(selected.sum()), 1)
+        source_id = model.cal_ids[selected].item()
+        data["goal_interaction_outcome"].fill(False)
+        for offset in range(4):
+            data["vnext_frame_id"] += 200
+            model._calibrate(data, *model._supervision(data))
+        self.assertTrue(bool((model.cal_ids == source_id).any()))
+        self.assertEqual(int(model.cal_frame_labels[:,1,0].sum()), 1)
+
+    def test_reviewed_negative_frames_train_regions_without_using_calibration_frames(self):
+        root = Path(__file__).resolve().parents[1]/"assets/goal_references"
+        model = GoalReference(config(goal_guidance_revision=3, goal_ref_bank_root=root))
+        data = labeled()
+        data["log_vnext_world_group"] = np.full((2,4),20)
+        inputs = model._supervision(data)
+        loss, metrics = model._loss(data, *inputs)
+        self.assertGreater(metrics["D/negative_frame_region_loss"].item(), 0)
+        model.reviewed_visibility_images[model.reviewed_visibility_calibration] = 0
+        after, _ = model._loss(data, *inputs)
+        torch.testing.assert_close(loss, after)
+        metrics["D/negative_frame_region_loss"].backward()
+        self.assertGreater(sum(float(p.grad.abs().sum()) for p in model.match.parameters() if p.grad is not None), 0)
+
+    def test_selected_peak_calibration_does_not_count_unknown_pixels_as_correct(self):
+        model = GoalReference(config(goal_guidance_revision=3), bank())
+        logits = torch.full((12,16,16), -4.)
+        logits[:,0,0] = 4.
+        labels = torch.zeros_like(logits,dtype=torch.bool)
+        valid = torch.zeros_like(labels)
+        valid[:,8,8] = True
+        empty = dict(region_logits=torch.empty(0,16,16))
+        model._calibrate_candidates(logits, labels, valid, empty, torch.empty(0,dtype=torch.bool))
+        self.assertEqual(model.candidate_operating[0].item(), 0)
+        self.assertFalse(model.candidate_ready)
+        valid[:,0,0] = True; labels[:,0,0] = True
+        model._calibrate_candidates(logits, labels, valid, empty, torch.empty(0,dtype=torch.bool))
+        self.assertTrue(model.candidate_ready)
+        # Five independently reviewed full-frame false positives revoke trust.
+        model._calibrate_candidates(logits, labels, valid,
+            dict(region_logits=torch.full((5,16,16),4.)),torch.zeros(5,dtype=torch.bool))
+        self.assertFalse(model.candidate_ready)
+        # The deployed proposals can select a different peak than global argmax.
+        logits[:,0,1] = 3.; valid[:,0,1] = True
+        model._calibrate_candidates(logits, labels, valid, empty, torch.empty(0,dtype=torch.bool),
+                                    torch.ones((12,1),dtype=torch.long))
+        self.assertEqual(float(model.candidate_operating[1]), 0.)
+        self.assertFalse(model.candidate_ready)
+
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)

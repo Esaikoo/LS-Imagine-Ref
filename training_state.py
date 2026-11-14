@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
-CODE_VERSION = "VN4R3"
+CODE_VERSION = "VN4R4"
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",

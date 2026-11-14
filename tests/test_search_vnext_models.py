@@ -52,6 +52,20 @@ def batch(n=12,slots=3,b=2):
 
 
 class VNextModelsTest(unittest.TestCase):
+    def test_unqualified_a_probabilities_are_neutral_in_c_descriptor(self):
+        cfg = config()
+        cfg.vnext_spatial_enabled=True; cfg.vnext_spatial_fix_version=3
+        cfg.goal_search_enabled=True; cfg.goal_guidance_revision=3
+        model = SearchVNext(24,cfg)
+        with torch.no_grad():
+            for head in model.a.events:
+                head.weight.zero_(); head.bias.fill_(8.)
+        result = model.predict(torch.ones(1,24),torch.zeros(1,16),
+            torch.zeros(1,12,3,9),torch.zeros(1,3))
+        self.assertFalse(result["supported"].any())
+        self.assertTrue(bool((result["probs"]>.9).all()))
+        torch.testing.assert_close(result["descriptor"][...,:7],torch.full((1,12,7),.5))
+
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)

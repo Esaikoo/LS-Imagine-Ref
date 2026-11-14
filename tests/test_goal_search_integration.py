@@ -51,6 +51,39 @@ def goal_config(**updates):
 
 
 class GoalSearchIntegrationTests(unittest.TestCase):
+    def test_vn4r4_training_roundtrip_and_eval_oracle_isolation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = goal_config(logdir=root/"source", traindir=root/"source"/"train_eps",
+                              goal_guidance_revision=3, vnext_pose_loss_version=4,
+                              video_pred_log=False)
+            cfg.traindir.mkdir(parents=True)
+            agent = agent_for(cfg)
+            episode = collected_episode(agent, 24)
+            tools.save_episodes(cfg.traindir, {"fixture": episode})
+            batch = next(make_dataset({"fixture": episode}, cfg))
+            agent._train(batch)
+            path = save_training_checkpoint(agent, cfg, 96)
+            incoming = goal_config(logdir=root/"restored", resume_from=str(path), steps=128)
+            plan = prepare_resume(incoming)
+            self.assertEqual(incoming.goal_guidance_revision, 3)
+            self.assertEqual(incoming.vnext_pose_loss_version, 4)
+            restored = agent_for(incoming, plan["checkpoint"]["goal_reference_bank"])
+            restore_training_state(restored, plan, SimpleNamespace(step=0))
+            self.assertEqual(len(restored._goal_reference.cal_ids), 256)
+            for key, value in agent.state_dict().items():
+                torch.testing.assert_close(value, restored.state_dict()[key], rtol=0, atol=0)
+            obs = {k: v[:,0] for k,v in replay_batch().items() if k != "action"}
+            privileged = dict(obs, search_pose_delta=np.full((1,3), 1.e8),
+                              goal_region_gt=np.ones((1,16,16,1)),
+                              goal_region_valid=np.ones((1,16,16,1)))
+            rng = torch.get_rng_state()
+            left, _ = restored._policy(obs, None, False)
+            torch.set_rng_state(rng)
+            right, _ = restored._policy(privileged, None, False)
+            for key in ("action", "log_goal_context", "log_goal_heatmap_policy", "log_spatial_pose"):
+                torch.testing.assert_close(left[key], right[key], rtol=0, atol=0)
+
     def test_online_encoder_and_training_batch_use_identical_fusion_without_oracles(self):
         agent = agent_for(goal_config())
         # Deterministic calibrated-output fixture. No assertion of learned quality.

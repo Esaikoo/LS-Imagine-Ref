@@ -813,7 +813,12 @@ class SearchVNext(nn.Module):
             support |= supported[..., 7:].any(-1)
         base_probs, base_uncertainty, base_supported = probs[..., :7], uncertainty[..., :7], supported[..., :7]
         cv=output["current_logits"].sigmoid().mean(-2)[...,0]
-        descriptor=torch.cat((base_probs,base_uncertainty.mean(-1,keepdim=True),base_supported.float().mean(-1,keepdim=True),
+        descriptor_probs = base_probs
+        if self.goal_search and int(getattr(self.config, "goal_guidance_revision", 1)) >= 3:
+            # C must not turn A's unsupported confident guesses into action
+            # evidence indirectly through its value-network input.
+            descriptor_probs = torch.where(base_supported, base_probs, .5)
+        descriptor=torch.cat((descriptor_probs,base_uncertainty.mean(-1,keepdim=True),base_supported.float().mean(-1,keepdim=True),
             lengths.float()[...,None]/8,cv[...,None],base_uncertainty.max(-1,keepdim=True).values),-1)
         weights = probs.new_tensor([1., 2., .5, -.5, 1., 2., -.5])
         if self.goal_search:

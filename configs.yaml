@@ -547,7 +547,7 @@ apm_vnext:
 
 # Standalone preset, using the spatial fix3 backbone.
 apm_vnext4:
-  goal_guidance_revision: 2
+  goal_guidance_revision: 3
   vnext_pose_loss_version: 4
   goal_ref_border_padding: replicate
   vnext_visual_map_all_eval_episodes: True

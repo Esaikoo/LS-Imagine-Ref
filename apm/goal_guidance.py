@@ -42,7 +42,7 @@ def fuse_heatmap(raw, region, gate, epsilon=.05, overlap=.5):
     return ((1.-gate)*raw + gate*mixed).clamp(0., 1.)
 
 
-def _track(center, embed, candidate, qualified, first, previous, actual):
+def _track(center, embed, candidate, qualified, first, previous, actual, strict=False):
     if previous is None:
         count = torch.zeros_like(candidate, dtype=torch.long)
     else:
@@ -56,7 +56,7 @@ def _track(center, embed, candidate, qualified, first, previous, actual):
         similarity = (old_embed*embed).sum(-1)
         same = (similarity > .7) & (motion < bound) & ~first
         count = torch.where(same, count, torch.zeros_like(count))
-    count = torch.where(candidate, (count+1).clamp_max(8), torch.zeros_like(count))
+    count = torch.where(qualified if strict else candidate, (count+1).clamp_max(8), torch.zeros_like(count))
     trusted = (count >= 2) & qualified
     state = torch.where(trusted, TRUSTED_VISIBLE,
                         torch.where(candidate, UNCERTAIN_CANDIDATE, NO_TRUSTED_TARGET))
@@ -105,9 +105,16 @@ def build_policy_observation(raw_obs, verifier, state=None, previous_control=Non
     enabled = verifier.fusion_enabled
     valid = (reliability > 0.) & (strength > .12) & (region_noise < .25)
     gate = verifier.max_gate * reliability * strength * (1.-region_noise) * valid.float()
+    strict = getattr(verifier, "guidance_revision", 1) >= 3
+    fusion_region = region
+    if strict and not verifier.candidate_ready:
+        # An unqualified high peak must not amplify the Actor's heatmap. A
+        # separately supported rejection may still suppress the original peak.
+        gate = gate * peak_rejected.float()
+        fusion_region = torch.minimum(region, raw)
     if not enabled:
         gate = torch.zeros_like(gate)
-    fused = fuse_heatmap(raw, region, gate[:, None, None, None],
+    fused = fuse_heatmap(raw, fusion_region, gate[:, None, None, None],
                          verifier.fusion_epsilon, verifier.fusion_overlap)
     original = torch.as_tensor(raw_obs["heatmap"], device=verifier.device)
     heatmap_policy = fused.reshape_as(original)
@@ -120,6 +127,8 @@ def build_policy_observation(raw_obs, verifier, state=None, previous_control=Non
     # still owns all centered and actual-interaction safety gates.
     candidate = valid & (peak >= .58)
     qualified = valid & (peak >= .72) & (reliability >= .15) & (region_noise < .12)
+    if strict:
+        qualified &= verifier.candidate_ready
     first = torch.as_tensor(raw_obs.get("is_first", torch.zeros(leading)),
                             device=verifier.device).reshape(-1).bool()
     if len(leading) == 2:
@@ -132,11 +141,11 @@ def build_policy_observation(raw_obs, verifier, state=None, previous_control=Non
         for offset in range(time):
             sl = slice(offset, None, time)
             current, state = _track(center[sl], embedding[sl], candidate[sl], qualified[sl],
-                                    first[sl], state, None if controls is None else controls[:, offset])
+                                    first[sl], state, None if controls is None else controls[:, offset], strict=strict)
             states.append(current)
         goal_state = torch.stack(states, 1).reshape(-1)
     else:
-        goal_state, state = _track(center, embedding, candidate, qualified, first, state, previous_control)
+        goal_state, state = _track(center, embedding, candidate, qualified, first, state, previous_control, strict=strict)
     frame_visibility = prediction["visible_probability"]
     # An unverified candidate or an uncalibrated detector says nothing about
     # whole-frame absence. A single rejected heat peak is only local evidence.
