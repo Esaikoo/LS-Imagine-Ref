@@ -77,7 +77,6 @@ def build_policy_observation(raw_obs, verifier, state=None, previous_control=Non
     p = prediction["probability"]
     raw = prediction["heatmap"]
     reliability = verifier.reliability[0]
-    visible_reliability = verifier.reliability[1]
     candidates, boxes, sources = proposals(raw, .5*(prediction["saliency"]+p), p)
     scores = p.flatten(1).gather(1, candidates)
     # A local region score, qualified against the region calibration split,
@@ -137,16 +136,9 @@ def build_policy_observation(raw_obs, verifier, state=None, previous_control=Non
         goal_state = torch.stack(states, 1).reshape(-1)
     else:
         goal_state, state = _track(center, embedding, candidate, qualified, first, state, previous_control)
-    frame_visibility = prediction["visible_probability"]
-    # An unverified candidate or an uncalibrated detector says nothing about
-    # whole-frame absence. A single rejected heat peak is only local evidence.
-    absence = ((visible_reliability >= .15) & (reliability >= .15)
-               & (frame_visibility <= .25) & (p.flatten(1).amax(-1) < .5)
-               & (region_noise < .15))
-    visibility = torch.lerp(peak, frame_visibility, visible_reliability*.5)
     confidence = reliability*(2.*(peak-.5).abs())*(1.-region_noise)
     uncertainty = (1.-confidence).clamp(0., 1.)
-    context = torch.stack((visibility, confidence, uncertainty,
+    context = torch.stack((peak, confidence, uncertainty,
                            center[:, 0]*2.-1., center[:, 1]*2.-1.,
                            conflict * reliability, goal_state.float(), valid.float()), -1)
     # Spatial inputs and logs keep their existing scale and dimensions.
@@ -162,12 +154,9 @@ def build_policy_observation(raw_obs, verifier, state=None, previous_control=Non
         "candidate_sources": sources.reshape(*leading, 8),
         "conflict": (conflict*reliability).reshape(leading),
         "peak_rejected": peak_rejected.reshape(leading),
-        "absence_confirmed": absence.reshape(leading),
-        "target_class_visible": visibility.reshape(leading),
+        "region_peak": peak.reshape(leading),
         "match_uncertainty": uncertainty.reshape(leading),
         "evidence_valid": valid.reshape(leading),
-        "interaction_probability": prediction["interaction_probability"].reshape(leading),
-        "interaction_valid": (verifier.reliability[2] > 0).expand(leading),
         "heatmap_policy": heatmap_policy,
         "version": torch.full(leading, VERSION, device=verifier.device, dtype=torch.uint8),
     }

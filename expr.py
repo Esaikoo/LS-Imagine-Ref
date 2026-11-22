@@ -355,9 +355,6 @@ class LS_Imagine(nn.Module):
             clean["goal_context"] = goal["context"]
             clean["goal_evidence_state"] = goal["state"]
             clean["goal_peak_rejected"] = goal["peak_rejected"]
-            clean["goal_absence_confirmed"] = goal["absence_confirmed"]
-            clean["goal_interaction_probability"] = goal["interaction_probability"]
-            clean["goal_interaction_valid"] = goal["interaction_valid"]
         embed = self._wm.encoder(clean)
         latent, _ = self._wm.dynamics.obs_step(latent, previous_action, embed, clean["is_first"])
         if self._config.eval_state_mean:
@@ -415,7 +412,7 @@ class LS_Imagine(nn.Module):
         if goal is not None:
             control_state["goal_tracking"] = tracking
             output.update(
-                log_goal_version=torch.ones_like(goal["gate"]),
+                log_goal_version=goal["version"],
                 log_goal_model_update=self._goal_reference.updates.expand_as(goal["gate"]),
                 log_goal_context=goal["context"].detach(),
                 log_goal_state=goal["state"].detach(),
@@ -423,8 +420,6 @@ class LS_Imagine(nn.Module):
                 log_goal_region_cal_reliability=self._goal_reference.reliability[0].expand_as(goal["gate"]),
                 log_goal_conflict=goal["conflict"].detach(),
                 log_goal_peak_rejected=goal["peak_rejected"].detach(),
-                log_goal_interaction_probability=goal["interaction_probability"].detach(),
-                log_goal_interaction_valid=goal["interaction_valid"].detach(),
                 log_goal_boxes=goal["boxes"].detach(),
                 log_goal_candidate_scores=goal["candidate_scores"].detach(),
                 log_goal_candidate_sources=goal["candidate_sources"].detach(),

@@ -166,15 +166,15 @@ def goal_episode_diagnostics(episode):
     version = np.asarray(episode.get("log_goal_version", []))
     if version.ndim != 1 or len(version) < 2:
         return {}
-    valid = version[1:] == 1
+    valid = np.isin(version[1:], (1, 2))
     if not valid.any():
         return {}
     states = np.asarray(episode["log_goal_state"])[1:][valid]
     result = {"goal_trusted_rate": float(np.mean(states == 2)),
               "goal_uncertain_rate": float(np.mean(states == 1)),
               "goal_untrusted_rate": float(np.mean(states == 0))}
-    for name in ("gate", "conflict", "peak_rejected", "interaction_probability", "interaction_valid",
-                 "verify_used", "reject_used", "absence_confirmed",
+    for name in ("gate", "conflict", "peak_rejected",
+                 "verify_used", "reject_used",
                  "search_eligible", "search_learned_used", "search_probe_used",
                  "unresolved_search", "visual_sky_recovery", "pickup_continuation"):
         values = np.asarray(episode.get("log_goal_" + name, []))

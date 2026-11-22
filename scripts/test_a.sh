@@ -70,7 +70,7 @@ if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "-
   if [[ "$1" == "--minedojo-vnext4" ]]; then
     MODE=vnext4
     CONFIGS=(minedojo apm_vnext4 apm_a_smoke)
-    # Seed 17 is a bundled D visibility-calibration world, so use a training-fold seed.
+    # Use the established smoke training-world seed.
     EXTRA+=(--goal_ref_bank_root "${GOAL_REF_BANK_ROOT:-assets/goal_references}"
       --goal_ref_train_every 1 --eval_every 48 --vnext_visual_every 48 --vnext_visual_strict True
       --video_pred_log True --env_seed "${APM_SMOKE_ENV_SEED:-19}" --minedojo_gradle_offline "${MINEDOJO_GRADLE_OFFLINE:-False}")
@@ -156,7 +156,7 @@ if mode in ('vnext', 'vnext4'):
                     if not d['is_first'][t]:
                         assert np.all(refs[refs>=0]<t), (path,t,refs)
     if mode == 'vnext4':
-        assert checkpoint['goal_ref_version'] == 1
+        assert checkpoint['goal_ref_version'] == 2
         assert checkpoint['goal_controller_version'] == 3
         assert checkpoint['goal_reference_fingerprint']
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator

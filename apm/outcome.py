@@ -72,7 +72,7 @@ def goal_discovery_labels(episode):
     for i in range(time-1):
         if first[i]:
             confirmed = False
-        if first[i+1] or error[i] or error[i+1] or version[i+1] != 1 or label_version[i] != 1:
+        if first[i+1] or error[i] or error[i+1] or version[i+1] not in (1, 2) or label_version[i] != 1:
             continue
         obs = context[i+1]
         if not np.isfinite(obs).all():

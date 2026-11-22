@@ -42,7 +42,7 @@ defaults:
   check_obs_enabled: True
   goal_ref_enabled: False
   goal_ref_use_raw_image: True
-  goal_ref_version: 1
+  goal_ref_version: 2
   goal_ref_border_padding: zeros
   goal_ref_bank_root: assets/goal_references
   goal_ref_dim: 128

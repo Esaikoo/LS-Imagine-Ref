@@ -64,7 +64,6 @@ FIELDS = {"log_vnext_"+k:v for k,v in FIELDS.items()}
 GOAL_FIELDS = dict(log_goal_context=(8,), log_goal_forecast=(N_OPTIONS,2),
     log_goal_new_area_forecast=(N_OPTIONS,),
     log_goal_direction_novelty=(N_OPTIONS,), log_goal_verify_used=(), log_goal_reject_used=(),
-    log_goal_absence_confirmed=(),
     log_goal_search_eligible=(), log_goal_search_learned_used=(), log_goal_search_probe_used=(),
     log_goal_unresolved_search=(), log_goal_visual_sky_recovery=(), log_goal_pickup_continuation=())
 
@@ -794,11 +793,8 @@ class VNextController(nn.Module):
             low = absent | sky | (low & ~goal_trusted & ~uncertain)
             state["goal_absent_run"] = torch.where(absent,
                 state["goal_absent_run"]+1, torch.zeros_like(state["goal_absent_run"]))
-            # D visible confidence never authorizes attack/reach on its own.
-            interaction_valid = torch.as_tensor(obs.get("goal_interaction_valid", False),device=device).bool().expand(batch)
-            interaction_prob = torch.as_tensor(obs.get("goal_interaction_probability", 0.),device=device).reshape(-1).expand(batch)
-            interaction_allowed = ((~evidence | goal_trusted) & ~absent & ~sky
-                                   & (~interaction_valid | (interaction_prob >= .5)))
+            # Region evidence can veto a contradiction; C/A still qualify reach and aim.
+            interaction_allowed = (~evidence | goal_trusted) & ~absent & ~sky
             act &= interaction_allowed
         interaction_probe=torch.zeros_like(act)
         if self.guidance_fix and rule_probes:
@@ -1405,7 +1401,6 @@ class VNextController(nn.Module):
         if self.goal_search:
             info.update(log_goal_context=goal_context,log_goal_forecast=goal_forecast,
                 log_goal_new_area_forecast=goal_new_area,
-                log_goal_absence_confirmed=absent.float(),
                 log_goal_direction_novelty=goal_novelty,
                 log_goal_verify_used=(state["goal_verify_active"]&extra).float(),
                 log_goal_reject_used=(state["goal_reject_active"]&extra).float(),

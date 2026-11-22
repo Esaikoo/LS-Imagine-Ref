@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
-CODE_VERSION = "VN4R2T1CS1"
+CODE_VERSION = "VN4R3D2"
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "resume_tensorboard", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
@@ -165,11 +165,11 @@ def validate_goal_checkpoint(checkpoint, values, *, evaluation=False):
     enabled = any(key.startswith("_goal_reference.") for key in state)
     if enabled != bool(saved.get("goal_ref_enabled", False)):
         raise ValueError("Goal reference checkpoint/configuration mismatch")
-    if enabled and (checkpoint.get("goal_ref_version") != 1
-                    or saved.get("goal_ref_version") != 1
+    if enabled and (checkpoint.get("goal_ref_version") != 2
+                    or saved.get("goal_ref_version") != 2
                     or not checkpoint.get("goal_reference_bank")
                     or not checkpoint.get("goal_reference_fingerprint")):
-        raise ValueError("Unsupported or incomplete goal reference checkpoint")
+        raise ValueError("Unsupported or incomplete D checkpoint: region-only D v2 required. Use the original branch for D v1 weights")
     if checkpoint.get("goal_controller_version") != (3 if saved.get("goal_search_enabled", False) else None):
         raise ValueError("Unsupported goal controller version")
     if evaluation:
@@ -584,7 +584,7 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
     controller, c = getattr(agent, "_search_a", None), getattr(agent, "_search_c", None)
     goal = getattr(agent, "_goal_reference", None)
     payload = dict(agent_state_dict=agent.state_dict(),
-        goal_ref_version=1 if goal is not None else None,
+        goal_ref_version=2 if goal is not None else None,
         goal_controller_version=3 if getattr(config, "goal_search_enabled", False) else None,
         goal_reference_bank=goal.export_bank() if goal is not None else None,
         goal_reference_fingerprint=goal.bank_fingerprint if goal is not None else None,

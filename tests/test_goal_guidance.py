@@ -66,18 +66,12 @@ class GoalGuidanceTests(unittest.TestCase):
         self.assertGreater(fused["heatmap"].float().mean().item(), 0.)
         self.assertTrue(bool((raw["heatmap"] == 255).all()))
 
-    def test_low_visibility_requires_separate_frame_calibration_and_region_agreement(self):
-        model = MatchedRegions()
-        model.visible.fill_(.1)
-        _, evidence, _ = build_policy_observation(obs(255), model)
+    def test_rejected_local_heat_does_not_certify_global_absence(self):
+        _, evidence, _ = build_policy_observation(obs(255), MatchedRegions())
         self.assertTrue(evidence["peak_rejected"].item())
-        self.assertFalse(evidence["absence_confirmed"].item())
-        model.reliability[1] = .3
-        _, evidence, _ = build_policy_observation(obs(0), model)
-        self.assertTrue(evidence["absence_confirmed"].item())
-        model.region[:, 11, 12] = .85
-        _, evidence, _ = build_policy_observation(obs(0), model)
-        self.assertFalse(evidence["absence_confirmed"].item())
+        self.assertEqual(evidence["state"].item(), 0)
+        self.assertNotIn("absence_confirmed", evidence)
+        self.assertNotIn("interaction_probability", evidence)
 
     def test_rgb_only_match_can_supply_guidance_and_track(self):
         model = MatchedRegions()

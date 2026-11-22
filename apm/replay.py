@@ -86,8 +86,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
         shapes.update(
             log_goal_version=(), log_goal_model_update=(), log_goal_context=(8,), log_goal_state=(), log_goal_gate=(),
             log_goal_conflict=(), log_goal_peak_rejected=(), log_goal_region_cal_reliability=(),
-            log_goal_interaction_probability=(),
-            log_goal_interaction_valid=(), log_goal_boxes=(8,4), log_goal_candidate_scores=(8,),
+            log_goal_boxes=(8,4), log_goal_candidate_scores=(8,),
             log_goal_candidate_sources=(8,), log_goal_ref_map=(64,64),
             log_goal_heatmap_policy=(64,64), log_goal_memory=(6,))
         shapes.update(GOAL_FIELDS)
@@ -180,7 +179,7 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
                 if goal_enabled and i+1 < total and "log_goal_context" in ep:
                     version = ep.get("log_goal_version", np.zeros(total))[i+1]
                     context = np.asarray(ep["log_goal_context"][i+1])
-                    if version == 1 and context.shape == (8,) and np.isfinite(context).all():
+                    if version in (1, 2) and context.shape == (8,) and np.isfinite(context).all():
                         goal_context[row] = context
                         goal_valid[row] = 1.
                         if "log_goal_boxes" in ep:

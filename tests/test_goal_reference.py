@@ -125,13 +125,12 @@ class ReferenceTests(unittest.TestCase):
     def test_sparse_supervision_train_actual_pairing_and_holdout(self):
         model = GoalReference(config(), bank())
         data = labeled()
+        data["log_vnext_world_group"] = np.full((2, 4), 123)
         data["goal_holdout"] = np.array([[False]*4,[True]*4])
         before = model._cached_reference().clone()
         report = model.train_batch(data)
         self.assertEqual(report["D/region_labels"], 8.)
         self.assertEqual(report["D/positive_regions"], 4.)
-        self.assertEqual(report["D/visible_labels"], 4.)
-        self.assertEqual(report["D/interaction_labels"], 0.)
         self.assertEqual(report["D/crossview_pairs"], 3.)
         self.assertGreater(report["D/hard_negatives"], 0.)
         self.assertGreater(report["D/grad_norm"], 0.)
@@ -173,76 +172,19 @@ class ReferenceTests(unittest.TestCase):
         gradient, = torch.autograd.grad(loss, (edge_logit,))
         self.assertGreater(gradient.item(), .1)
 
-    def test_interaction_feedback_aligns_to_actual_source(self):
+    def test_region_only_state_optimizer_and_legacy_rejection(self):
         model = GoalReference(config(), bank())
-        data = labeled()
-        data["goal_interaction_outcome"] = np.zeros((2,4), np.uint8)
-        data["goal_interaction_valid"] = np.zeros((2,4), np.uint8)
-        data["goal_interaction_valid"][0,1:3] = 1
-        data["goal_interaction_outcome"][0,1:3] = 1
-        data["log_applied_control"][0,2,0] = 1
-        _, _, labels, _ = model._supervision(data)
-        self.assertEqual(labels[:,1,1].nonzero().flatten().tolist(), [1])
-        self.assertEqual(labels[:,1,0].nonzero().flatten().tolist(), [1])
-
-    def test_delayed_interaction_needs_actual_contact_and_unbroken_history(self):
-        model = GoalReference(config(goal_guidance_revision=2), bank())
-        data = observed()
-        data = {key: np.repeat(value[:, :1], 10, axis=1) for key, value in data.items()}
-        data["is_first"][:, 1:] = False
-        data["log_applied_control"] = np.zeros((2, 10, 9), np.float32)
-        data["log_applied_control"][:, 1, 0] = 1.
-        data["log_actuator_valid"] = ~data["is_first"]
-        data["log_env_error"] = np.zeros((2, 10), bool)
-        data["goal_inventory_transition_valid"] = ~data["is_first"]
-        data["goal_interaction_outcome"] = np.zeros((2, 10), bool)
-        data["goal_interaction_outcome"][0, 3] = True
-        data["goal_interaction_valid"] = np.ones((2, 10), bool)
-        data["search_center_interactable"] = np.zeros((2, 10), bool)
-        data["search_center_interactable"][0, 0] = True
-        data["search_center_interactable_valid"] = np.ones((2, 10), bool)
-
-        def labels():
-            return model._supervision(data)[2][:, 1].reshape(2, 10, 2)
-
-        self.assertEqual(labels()[0, 0].tolist(), [True, True])
-        self.assertEqual(labels()[1, 0].tolist(), [False, True])
-        # Do not cross a bad simulator row or a replay segment boundary.
-        for key in ("is_first", "log_env_error"):
-            data[key][0, 2] = True
-            self.assertEqual(labels()[0, 0].tolist(), [False, False])
-            data[key][0, 2] = False
-        data["log_applied_control"][0, 2, 6] = 1.
-        self.assertEqual(labels()[0, 0].tolist(), [False, False])
-        data["log_applied_control"][0, 3, 0] = 1.
-        self.assertEqual(labels()[0, 2].tolist(), [True, True])
-        self.assertEqual(labels()[0, 0].tolist(), [False, False])
-        # Legacy no-inventory replay retains immediate actual positives only.
-        del data["goal_inventory_transition_valid"]
-        self.assertEqual(labels()[0, 2].tolist(), [True, True])
-        self.assertEqual(labels()[1, 0].tolist(), [False, False])
-
-    def test_bundled_review_keeps_training_and_calibration_worlds_disjoint(self):
-        root = Path(__file__).resolve().parents[1] / "assets/goal_references"
-        cfg = config(goal_guidance_revision=2, goal_ref_bank_root=root)
-        model = GoalReference(cfg)
-        self.assertEqual(model.reviewed_visibility_calibration.sum().item(), 10)
-        self.assertFalse(model.reviewed_visibility_labels[~model.reviewed_visibility_calibration].any())
-        self.assertFalse(set(model.reviewed_visibility_worlds.tolist()) & set(model.bank_world_groups.tolist()))
-        data = labeled()
-        data["log_vnext_world_group"] = np.full((2, 4), int(model.reviewed_visibility_worlds[0]))
-        self.assertTrue(model._supervision(data)[3].all())
-        data["log_vnext_world_group"][:] = 20
-        report = model.train_batch(data)
-        self.assertEqual(report["D/visible_review_train_frames"], 6.)
-        self.assertEqual(report["D/visible_cal_positive"], 5.)
-        self.assertEqual(report["D/visible_cal_negative"], 5.)
-        portable = GoalReference(cfg, model.export_bank())
-        portable.load_state_dict(model.state_dict())
-        self.assertEqual(portable.bank_fingerprint, model.bank_fingerprint)
-        self.assertTrue(torch.equal(portable.reviewed_visibility_images, model.reviewed_visibility_images))
-        legacy = GoalReference(config(goal_ref_bank_root=root))
-        self.assertEqual(legacy.reviewed_visibility_images.numel(), 0)
+        report = model.train_batch(labeled())
+        self.assertTrue(all(np.isfinite(list(report.values()))))
+        self.assertFalse(any("visible" in k or "interact" in k for k in report))
+        self.assertFalse(hasattr(model, "visibility") or hasattr(model, "interaction"))
+        restored = GoalReference(config(), model.export_bank())
+        restored.load_state_dict(model.state_dict())
+        restored.optimizer.load_state_dict(model.optimizer.state_dict())
+        for left, right in zip(model.parameters(), restored.parameters()):
+            torch.testing.assert_close(left, right)
+        with self.assertRaisesRegex(ValueError, "Legacy D"):
+            restored.load_state_dict(dict(model.state_dict(), **{"visibility.0.weight": torch.ones(1)}), strict=False)
 
     def test_reference_world_cannot_certify_even_with_bad_split_flag(self):
         model = GoalReference(config(), bank())
