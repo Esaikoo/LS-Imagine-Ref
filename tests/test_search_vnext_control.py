@@ -74,11 +74,11 @@ def replay(batch=1,time=10):
 
 
 class VNextControlTests(unittest.TestCase):
-    def run_step(self,c,ab,state=None,proposal=10,cur=None,first=False,training=True,obs=None,step=100000,batch=1):
+    def run_step(self,c,ab,state=None,proposal=10,cur=None,first=False,training=True,obs=None,step=100000,batch=1,**choice):
         feat=torch.ones(batch,8);mem=torch.zeros(batch,4)
         return c.choose(ab,feat,mem,cur or current(batch),obs or {},
             F.one_hot(torch.full((batch,),proposal),12).float(),state,
-            torch.full((batch,),first),step,training)
+            torch.full((batch,),first),step,training,**choice)
 
     def test_goal_search_rejects_sustained_sky_attack_with_local_evidence(self):
         controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
@@ -1170,6 +1170,48 @@ class GuidanceV3Tests(unittest.TestCase):
         self.assertEqual(info["log_vnext_choice"].item(),6)
         self.assertEqual(info["log_vnext_source"].item(),1)
         self.assertEqual(info["log_vnext_empirical_support"][0,6].item(),1)
+
+    def test_candidate_ablation_yields_to_rule_chain_before_fallback(self):
+        c=VNextController(8,self.cfg())
+        self.certify(c,SEARCH,6)
+        with torch.no_grad():
+            c.q1[-1].bias[6]=3
+            c.q2[-1].bias[6]=3
+        for switches,expected in [({},1),({"learned_selection":False},9),({"rule_probes":False},1)]:
+            ab=UnsupportedSpatialAB()
+            _,_,info=self.run_step(c,ab,self.state(c),proposal=0,training=False,**switches)
+            self.assertEqual(info["log_vnext_source"].item(),expected)
+            self.assertEqual(ab.calls,1)
+            self.assertGreater(info["log_vnext_q"][0,6],info["log_vnext_q"][0,0])
+
+    def test_probes_off_preserves_formal_interaction_but_blocks_speculative_eligibility(self):
+        c=VNextController(8,self.cfg(goal_search_enabled=True,goal_guidance_revision=2))
+        for formal in (True,False):
+            cur=self.probe_current()
+            cur["ready"]["center_interactable"][:]=formal
+            cur["goal_context"]=torch.tensor([[.95,.8,.3,0.,0.,0.,2.,1.]])
+            state=self.state(c)
+            sources=[]
+            for _ in range(5):
+                _,state,info=self.run_step(c,UnsupportedSpatialAB(),state,proposal=0,
+                    cur=cur,training=False,rule_probes=False)
+                sources.append(info["log_vnext_source"].item())
+                if not formal:
+                    self.assertEqual(state["actionable_run"].item(),0)
+                    self.assertEqual(info["log_vnext_mask"][0,8].item(),0)
+            self.assertEqual(2 in sources,formal)
+            self.assertEqual(state["interaction_probe_trials"].item(),0)
+
+    def test_probes_off_blocks_uncertain_verification_before_phase_switch(self):
+        c=VNextController(8,self.cfg(goal_search_enabled=True,goal_guidance_revision=2))
+        cur=current(visible=.1,ready=False)
+        cur["goal_context"]=torch.tensor([[.6,.7,.2,.65,0.,0.,1.,1.]])
+        _,state,info=self.run_step(c,UnsupportedSpatialAB(),self.state(c),proposal=0,
+            cur=cur,training=False,rule_probes=False)
+        self.assertEqual(info["log_vnext_phase"].item(),SEARCH)
+        self.assertEqual(info["log_goal_verify_used"].item(),0)
+        self.assertEqual(state["goal_verify_trials"].item(),0)
+        self.assertEqual(info["log_vnext_source"].item(),0)
 
     def test_counts_without_factual_outcomes_do_not_certify_Q(self):
         c=VNextController(8,self.cfg());c.updates.fill_(500)

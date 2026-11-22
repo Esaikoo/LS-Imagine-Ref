@@ -629,7 +629,9 @@ class VNextController(nn.Module):
 
     @torch.no_grad()
     def choose(self,ab,feat,memory,current,obs,actor_action,state,is_first,step,
-               training,actor_sequence=None):
+               training,actor_sequence=None, *, learned_selection=True, rule_probes=True):
+        if training and not (learned_selection and rule_probes):
+            raise ValueError("C branch ablations are available only during evaluation")
         from apm.actuator import apply_command_torch
         batch,device=len(feat),feat.device
         fresh=self.initial(batch,device)
@@ -774,7 +776,7 @@ class VNextController(nn.Module):
             # verification attempt after the previous one has cooled down.
             reset_verify = moving_progress & (state["goal_verify_cooldown"]==0)
             state["goal_verify_trials"][reset_verify|goal_trusted] = 0
-            goal_verify = uncertain & (state["goal_verify_trials"]<int(getattr(self.config,"goal_verify_max_trials",3)))
+            goal_verify = uncertain & rule_probes & (state["goal_verify_trials"]<int(getattr(self.config,"goal_verify_max_trials",3)))
             goal_verify &= state["goal_verify_cooldown"]==0
             peak_rejected = torch.as_tensor(obs.get("goal_peak_rejected", goal_context[:,5]>.5),
                 device=device).bool().reshape(batch)
@@ -799,7 +801,7 @@ class VNextController(nn.Module):
                                    & (~interaction_valid | (interaction_prob >= .5)))
             act &= interaction_allowed
         interaction_probe=torch.zeros_like(act)
-        if self.guidance_fix:
+        if self.guidance_fix and rule_probes:
             interaction_probe=torch.as_tensor(current.get("interaction_probe_ready",False),device=device).bool().expand(batch).clone()
             if self.goal_guidance_fix:
                 # D can corroborate aim when the fused U-Net has a weak center.
@@ -1156,6 +1158,9 @@ class VNextController(nn.Module):
                 greedy=values.argmax(-1)
                 gain=values.gather(-1,greedy[:,None]).squeeze(-1)-values[:,ACTOR]
                 greedy=torch.where(gain>float(cfg(self.config,"vnext_c_margin")),greedy,torch.zeros_like(greedy))
+                if not learned_selection:
+                    # Offer the Actor to the normal rule chain, including fallback probes.
+                    greedy = torch.full_like(greedy, ACTOR)
                 # Calibrated visual interaction is a bounded real experiment,
                 # never a fabricated reward. It can repair an Actor that does
                 # not propose attack despite a credible joint actionable cue.
@@ -1171,7 +1176,7 @@ class VNextController(nn.Module):
                     source=torch.where(probe_interaction,torch.full_like(source,8),source)
                     info["log_vnext_interaction_probe"][calculate[probe_interaction]]=1
                 source=torch.where(settle,torch.full_like(source,4),source)
-                if self.interaction_fix and direction is not None:
+                if rule_probes and self.interaction_fix and direction is not None:
                     # A reliable same-frame visual bearing can try one camera
                     # step without pretending that an untrained future model or
                     # Q has certified it. Phase-conditioned option IDs keep the
@@ -1200,7 +1205,7 @@ class VNextController(nn.Module):
                         source[which]=7
                         local_mask[which,align_option[which]]=True
                         info["log_vnext_alignment_probe"][calculate[which]]=1
-                if self.goal_search:
+                if rule_probes and self.goal_search:
                     bearing = goal_context[calculate,3:5]
                     horizontal = bearing[:,0].abs()>=bearing[:,1].abs()
                     verify_option = torch.where(horizontal,torch.where(bearing[:,0]<0,1,2),
@@ -1218,7 +1223,7 @@ class VNextController(nn.Module):
                         source[j] = 7
                         local_mask[j,verify_option[j]] = True
                         state["goal_verify_active"][calculate[j]] = True
-                if self.guidance_fix:
+                if rule_probes and self.guidance_fix:
                     # B's uncertain position is not a reason to suppress all
                     # information gathering. These bounded trials are NOT learned
                     # choices, and never certify A's predictions or fake a reward.
@@ -1246,7 +1251,7 @@ class VNextController(nn.Module):
                         option=possible[int(index)]
                         best[j]=option;source[j]=9;local_mask[j,option]=True
                         info["log_vnext_search_probe"][row]=1
-                if self.spatial_fix:
+                if rule_probes and self.spatial_fix:
                     # Real bounded probes break the cold-start circle:
                     # requiring blocked-head/option experience before the
                     # first clearance trial can make that trial unreachable.
