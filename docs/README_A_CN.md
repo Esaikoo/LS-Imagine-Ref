@@ -1695,3 +1695,41 @@ nohup env A_MODE=vnext4 NTFY_TOPIC="$NTFY_TOPIC" TRAIN_LOG_FILE="$LOG_FILE" \
 
 ### VN4R3D2 · 区域级参考验证
 基于 esaiko-pscv 的 861fe463，D 网络协议 2。正负区域图库仍使用 manifest v1，区域真值协议仍为 1。删除整帧可见性和交互资格两条监督分支；全帧审核照片保留在仓库但不再载入模型，运行时指纹仅覆盖使用的区域图库。目标上下文第一维记录最强候选区域概率，局部低响应仅表示尚无可信线索。C 继续使用阶段、可达性、中心对齐、动作资格和试探预算；移除旧 D 交互否决。从头训练，历史 D 权重须用原版本评测。A 所需的训练期可见正例和 C 所需的实际互动反馈仍保留。
+
+### VN4R3D2P1 · 决策证据与想象图导出
+
+算法沿用 VN4R3D2 的区域级 D。正式入口为 `A_MODE=vnext4 BANK=assets/goal_references sh scripts/train.sh harvest_sand`，从头训练会读取现有图库。每个任务 12 张正区域、8 张负区域。训练期保留当前帧区域监督、正裁剪跨世界匹配、困难背景、时序与跨视角一致性。校准在已知独立世界的保留区域上拟合温度并按 Brier skill 限制融合。历史整帧审核资产继续留档。冻结评测和续训都校验 D 结构协议；旧 D v1 权重请使用历史提交 861fe463。模型移除了原全帧缺失计数分支，现有的持续未知搜索预算仍根据原有条件运作。
+
+**训练与评测的输出**
+
+- 采样周期 `vnext_visual_every=10000`。train 选最近完成的回合；在线 eval 每轮三局的第 3 局输出整套；原配置还为当轮前两局输出单独的 B 地图。工具独立评测沿用其自己的回合选择。
+- `A1` 展示至多四个合法选项、预测和综合分数；`A2` 列出可同时发生的后果。阴影线表示已记录的事件支持不足。候选、分数、合法性和复核字段保存在逐帧 NPZ。替代动作只有预测。
+- `B_map` 维持单一局部坐标段、固定画布和最小跨度；`B_history` 分开显示有效 RGB 记忆槽、局部跟踪和连续定位。`C1_timeline` 和 `C1_window` 展示全回合和局部动作来源、阶段、D 状态、实际奖励与成功事件。C 的选项价值使用原始评分单位。
+- `C2` 分开描述 Actor 命令、规则之前的候选、最终选项、下发命令和环境实收控制。`AC_decision` 只在有真实学习接管且有合法对照候选时输出。`AC_rule_override` 单列规则改变候选的情形。`episode_events` 选用同一回合的真实观察。
+- `G_goal_verification` 展示同帧 RGB、原热图、候选框、区域证据、融合结果，色标统一为 0–1。图中四个图库例子是子集。summary 保存完整使用数量、版本、指纹和融合参数。疑似干扰和模型冲突是选例依据，不能当作误检真值。
+- 每步保留有上限的标量轨迹，每种典型情形仅保留有界的 CPU 快照。控制器的绘图中间量不进入 Replay。训练标签仅能在事后核对已执行的动作。记录了同一时刻的原/融合图和到达帧，缺失字段留空。
+- `check_obs/step_XXXXXXXXX` 单独保存最多一张想象图、`sequence.npz` 和 `manifest.json`。达到阈值后在下一次有想象轨迹的更新取样。记录实际步数和出边，最多展示 12 个连续状态；采用确定性选列，隔离 RNG，并关闭绘图反向传播。恢复从真实步数开始。最后一个阈值若没有后续训练更新，会写跳过状态。
+
+**离线重绘**
+
+```sh
+python scripts/redraw_search.py "$EPISODE_DIR" "$NEW_OUTPUT_DIR" --format png
+python scripts/redraw_search.py "$EPISODE_DIR" "$NEW_CASE_DIR" --format pdf --case "rule superseded ranking"
+python scripts/redraw_search.py "$IMAGINATION_STEP_DIR" "$NEW_VECTOR_DIR" --format svg
+```
+
+目录必须是新的。完整回合通过 summary.json、episode_trace.npz 和 decision_frames.npz 重绘，个案分组见 summary 的 case_groups。旧档案若另有同 ID 的原 Replay，可加 `--replay FILE.npz`，会校验长度与逐步奖励。旧图缺失的 RGB、控制和支持字段会注明未记录。冻结权重和训练中实时权重分别标注，后者记录采样环境步与更新号。图像导出验证见 `tests/test_paper_exports.py`。
+
+D 的区域热图经插值与原热图对齐。记原热图为 H、区域证据为 R、门控为 g，最终输入为 (1−g)H + g[εH + (1−ε)(λHR + (1−λ)R)]。g 取决于保留集可靠性、证据/冲突强度和区域不确定性，最大为 0.8。校准尚不可用时保留原图。Replay 仍可读取旧 NPZ 中可辨认的原始观测和训练标签，旧 D 上下文第一维语义有变，训练采样不使用 v1 上下文和相应发现标签；旧 summary、trace、原始图片可独立审计。
+
+### VN4R3D2P2 · 论文图修订（D 模型协议仍为 2）
+
+正式 `A_MODE=vnext4` 解析为 15 个想象状态，短测配置 `apm_a_smoke` 为 5 个。绘图采样器保留选中列的全部时间步，两种画风共用同一份解码缓存。每 10000 个环境步至多在线解码一次，恢复后沿用阈值去重。红/蓝边框标注当前列到下一列的长/短转换，最后一列为灰色。选择批次内首条含长程转换的轨迹，整批无长程时选择第 0 条。旧缓存若曾经截取，重绘仅使用实存列。
+
+```bash
+python scripts/redraw_search.py "$SEQUENCE_DIR" "$NEW_OUTPUT" --style both
+python scripts/redraw_search.py "$EPISODE_DIR" "$NEW_WINDOW" --focus 302 --radius 12
+python scripts/redraw_search.py "$RUN_DIR" "$NEW_FUSION" --best-fusion
+```
+
+A+C 图记录排序前合法性、候选命令模板、评分、最终选项、控制器下发与环境实收。B 图展示每个有效的压缩视觉槽、创建和最后访问的记忆时刻，以及同次实际查询的权重。旧数据缺失项明确标注。D 导出独立保留一次确认不改变输入的零 gate 回退，以及每套可视化回合中量化后平均热图变化最大的合格融合例。合格需同时具备模型更新、gate 大于零、区域校准可靠性至少 0.15、同一帧实际策略热图发生变化。该标准仅用于选图。无候选时离线命令报告原因。可分别向命令传入 train 或 eval 子目录。C 全程图、可调步数的局部窗口和各图的 D 协议标识支持跨实验阅读。本修订不更改学习目标、控制阈值或参考图库。

@@ -89,7 +89,7 @@ class ViewHistoryEncoder(nn.Module):
         self.key = nn.Linear(dim, dim)
         self.output = nn.Sequential(nn.Linear(dim, dim), nn.LayerNorm(dim), nn.SiLU())
 
-    def forward(self, feature, frames, meta, valid, tick):
+    def forward(self, feature, frames, meta, valid, tick, *, return_weights=False):
         lead, slots = frames.shape[:-4], frames.shape[-4]
         frame = frames.float()/255. if frames.dtype == torch.uint8 else frames.float()
         frame = frame.nan_to_num(nan=0., posinf=0., neginf=0.).clamp(0,1)
@@ -107,7 +107,8 @@ class ViewHistoryEncoder(nn.Module):
         weights = weights.masked_fill(~valid, -1.e4).softmax(-1)*valid.float()
         weights = weights/weights.sum(-1, keepdim=True).clamp_min(1.e-6)
         context = self.output((encoded*weights[..., None]).sum(-2))
-        return context*valid.any(-1, keepdim=True).float()
+        context = context*valid.any(-1, keepdim=True).float()
+        return (context, weights.detach()) if return_weights else context
 
 
 class SpatialMapMemory(nn.Module):
@@ -648,8 +649,13 @@ class SpatialMapMemory(nn.Module):
         history_repeated = torch.zeros_like(valid)
         if self.fix_version >= 3:
             history_repeated = self.update_history(state, current, heatmap, control, reward, first, goal, peak_rejected)
-            history_context = self.history_encoder(feat, state["history_frames"], state["history_meta"],
-                state["history_valid"], state["tick"].float())
+            capture_weights = bool(getattr(self.config, "vnext_visual_enabled", False))
+            history_result = self.history_encoder(feat, state["history_frames"], state["history_meta"],
+                state["history_valid"], state["tick"].float(), return_weights=capture_weights)
+            if capture_weights:
+                history_context, state["visual_query_weights"] = history_result
+            else:
+                history_context = history_result
             context = self.fuse(context, history_context, map_write, state["global_continuity"],
                 state["pose"][:, 3], state["history_valid"].any(-1).float())
         rows = torch.arange(batch, device=device)
@@ -828,6 +834,9 @@ class SpatialMapMemory(nn.Module):
                               "unknown after motion/qualification gap; historical prefix retained" if started else
                               "unknown: no qualified episode-origin pose"))
         if self.fix_version >= 3:
+            if "visual_query_weights" in state:
+                result["history_query_weights"] = state["visual_query_weights"][0].detach().cpu().numpy().copy()
+                result["history_query_tick"] = int(state["tick"][0]) - 1
             ledger["segments"] = state["ledger_segment"][0, :used].detach().cpu().numpy().copy()
             result.update(trajectory_valid=bool(state["global_continuity"][0]),
                 local_tracking_ready=bool(state["tracking_ready"][0]),

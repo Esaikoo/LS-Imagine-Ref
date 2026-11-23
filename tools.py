@@ -501,7 +501,7 @@ def simulate(
         for i, result in results.items():
             obs[i], reward[i], done[i], information[i] = result[:4]
             if visualizer is not None:
-                visualizer.feedback(visual_mode,envs[i].id,reward[i],information[i])
+                visualizer.feedback(visual_mode,envs[i].id,reward[i],information[i], arrival=obs[i], done=done[i])
         episode += int(done.sum())
         length += active
         step += len(live)
@@ -515,7 +515,7 @@ def simulate(
             o = {k: convert(v) for k, v in o.items()}
             transition = o.copy()
             if isinstance(a, dict):
-                transition.update(a)
+                transition.update((k,v) for k,v in a.items() if not k.startswith("log_visual_"))
             else:
                 transition["action"] = a
             transition["reward"] = r

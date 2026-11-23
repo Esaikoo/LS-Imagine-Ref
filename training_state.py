@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
-CODE_VERSION = "VN4R3D2"
+CODE_VERSION = "VN4R3D2P2"
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "resume_tensorboard", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
@@ -583,7 +583,7 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
     wm_a, wm_b = getattr(agent._wm, "search_a", None), getattr(agent._wm, "search_b", None)
     controller, c = getattr(agent, "_search_a", None), getattr(agent, "_search_c", None)
     goal = getattr(agent, "_goal_reference", None)
-    payload = dict(agent_state_dict=agent.state_dict(),
+    payload = dict(code_version=CODE_VERSION, agent_state_dict=agent.state_dict(),
         goal_ref_version=2 if goal is not None else None,
         goal_controller_version=3 if getattr(config, "goal_search_enabled", False) else None,
         goal_reference_bank=goal.export_bank() if goal is not None else None,

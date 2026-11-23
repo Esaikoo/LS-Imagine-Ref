@@ -409,6 +409,9 @@ class LS_Imagine(nn.Module):
         output = {"action": action, "logprob": actor.log_prob(action)}
         output.update(memory_info)
         output.update(control_info)
+        if "log_visual_rank_choice" in output:
+            output["log_visual_weight_update"] = torch.full_like(
+                output["log_visual_rank_choice"], self._update_count)
         if goal is not None:
             control_state["goal_tracking"] = tracking
             output.update(
@@ -509,6 +512,7 @@ class LS_Imagine(nn.Module):
             self._wm.dynamics.get_feat(s)
         ).mean
 
+        self._task_behavior.visual_step = self._step * self._config.action_repeat
         metrics.update(self._task_behavior._train(post, post_zoomed, reward, intrinsic, jumping_steps,
                         accumulated_reward, jump_indicator, is_end,
                         search_context=context.get("search_memory"),
@@ -873,6 +877,10 @@ def main(config): # config is namespace
         agent._replay_sources = [str(replay_source.resolve())]
         agent._replay_budget_offset = 0
 
+    if config.check_obs_enabled and (not config.search_vnext_enabled or config.vnext_visual_enabled):
+        from apm.imagination_figures import ImaginationSampler
+        agent._task_behavior._visual_sampler = ImaginationSampler(config, agent._step * config.action_repeat)
+
     # Branch interactions share the same total real-interaction budget.
     next_branch_step = (resume_plan["next_branch_step"] if resume_plan else
                        (agent._step // config.search_branch_every + 1) * config.search_branch_every)
@@ -908,6 +916,9 @@ def main(config): # config is namespace
                 agent._step = logger.step // config.action_repeat
 
             if agent._step >= config.steps:
+                sampler = getattr(agent._task_behavior, "_visual_sampler", None)
+                if sampler is not None:
+                    sampler.capture(logger.step, None, None, None)
                 agent.flush_metrics()
                 break
             if config.search_branch_enabled and agent._step >= next_branch_step:

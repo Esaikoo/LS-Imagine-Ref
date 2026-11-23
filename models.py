@@ -1,12 +1,7 @@
-import os
 import copy
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
-import random
 
-from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime
 from torch import nn
 
 import networks
@@ -897,97 +892,10 @@ class ImagBehavior(nn.Module):
             metrics.update(self._value_opt(value_loss, self.value.parameters()))
         return imag_feat, imag_state, imag_action, weights, metrics
 
-    def save_state_sequence(self, imag_feat, jump_record, freq=0.1):
-        if not getattr(self._config, "check_obs_enabled", True):
-            return
-        if random.random() > freq:
-            return
-
-        output_dir = os.path.join(self._config.logdir, "check_obs")
-        os.makedirs(output_dir, exist_ok=True)
-        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-        num_rows, num_cols, _ = jump_record.shape
-        if torch.sum(jump_record) == 0:
-            random_num = 0.0
-        else:
-            random_num = np.random.rand()
-
-        if random_num < 0.5:
-            random_index = np.random.randint(num_cols)
-        else:
-            valid_indices = torch.any(jump_record.squeeze(-1), dim=0).nonzero().squeeze()
-
-            if valid_indices.ndim == 0: 
-                random_index = valid_indices.item()
-            else:
-                random_index = valid_indices[torch.randint(len(valid_indices), (1,)).item()].item()
-
-        feats = imag_feat[:, random_index, :] 
-        jump_record = jump_record[:, random_index]  
-
-        def tensor_to_image(tensor):
-            array = tensor.detach().cpu().numpy().astype(np.uint8)
-            return Image.fromarray(array)
-
-        def apply_colormap_to_heatmap(heatmap_tensor, cmap='jet', vmin=0, vmax=1):
-            heatmap = heatmap_tensor.detach().cpu().numpy().squeeze()
-            normed_heatmap = (heatmap - vmin) / (vmax - vmin) 
-            normed_heatmap = np.clip(normed_heatmap, 0, 1) 
-            colormap = plt.get_cmap(cmap)
-            colored_heatmap = colormap(normed_heatmap) 
-            colored_heatmap = (colored_heatmap[:, :, :3] * 255).astype(np.uint8)
-            return Image.fromarray(colored_heatmap)
-
-        def blend_images(image, heatmap, alpha=0.5):
-            image = image.convert("RGB")
-            heatmap = heatmap.convert("RGB")
-            return Image.blend(image, heatmap, alpha)
-
-        image_list = []
-        for feat in feats:
-            feat = feat.unsqueeze(0).unsqueeze(0)
-
-            image_tensor = self._world_model.heads["decoder"](feat)["image"].mode()
-            image_tensor = image_tensor.squeeze(0).squeeze(0)
-            image_tensor = torch.clamp(image_tensor, min=0.0, max=1.0) * 255.0
-            image = tensor_to_image(image_tensor)
-
-            heatmap_tensor = self._world_model.heads["decoder"](feat)["heatmap"].mode()
-            heatmap_tensor = heatmap_tensor.squeeze(0).squeeze(0)
-            heatmap_tensor = torch.clamp(heatmap_tensor, min=0.0, max=1.0)
-            heatmap = apply_colormap_to_heatmap(heatmap_tensor, cmap='jet', vmin=0, vmax=1)
-
-            blended_image = blend_images(image, heatmap, alpha=0.3)
-
-            image_list.append((image, heatmap, blended_image))
-
-        border_width = 2
-
-        total_width = sum(img.width for img, _, _ in image_list) + border_width * len(image_list) * 2
-        max_height = max(img.height for img, _, _ in image_list) + border_width * 2
-        composite_image = Image.new('RGB', (total_width, max_height * 3), color='white')
-
-        x_offset = 0
-
-        for i, (orig_img, heatmap, blended_img) in enumerate(image_list):
-            for row_idx, img in enumerate([orig_img, heatmap, blended_img]):
-                y_offset = max_height * row_idx
-
-                if jump_record[i] == 1:
-                    border_color = 'red'
-                else:
-                    border_color = 'blue'
-
-                bordered_img = Image.new('RGB', (img.width + border_width * 2, img.height + border_width * 2), border_color)
-                bordered_img.paste(img, (border_width, border_width))
-
-                composite_image.paste(bordered_img, (x_offset, y_offset))
-
-            x_offset += orig_img.width + border_width * 2
-
-        composite_image.save(os.path.join(output_dir, f"{current_time}.png"))
-        
+    def save_state_sequence(self, imag_feat, jump_record):
+        sampler = getattr(self, "_visual_sampler", None)
+        if sampler is not None:
+            sampler.capture(self.visual_step, imag_feat, jump_record, self._world_model.heads["decoder"])
 
     def policy_features(self, state):
         feat = self._world_model.dynamics.get_feat(state)

@@ -1211,6 +1211,7 @@ def worker(args, manifest):
             agent.eval().requires_grad_(False)
             visualizer = create_search_visualizer(config, folder)
             if visualizer is not None:
+                visualizer.checkpoint_id = str(checkpoint_path)
                 visualizer.set_step(agent._logger.step)
                 if agent._goal_reference is not None:
                     visualizer.set_goal_bank(agent._goal_reference.export_bank())
@@ -1339,7 +1340,7 @@ def worker(args, manifest):
                             search_decisions += int(search_log.get('log_search_decision', 0))
                             obs, reward, done, info = env.step({'action': action})
                             if visualizer is not None:
-                                visualizer.feedback('eval', stem, reward, info)
+                                visualizer.feedback('eval', stem, reward, info, arrival=obs, done=done)
                                 visual_episode['reward'].append(float(reward))
                                 visual_episode['success'].append(bool(info.get('success', False)))
                                 visual_episode['search_visible'].append(float(np.asarray(obs.get('search_visible', 0.))))

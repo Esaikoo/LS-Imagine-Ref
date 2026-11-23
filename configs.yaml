@@ -566,4 +566,4 @@ apm_vnext4:
   search_eval_evidence: False
   vnext_visual_audit: False
   video_pred_log: True
-  check_obs_enabled: False
+  check_obs_enabled: True

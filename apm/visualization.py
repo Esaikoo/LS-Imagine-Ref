@@ -104,6 +104,9 @@ class _Episode:
     a: list = field(default_factory=list)
     c: list = field(default_factory=list)
     last: object = None
+    groups: dict = field(default_factory=dict)
+    pending: object = None
+    terminal: object = None
     goal: object = None
     reward: float = 0.
     success: bool = False
@@ -122,6 +125,8 @@ class SearchVisualizer:
     """
     def __init__(self, root, config, *, scheduled_eval_maps=True):
         self.config = config
+        self.checkpoint_id = None
+        self.bank_info = {}
         self.enabled = bool(_get(config, "vnext_visual_enabled", True))
         self.interval = int(_get(config, "vnext_visual_every", 10000))
         if self.interval <= 0:
@@ -157,6 +162,15 @@ class SearchVisualizer:
 
     def set_goal_bank(self, bank):
         manifest = bank["manifest"]
+        import hashlib
+        encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        self.bank_info = dict(task=manifest.get("task_id"), version=manifest.get("version"),
+            positives=len(manifest["entries"]), negatives=len(manifest.get("negative_entries", [])),
+            fingerprint=hashlib.sha256(encoded).hexdigest(),
+            fusion_enabled=_get(self.config, "goal_fusion_enabled", True),
+            max_gate=_get(self.config, "goal_fusion_max_gate", .8),
+            epsilon=_get(self.config, "goal_fusion_epsilon", .05),
+            overlap=_get(self.config, "goal_fusion_overlap_weight", .5))
         positives = list(zip(manifest["entries"], _array(bank["pixels"])))
         negatives = list(zip(manifest.get("negative_entries", []), _array(bank["negative_pixels"])))
         examples = positives[:4] if not negatives else positives[:2] + negatives[:2]
@@ -247,6 +261,8 @@ class SearchVisualizer:
                    local_ready=local_ready,
                    pose_model_ready=(bool(_scalar(policy_output, "log_spatial_pose_model_ready"))
                                      if "log_spatial_pose_model_ready" in policy_output else None),
+                   map_write=(bool(_scalar(policy_output,"log_spatial_map_write"))
+                              if "log_spatial_map_write" in policy_output else None),
                    memory_available=bool(_scalar(policy_output,"log_spatial_memory_available")),
                    goal_state=int(_scalar(policy_output, "log_goal_state", -1)),
                    goal_gate=_scalar(policy_output, "log_goal_gate"),
@@ -254,14 +270,19 @@ class SearchVisualizer:
                    goal_conflict=_scalar(policy_output, "log_goal_conflict"),
                    goal_verify=bool(_scalar(policy_output, "log_goal_verify_used")),
                    goal_reject=bool(_scalar(policy_output, "log_goal_reject_used")),
-                   goal_absence=bool(_scalar(policy_output, "log_goal_absence_confirmed")),
                    value=None)
         if len(ep.rows) >= self.max_rows:
             ep.omitted_rows += 1
             return
         previous = ep.rows[-1] if ep.rows else None
-        ep.rows.append(row)
         decision = bool(_scalar(policy_output, "log_vnext_decision"))
+        row["control_kind"] = row["source"]
+        if row["source"] == 4 and (_scalar(policy_output,"log_vnext_recovery_probe") > .5 or
+                (not decision and previous and previous["control_kind"] == 10)):
+            row["control_kind"] = 10  # recovery probe whose chosen option is settle
+        if row["source"] == 7 and row["goal_verify"]:
+            row["control_kind"] = 11  # temporal verification uses the alignment source
+        ep.rows.append(row)
         goal_priority = (3 * row["goal_conflict"] + 2 * row["goal_reject"]
                          + 2 * (row["goal_state"] == 2 and
                                 (previous is None or previous["goal_state"] != 2)))
@@ -285,21 +306,65 @@ class SearchVisualizer:
                     goal_rank, goal_reason = (0, peak), "strongest original heat (fallback)"
         goal_snapshot = goal_rank is not None and (
             ep.goal is None or goal_rank > ep.goal["goal_rank"])
-        if not decision and not goal_snapshot:
+        b_group = ("qualified continuous track" if pose_ready else
+                   "qualified local track" if local_ready else "visual history without local pose")
+        if not local_ready and not row["memory_available"]:
+            b_group = None
+        if previous and previous["segment"] != row["segment"]:
+            b_group = "local frame reset"
+        goal_group = None
+        if goal_rank is not None:
+            goal_group = ("peak conflict" if row["goal_reject"] else "trusted regional evidence"
+                          if row["goal_state"] == 2 else "fusion inactive" if row["goal_gate"] == 0
+                          else "applied fusion")
+        if goal_group and goal_original is not None:
+            heat = np.asarray(goal_original).squeeze()
+            if heat.ndim == 2 and heat[:max(1,len(heat)//3)].max() >= (.7 if heat.dtype.kind=="f" and heat.max()<=1 else 178) and row["goal_state"] == 0:
+                goal_group = "upper-view distractor suspected"
+            elif row["goal_conflict"] >= .25:
+                goal_group = "regional disagreement"
+        # A calibrated fusion case has an actual quantized policy-input change.
+        # Keep its strongest example independently of rejected/trusted/fallback rankings.
+        qualified_delta = None
+        if goal_rank is not None and row["goal_gate"] > 0 and row["goal_model_update"] > 0:
+            reliability = _scalar(policy_output, "log_goal_region_cal_reliability", np.nan)
+            if np.isfinite(reliability) and reliability >= .15:
+                qualified_delta = goal_delta or _goal_heat_delta(goal_original, goal_effective)
+        previous_fusion = ep.groups.get("calibrated active fusion")
+        keep_fusion = (qualified_delta is not None and qualified_delta[0] > 0 and
+                       (previous_fusion is None or qualified_delta[0] > previous_fusion["goal_heat_delta"][0]))
+        keep_fallback = (goal_rank is not None and row["goal_gate"] == 0 and
+                         "zero-gate fallback" not in ep.groups and
+                         _goal_heat_delta(goal_original, goal_effective) == (0., 0.))
+        goal_example = goal_group and (goal_group not in ep.groups or goal_snapshot)
+        ep.pending = None
+        if not (decision or goal_snapshot or goal_example or keep_fusion or keep_fallback or index == 0 or (b_group and b_group not in ep.groups)):
             return
         prediction = _array(policy_output.get("log_vnext_prediction"))
         mask = _array(policy_output.get("log_vnext_mask"), []).reshape(-1).astype(bool)
         has_prediction = (prediction is not None and prediction.ndim == 2
                           and prediction.shape[1] >= 7 and len(mask) == len(prediction)
                           and np.isfinite(prediction).all() and bool(np.any(prediction)))
-        q_computed = has_prediction or bool(np.any(q))
+        rank = int(_scalar(policy_output, "log_visual_rank_choice", -1))
+        if "log_visual_rank_choice" in policy_output:
+            has_prediction = has_prediction and rank >= 0
+        q_computed = has_prediction or (rank >= 0 if "log_visual_rank_choice" in policy_output else bool(np.any(q)))
         row["value"] = float(q[option]) if q_computed and 0 <= option < len(q) else None
         legal_values = q[mask] if len(q) == len(mask) else np.array([])
         margin = float(np.diff(np.sort(legal_values))[-1]) if len(legal_values) > 1 else float("inf")
         phase_change = previous is not None and previous["phase"] != phase
         priority = 4*int(row["override"]) + 3*int(phase_change) + int(visible >= .7)
         priority += max(0., .1-margin) if math.isfinite(margin) else 0.
-        snap = dict(row=row.copy(), rgb=_rgb(obs.get("image", obs.get("rgb"))),
+        snap = dict(row=row, environment_step=int(training_step),
+                    weight_update=int(_scalar(policy_output, "log_visual_weight_update", -1)),
+                    rank_choice=rank, rank_mask=_array(policy_output.get("log_visual_rank_mask")),
+                    template_commands=_array(policy_output.get("log_visual_template_commands")) if rank >= 0 else None,
+                    template_lengths=_array(policy_output.get("log_visual_template_lengths")) if rank >= 0 else None,
+                    memory_input=(bool(_scalar(policy_output, "log_visual_memory_input"))
+                                  if "log_visual_memory_input" in policy_output else None),
+                    event_support=_array(policy_output.get("log_visual_event_support")),
+                    requested=int(_scalar(policy_output, "log_vnext_requested", -1)),
+                    horizon=int(_scalar(policy_output, "log_vnext_horizon", 0)), rgb=_rgb(obs.get("image", obs.get("rgb"))),
                     heatmap=_array(obs.get("heatmap")),
                     patch=_array(policy_output.get("log_spatial_patch")),
                     prediction=None if prediction is None else prediction.copy(),
@@ -330,7 +395,7 @@ class SearchVisualizer:
                 snap[key] = None if value is None else value.copy()
             snap["goal_priority"] = goal_priority
             snap["priority"] += goal_priority
-        if goal_snapshot:
+        if goal_rank is not None:
             native = None
             if (_get(self.config, "goal_ref_use_raw_image", True)
                     and _scalar(obs, "goal_image_valid") > .5):
@@ -345,8 +410,39 @@ class SearchVisualizer:
             snap["goal_region_cal_reliability"] = _scalar(
                 policy_output, "log_goal_region_cal_reliability", np.nan)
             snap["goal_rank"], snap["goal_selection_reason"] = goal_rank, goal_reason
-            ep.goal = snap
+            if goal_snapshot:
+                ep.goal = snap
+            if keep_fallback:
+                ep.groups["zero-gate fallback"] = snap
+            if keep_fusion:
+                ep.groups["calibrated active fusion"] = snap
+            if goal_example:
+                ep.groups[goal_group] = snap
+        ep.pending = snap
+        if index == 0:
+            ep.groups["reset observation"] = snap
+        if b_group:
+            ep.groups.setdefault(b_group, snap)
         if decision:
+            criteria = []
+            if row["source"] == 1 and row["override"] and snap["requested"] != row["actor"] and snap["requested"] >= 0:
+                criteria.append("learned change to Actor command")
+            if rank >= 0 and row["source"] >= 2 and rank != option:
+                criteria.append("rule superseded ranking")
+            if has_prediction and mask.sum() >= 2:
+                span = np.ptp(prediction[mask, :7], axis=0).max()
+                if span >= .20:
+                    criteria.append("divergent legal forecasts")
+                supported = snap.get("supported")
+                if supported is not None and np.sum(mask & supported.astype(bool)) >= 2:
+                    criteria.append("multiple supported forecasts")
+            elif not mask[1:].any():
+                criteria.append("no eligible alternative")
+            for reason in criteria:
+                snap["reasons"].append(reason)
+                ep.groups.setdefault(reason, snap)
+            if not snap["reasons"]:
+                snap["reasons"].append("retained controller decision")
             if has_prediction and mask.sum() >= 2:
                 ep.a = self._retain(ep.a, snap, 3)
             ep.c = self._retain(ep.c, snap, 2)
@@ -358,7 +454,7 @@ class SearchVisualizer:
         values.append(snapshot)
         return sorted(values, key=lambda s: (-s["priority"], -s["row"]["step"]))[:limit]
 
-    def feedback(self, mode, env_id, reward, info):
+    def feedback(self, mode, env_id, reward, info, *, arrival=None, done=False):
         self._open()
         ep = self._active.get((mode, str(env_id)))
         if ep is None:
@@ -370,6 +466,33 @@ class SearchVisualizer:
         if ep.rows and not ep.omitted_rows:
             ep.rows[-1]["reward"] = r
             ep.rows[-1]["success"] = success
+
+        # Audit only after env.step. Never feed the arrival into the decision.
+        event = ep.pending
+        if arrival is not None and not ep.omitted_rows:
+            if event is not None:
+                event["feedback"] = dict(reward=r, success=success, arrival_index=event["row"]["step"]+1)
+                if (_scalar(arrival, "log_actuator_valid") == 1 and not _scalar(arrival, "log_env_error")
+                        and not _scalar(arrival, "is_first")):
+                    actual = _array(arrival.get("log_applied_control"))
+                    if actual is not None and actual.size == 9 and np.isfinite(actual).all():
+                        event["env_applied"] = actual.reshape(9).copy()
+                        option = event["row"]["option"]
+                        if (event["row"]["option"] == 0 or event["row"]["override"]):
+                            event["feedback"]["control_matches_controller"] = (bool(np.allclose(actual, event["applied"])) if event.get("applied") is not None else None)
+                        if (event["horizon"] == 1 and event["has_prediction"] and
+                                0 <= option < len(event["mask"]) and event["mask"][option]
+                                and _scalar(arrival, "search_progress_valid") == 1 and
+                                event.get("applied") is not None and np.allclose(actual, event["applied"])):
+                            label = _scalar(arrival, "search_progress")
+                            if abs(float(event["prediction"][option, 5]) - label) >= .5:
+                                event["feedback"]["audited_progress"] = label
+                                event["reasons"].append("executed H1 progress mismatch")
+                                ep.groups.setdefault("executed H1 progress mismatch", event)
+                event["arrival_rgb"] = _rgb(arrival.get("image"))
+            if done:
+                ep.terminal = dict(rgb=_rgb(arrival.get("image")), step=len(ep.rows), success=success)
+        ep.pending = None
 
     def episode_end(self, mode, env_id, episode, training_step, eval_index=None,
                     eval_total=None, map_state=None):
@@ -600,19 +723,27 @@ class SearchVisualizer:
             candidate_prediction_count=len(ep.a),
             candidate_prediction_note=("computed action-conditioned predictions" if ep.a else
                                        "No eligible computed candidate prediction in this episode"))
+        # Prefer distinct recorded mechanisms over near-identical top-ranked frames.
+        preferred = [ep.groups.get(k) for k in ("learned change to Actor command",
+                     "executed H1 progress mismatch", "rule superseded ranking",
+                     "multiple supported forecasts", "divergent legal forecasts")] + ep.a
+        distinct = {}
+        for event in preferred:
+            if event is not None and event["has_prediction"] and event["mask"].sum() >= 2:
+                distinct.setdefault(event["row"]["step"], event)
+        ep.a = list(distinct.values())[:3]
         # Ensure the final real decision is represented in the C explanations.
         if ep.last is not None and all(s["row"]["step"] != ep.last["row"]["step"] for s in ep.c):
             ep.c = ([ep.c[0]] if ep.c else []) + [ep.last]
         if ep.goal is not None:
-            summary.update(goal_ref_version=1,
+            summary.update(goal_ref_version=int(_get(self.config,"goal_ref_version",2)),
                 first_trusted_target_step=next((r["step"] for r in ep.rows if r["goal_state"] == 2), None),
                 goal_verify_steps=sum(r["goal_verify"] for r in ep.rows),
                 goal_reject_steps=sum(r["goal_reject"] for r in ep.rows),
-                goal_confirmed_absence_steps=sum(r["goal_absence"] for r in ep.rows),
                 goal_conflict_mean=float(np.mean([r["goal_conflict"] for r in ep.rows])),
                 goal_keyframe=self._decision_json(ep.goal))
         return dict(summary=summary, rows=ep.rows, a=ep.a, c=ep.c, map_state=state,
-                    goal=ep.goal, terminal_pose=terminal_pose)
+                    groups=ep.groups, terminal=ep.terminal, goal=ep.goal, terminal_pose=terminal_pose)
 
     def _export(self, snap, path, training_step, mode, repeated=False):
         if (path / "summary.json").exists():
@@ -624,7 +755,20 @@ class SearchVisualizer:
                 tmp = Path(tmp)
                 with self._render_lock:
                     self._render(snap, tmp)
-                summary = dict(snap["summary"], mode=mode, export_training_step=int(training_step),
+                from training_state import CODE_VERSION
+                from .paper_archive import write_keyframes
+                write_keyframes(tmp, snap, getattr(self, "goal_references", []))
+                summary = dict(snap["summary"], task=str(_get(self.config,"task","unknown")),
+                               code_version=CODE_VERSION, bank=self.bank_info,
+                               frame_alignment="Decision t uses observation t. Arrival RGB, reward and environment control belong to transition t to t+1.",
+                               support_semantics="Predictive support is measured on held-out labels. Missing support, ranking or actuator telemetry is unknown.",
+                               audit_semantics="H1 mismatch uses an actual matching control and a valid post-action training label; it cannot enter a policy input.",
+                               checkpoint_id=self.checkpoint_id, run_id=str(_get(self.config,"logdir","")),
+                               weight_source="frozen checkpoint" if self.checkpoint_id else "live training weights",
+                               calibrated_fusion_mean_delta=(snap["groups"]["calibrated active fusion"]["goal_heat_delta"][0]
+                                      if "calibrated active fusion" in snap["groups"] else None),
+                               case_groups={k: v["row"]["step"] for k,v in snap["groups"].items()},
+                               mode=mode, export_training_step=int(training_step),
                                repeated_complete_episode=bool(repeated),
                                episode_age_at_export_steps=int(training_step)-snap["summary"]["episode_completed_at_training_step"],
                                selection_policy="latest completed episode at threshold; reuse explicitly recorded",
@@ -635,6 +779,9 @@ class SearchVisualizer:
                 map_state = snap["map_state"] or {}
                 ledger = map_state.get("ledger", {})
                 np.savez_compressed(tmp / "episode_trace.npz",
+                    control_kind=np.asarray([r["control_kind"] for r in rows], np.int16),
+                    actor=np.asarray([r["actor"] for r in rows], np.int16),
+                    override=np.asarray([r["override"] for r in rows], bool),
                     pose=np.asarray([r["pose"] for r in rows], np.float32),
                     pose_ready=np.asarray([r["pose_ready"] for r in rows], bool),
                     pose_gap_count=np.asarray([r["pose_gap_count"] for r in rows],np.int16),
@@ -648,7 +795,6 @@ class SearchVisualizer:
                     goal_state=np.asarray([r["goal_state"] for r in rows], np.int8),
                     goal_verify=np.asarray([r["goal_verify"] for r in rows], bool),
                     goal_reject=np.asarray([r["goal_reject"] for r in rows], bool),
-                    goal_absence_confirmed=np.asarray([r["goal_absence"] for r in rows], bool),
                     goal_gate=np.asarray([r["goal_gate"] for r in rows], np.float32),
                     goal_model_update=np.asarray([r["goal_model_update"] for r in rows], np.int32),
                     goal_conflict=np.asarray([r["goal_conflict"] for r in rows], np.float32),
@@ -667,6 +813,8 @@ class SearchVisualizer:
                     ledger_segments=np.asarray(ledger.get("segments", []),np.int32),
                     history_frames=np.asarray(map_state.get("history_frames", []),np.uint8),
                     history_meta=np.asarray(map_state.get("history_meta", []),np.float32),
+                    history_query_weights=np.asarray(map_state.get("history_query_weights", []), np.float32),
+                    history_query_tick=np.asarray(map_state.get("history_query_tick", []), np.int32),
                     history_valid=np.asarray(map_state.get("history_valid", []),bool))
                 if path.exists():
                     raise FileExistsError("Refusing to replace an incomplete visualization directory: %s" % path)
@@ -692,7 +840,6 @@ class SearchVisualizer:
             goal_state=snap["row"].get("goal_state", -1), goal_context=snap.get("goal_context"),
             goal_forecast=snap.get("goal_forecast"), goal_candidates=snap.get("goal_candidate_scores"),
             goal_new_area_forecast=snap.get("goal_new_area_forecast"),
-            goal_absence_confirmed=snap["row"].get("goal_absence"),
             goal_gate=snap["row"].get("goal_gate"), goal_conflict=snap["row"].get("goal_conflict"),
             goal_model_update=snap["row"].get("goal_model_update"),
             goal_selection_reason=snap.get("goal_selection_reason"),
@@ -701,15 +848,17 @@ class SearchVisualizer:
             goal_heat_delta_mean_max=snap.get("goal_heat_delta"),
             task_q=snap.get("task_q") if snap["q_computed"] else None,
             search_q=snap.get("search_q") if snap["q_computed"] else None,
-            actual_control=snap.get("applied"),
+            controller_applied=snap.get("applied"), actual_control=snap.get("env_applied"),
             unexecuted_candidates="predictions only; no real future frames are claimed"))
 
-    @staticmethod
-    def _figure(size):
+    def _figure(self, size):
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         fig = Figure(figsize=size, dpi=120)
         FigureCanvasAgg(fig)
+        protocol = _get(self.config, "goal_ref_version", None)
+        tag = f"D v{protocol}" if protocol in (1, 2) else "D protocol unrecorded"
+        fig.text(.985, .995, tag, ha="right", va="top", fontsize=8, color="#52677a")
         return fig
 
     @staticmethod
@@ -718,8 +867,28 @@ class SearchVisualizer:
         fig.clear()
 
     def _render(self, snap, folder):
+        from .paper_figures import decision, history, storyboard, timeline
+        history(self, snap, folder / "B_history.png")
+        storyboard(self, snap, folder / "episode_events.png")
+        eligible = list(snap.get("groups", {}).values()) + snap["a"] + snap["c"]
+        learned = next((e for e in eligible if e["row"]["source"] == 1 and e["row"]["override"]
+                        and e["has_prediction"] and e["mask"].sum() >= 2), None)
+        overridden = snap.get("groups", {}).get("rule superseded ranking")
+        if overridden is not None and overridden["has_prediction"]:
+            decision(self, overridden, folder / "AC_rule_override.png", "AC")
+        if learned is not None:
+            decision(self, learned, folder / "AC_decision.png", "AC")
+        focus = learned or (snap["c"][0] if snap["c"] else None)
+        if focus is not None:
+            timeline(self, snap, folder / "C1_window.png", focus["row"]["step"])
         self._render_map(snap, folder / "B_map.png")
         self._render_timeline(snap, folder / "C1_timeline.png")
+        fusion = snap.get("groups", {}).get("calibrated active fusion")
+        if fusion is not None:
+            self._render_goal(fusion, folder / "D_calibrated_fusion.png")
+        fallback = snap.get("groups", {}).get("zero-gate fallback")
+        if fallback is not None and fallback is not snap["goal"]:
+            self._render_goal(fallback, folder / "D_zero_gate_fallback.png")
         if snap["goal"] is not None:
             self._render_goal(snap["goal"], folder / "G_goal_verification.png")
         if not snap["a"]:
@@ -871,7 +1040,7 @@ class SearchVisualizer:
         detail_text = "" if extent is None else (
             " | %.2f × %.2f m estimated span" % tuple(extent) if max(extent) > 1.e-6
             else " | no estimated translation in this segment")
-        fig.text(.10, .945, "B · Estimated 2D search memory", fontsize=16,
+        fig.text(.10, .945, "B · Qualified Local Spatial Memory", fontsize=16,
                  fontweight="bold", color="#17324d")
         fig.text(.10, .895, "%s | %d steps | %s%s" %
                  ("Success" if summary["success"] else "Failure", summary["total_steps"],
@@ -893,7 +1062,8 @@ class SearchVisualizer:
                 preview.set_title("Observed RGB tokens (%d slots)" % summary["history_slots_retained"],
                                   fontsize=8)
         if segmented:
-            footer = ("Local tracking: %.1f%% | continuous episode-origin tracking: %.1f%%\n"
+            footer = (f"Segment coverage: {summary['rendered_segment_steps']} decisions | pose breaks: {summary['pose_gap_count']}\n"
+                      "Local tracking: %.1f%% | continuous episode-origin tracking: %.1f%%\n"
                       "Qualified local segments have separate origins.\n"
                       "Visual history stays active independently of pose. Target marks denote observation viewpoints." %
                       (100*summary["local_tracking_fraction"], 100*summary["localized_fraction"]))
@@ -905,93 +1075,8 @@ class SearchVisualizer:
         self._save(fig, path, tight=False)
 
     def _render_timeline(self, snap, path):
-        from matplotlib.colors import ListedColormap
-        from matplotlib.patches import Patch
-        import textwrap
-        rows = snap["rows"]; x = np.asarray([r["step"] for r in rows])
-        fig = self._figure((14, 7.5))
-        axes = fig.subplots(5, 1, sharex=True, gridspec_kw={"height_ratios": [1, 1, 1, 2, 1.4]})
-        fig.subplots_adjust(left=.10, right=.73, top=.88, bottom=.13, hspace=.24)
-        fig.suptitle("C · Episode control timeline", x=.10, ha="left", fontsize=16, fontweight="bold")
-        phase_colors = ["#729fc1", "#e2b45a", "#67a578", "#c47b75"]
-        axes[0].imshow(np.asarray([r["phase"] for r in rows])[None], aspect="auto", interpolation="nearest",
-                       cmap=ListedColormap(phase_colors), vmin=0, vmax=3,
-                       extent=[-.5, len(rows)-.5, 0, 1])
-        axes[0].set_yticks([]); axes[0].set_ylabel("Phase")
-        axes[0].legend(handles=[Patch(color=c, label=t) for c, t in zip(phase_colors, PHASES)],
-                       loc="center left", bbox_to_anchor=(1.02, .5), ncol=2, fontsize=8, frameon=False)
-        options = np.asarray([r["option"] for r in rows])
-        option_colors = ["#355c7d", "#729fc1", "#91b6ca", "#a5c78b", "#73986a", "#c2b271",
-                         "#a48cb4", "#bc8e86", "#5f9f77", "#8a999d", "#bd9e61", "#bb716e"]
-        axes[1].imshow(options[None], aspect="auto", interpolation="nearest", cmap=ListedColormap(option_colors),
-                       vmin=0, vmax=11, extent=[-.5, len(rows)-.5, 0, 1])
-        axes[1].set_yticks([]); axes[1].set_ylabel("Option ID")
-        starts = np.r_[0, np.flatnonzero(np.diff(options)) + 1]
-        ends = np.r_[starts[1:], len(options)]
-        for a, b in zip(starts, ends):
-            if b-a >= max(1, len(rows)//60):
-                axes[1].text((a+b-1)/2, .45, str(options[a]), ha="center", va="center", fontsize=6)
-        axes[2].imshow(np.asarray([r["source"] for r in rows])[None], aspect="auto", interpolation="nearest",
-                       cmap=ListedColormap(["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba", "#b87558", "#4aa69d"]),
-                       vmin=-1, vmax=9, extent=[-.5, len(rows)-.5, 0, 1])
-        axes[2].set_yticks([]); axes[2].set_ylabel("Source")
-        source_colors = ["#999999", "#355c7d", "#e2a657", "#7da67d", "#b36a5e", "#8e7ba9", "#6ba5b4", "#c69c68", "#b58bba", "#b87558", "#4aa69d"]
-        present = {r["source"] for r in rows}
-        axes[2].legend(handles=[Patch(color=c, label=SOURCES[i]) for i, c in zip(range(-1, 10), source_colors)
-                                if i in present],
-                       loc="center left", bbox_to_anchor=(1.02, .5), ncol=2, fontsize=7, frameon=False)
-        axes[3].plot(x, [r["visible"] for r in rows], label="A visibility estimate", color="#46836e")
-        axes[3].set_ylabel("Probability")
-        axes[3].set_ylim(-.16, 1.10)
-        axes[3].set_yticks([0, .5, 1.])
-        if rows[0]["goal_state"] >= 0:
-            for state, color, name in ((0, "#7d8894", "untrusted"), (1, "#ce902c", "verify"),
-                                        (2, "#198544", "trusted")):
-                selected = np.asarray([r["goal_state"] == state for r in rows])
-                if selected.any():
-                    axes[3].scatter(x[selected], np.full(selected.sum(), -.06), s=5, c=color, label=name)
-            for key, color, label in (("goal_verify", "#ce902c", "verify action"),
-                                       ("goal_reject", "#ab3b42", "reject action")):
-                used = np.asarray([r[key] for r in rows])
-                if used.any():
-                    axes[3].scatter(x[used], np.full(used.sum(), -.11), s=12, c=color, marker="x", label=label)
-        values = [np.nan if r["value"] is None else r["value"] for r in rows]
-        axes[4].plot(x, values, color="#536891", marker=".", markersize=2)
-        axes[4].set_ylabel("Selected C value")
-        finite_values = np.asarray(values)[np.isfinite(values)]
-        if len(finite_values):
-            from matplotlib.ticker import FormatStrFormatter
-            lo, hi = finite_values.min(), finite_values.max()
-            padding = max(.01, (hi-lo)*.1)
-            axes[4].set_ylim(lo-padding, hi+padding)
-            axes[4].yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
-        else:
-            axes[4].text(.5, .5, "No C value computed for this episode", transform=axes[4].transAxes,
-                         ha="center", va="center", color="#536477", fontsize=9)
-        hits = [r["step"] for r in rows if r["option"] == 8]
-        if hits:
-            axes[3].axvline(hits[0], color="#a37932", linestyle="--", label="first interaction option")
-        if snap["summary"]["first_predicted_target_step"] is not None:
-            axes[3].axvline(snap["summary"]["first_predicted_target_step"], color="#589d70", linestyle=":", label="first predicted target")
-        if snap["summary"]["first_target_step"] is not None:
-            axes[3].axvline(snap["summary"]["first_target_step"], color="#4f8a91", linestyle="--", label="first ray-audited target")
-        if rows[0]["goal_state"] >= 0:
-            reward_steps = np.asarray([r["reward"] > 0 for r in rows])
-            if reward_steps.any():
-                axes[3].scatter(x[reward_steps], np.full(reward_steps.sum(), 1.02),
-                                s=12, marker="^", c="#478858", label="actual positive reward")
-        axes[3].axvline(x[-1], color="#3b895b" if snap["summary"]["success"] else "#ad5e56",
-                       linewidth=1.5, label="success" if snap["summary"]["success"] else "failure")
-        axes[4].set_xlabel("Decision index (0-based; reward follows the selected action)")
-        axes[3].legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, .5), frameon=False)
-        names = self._names(12)
-        legend = "Option IDs: " + "; ".join("%d %s" % (i, name) for i, name in enumerate(names))
-        if int(_get(self.config,"vnext_spatial_fix_version",0))>=2:
-            legend += "; APPROACH phase: 6=align_up, 7=align_down (not scan/clear)"
-        fig.text(.04, .015, textwrap.fill(legend, width=160), fontsize=7)
-        for ax in axes[3:]:
-            ax.grid(alpha=.2)
-        self._save(fig, path)
+        from .paper_figures import timeline
+        timeline(self, snap, path)
 
     def _names(self, count, phase=None):
         try:
@@ -1005,121 +1090,9 @@ class SearchVisualizer:
             names[6:8]=["align_up","align_down"]
         return [names[i] if i < len(names) else "option_%d" % i for i in range(count)]
 
-    @staticmethod
-    def _decision_images(fig, panel, event):
-        patch = event.get("patch")
-        if patch is not None and patch.ndim == 3 and patch.shape[-1] >= 6:
-            patch = _map_rgb(patch.astype(float)/255. if patch.dtype == np.uint8 else patch)[::-1]
-        else:
-            patch = None
-        row = event["row"]
-        b_title = "B · Local search patch"
-        b_note = None
-        if not row["local_ready"]:
-            patch = event.get("history_preview")
-            b_title = "B · Retained visual history"
-            b_note = ("Pose calibration pending" if row.get("pose_model_ready") is False
-                      else "Local pose unavailable")
-        tiles = [("Current observation", event.get("rgb"), None),
-                 ("Original U-Net", _goal_heatmap(event.get("heatmap")), "turbo"),
-                 (b_title, patch, None)]
-        if event["row"]["goal_state"] >= 0:
-            tiles += [("D · Region evidence", _goal_heatmap(event.get("goal_ref_map")), "turbo"),
-                      ("Effective heatmap", _goal_heatmap(event.get("goal_heatmap_policy")), "turbo")]
-        grid = panel.subgridspec(1, len(tiles), wspace=.22)
-        for i, (title, image, cmap) in enumerate(tiles):
-            ax = fig.add_subplot(grid[i])
-            ax.axis("off")
-            ax.set_title(title, fontsize=10, color="#33475b", pad=8)
-            if image is None:
-                ax.text(.5, .5, b_note if title == b_title and b_note else "Not recorded",
-                        transform=ax.transAxes, ha="center", va="center", color="#657487", fontsize=9)
-            else:
-                ax.imshow(image, cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
-                if title == b_title and b_note:
-                    ax.text(.5, -.14, b_note + " · RGB tokens", transform=ax.transAxes,
-                            ha="center", va="top", color="#657487", fontsize=8)
-
     def _render_goal(self, event, path):
-        from matplotlib.patches import Rectangle
-        fig = self._figure((13, 6))
-        refs = getattr(self, "goal_references", ())
-        axes = fig.subplots(2, 4)
-        fig.subplots_adjust(top=.83, bottom=.17, left=.035, right=.93, hspace=.33, wspace=.22)
-        for ax in axes.flat:
-            ax.axis("off")
-        for i, ax in enumerate(axes[0]):
-            label, rgb = refs[i] if i < len(refs) else ("Bank example", None)
-            ax.set_title(label, fontsize=9)
-            if rgb is not None:
-                ax.imshow(rgb, interpolation="nearest")
-            else:
-                ax.text(.5, .5, "Not available", transform=ax.transAxes,
-                        ha="center", va="center", color="#657487")
-
-        rgb = event.get("goal_rgb")
-        context = event.get("goal_context")
-        context = context.reshape(-1) if context is not None else np.empty(0)
-        ax = axes[1,0]
-        candidate_notes = []
-        if rgb is not None:
-            ax.imshow(rgb, extent=(0, 1, 1, 0), interpolation="nearest")
-            ax.set(xlim=(0, 1), ylim=(1, 0))
-            boxes = event.get("goal_boxes")
-            scores = event.get("goal_candidate_scores")
-            sources = event.get("goal_candidate_sources")
-            if boxes is not None and scores is not None and sources is not None:
-                for index, (box, score, source) in enumerate(zip(boxes, scores, sources), 1):
-                    x0, y0, x1, y1 = box
-                    if x1 <= x0 or y1 <= y0:
-                        continue
-                    color = ("#e9a435", "#40bad4", "#d670bc")[int(source) % 3]
-                    ax.add_patch(Rectangle((x0, y0), x1-x0, y1-y0, fill=False,
-                                           ec=color, linewidth=1.2))
-                    ax.text((x0+x1)/2, (y0+y1)/2, str(index), color=color, fontsize=7,
-                            ha="center", va="center", clip_on=True,
-                            bbox=dict(facecolor="black", edgecolor="none", alpha=.65, pad=.30))
-                    candidate_notes.append(f"{index}  {score:.2f}")
-            if len(context) >= 8 and np.isfinite(context[3:5]).all():
-                x, y = (context[3:5] + 1.) / 2.
-                ax.plot(x, y, marker="+", color="white", markersize=7)
-        size = "" if rgb is None else " %dx%d" % (rgb.shape[1], rgb.shape[0])
-        ax.set_title(event.get("goal_rgb_source", "D frame") + size + " / region scores")
-        heat_artist = None
-        for ax, key, title in zip(axes[1,1:], ("goal_original_heatmap", "goal_ref_map", "goal_heatmap_policy"),
-                                  ("Original U-Net", "D region scores", "Effective heatmap")):
-            image = _goal_heatmap(event.get(key))
-            if image is not None:
-                heat_artist = ax.imshow(image, cmap="turbo", vmin=0, vmax=1,
-                                        interpolation="nearest")
-            else:
-                ax.text(.5, .5, "Not recorded", transform=ax.transAxes,
-                        ha="center", va="center", color="#657487")
-            ax.set_title(title)
-        if heat_artist is not None:
-            color_ax = fig.add_axes([.94, .18, .012, .25])
-            fig.colorbar(heat_artist, cax=color_ax, ticks=(0., .5, 1.))
-        row = event["row"]
-        evidence = ("valid" if context[7] > .5 else "unqualified") if len(context) >= 8 else "unknown"
-        cal = event.get("goal_region_cal_reliability", np.nan)
-        cal_text = f"{cal:.3f}" if np.isfinite(cal) else "n/a"
-        title = (f"D: frame {row['step']} | {('untrusted', 'uncertain', 'trusted')[row['goal_state']]}"
-                 f" | evidence {evidence} | cal {cal_text} | gate {row['goal_gate']:.3f}"
-                 f" | conflict {row['goal_conflict']:.3f}")
-        if row.get("goal_absence"):
-            title += " | absence qualified"
-        delta = event.get("goal_heat_delta")
-        change = "n/a" if delta is None else f"{delta[0]:.4f} / {delta[1]:.4f}"
-        reason = event.get("goal_selection_reason", "unspecified")
-        fig.suptitle(title + f"\nSelected: {reason} | heat change mean/max {change}", fontsize=12)
-        update = row["goal_model_update"]
-        update = str(update) if update >= 0 else "n/a"
-        fig.text(.035, .066, "Amber U-Net, cyan RGB, magenta difficult regions. White + marks the selected "
-                 f"region center. Model update {update}.", fontsize=9, color="#536477")
-        if candidate_notes:
-            fig.text(.035, .036, "Proposal scores   " + "   ·   ".join(candidate_notes),
-                     fontsize=9, color="#536477")
-        self._save(fig, path)
+        from .paper_figures import goal
+        goal(self, event, path)
 
     def _render_unavailable_a(self, summary, path):
         fig = self._figure((10, 2.6))
@@ -1130,82 +1103,14 @@ class SearchVisualizer:
         self._save(fig, path)
 
     def _render_decision(self, event, path, title):
-        fig = self._figure((15, 8.8))
-        panel = fig.add_gridspec(2, 1, height_ratios=(1.15, 1.8), left=.05, right=.95,
-                                 bottom=.12, top=.82, hspace=.20)
-        self._decision_images(fig, panel[0], event)
-        ax = fig.add_subplot(panel[1])
-        ax.axis("off")
-        count = max(len(event["mask"]), len(event["q"]))
-        names = self._names(count, event["row"]["phase"])
-        selected = event["row"]["option"]
-        row = event["row"]
-        goal = row["goal_state"] >= 0
-        columns = ["Option", "Legal", "New surface", "Discovery", "Revisit", "Progress", "A score", "C value"]
-        if goal:
-            columns += ["Task Q", "Search Q", "Verified\ndiscovery", "Reobserve"]
-
-        def display(value):
-            return "—" if value is None or not np.isfinite(value) else f"{value:.3f}"
-
-        data = []
-        for i, name in enumerate(names):
-            legal = i < len(event["mask"]) and event["mask"][i]
-            predicted = legal and event["has_prediction"] and i < len(event["prediction"])
-            evaluated = legal and event["q_computed"] and i < len(event["q"])
-            probs = event["prediction"][i, [0, 2, 3, 5]] if predicted else [None]*4
-            score, support = event["a_score"], event["supported"]
-            a_score = display(score[i] if predicted and score is not None and i < len(score) else None)
-            if a_score != "—" and support is not None and i < len(support) and support[i]:
-                a_score += " *"
-            values = [("> " if i == selected else "") + name.replace("_", " "),
-                      "Yes" if legal else "No", *map(display, probs), a_score,
-                      display(event["q"][i] if evaluated else None)]
-            if goal:
-                for key in ("task_q", "search_q"):
-                    q = event.get(key)
-                    values.append(display(q[i] if evaluated and q is not None and i < len(q) else None))
-                q = event.get("goal_forecast")
-                values.extend(map(display, q[i] if predicted and q is not None and i < len(q) else (None, None)))
-            data.append(values)
-        if data:
-            table = ax.table(cellText=data, colLabels=columns, cellLoc="center", bbox=(0, 0, 1, 1),
-                             colWidths=[.18, .06] + [.76/(len(columns)-2)]*(len(columns)-2))
-            table.auto_set_font_size(False)
-            table.set_fontsize(9)
-            for (r, c), cell in table.get_celld().items():
-                cell.set_edgecolor("#dce3ea")
-                cell.set_linewidth(.6)
-                cell.set_facecolor("#e6f3ea" if r == selected+1 else "#f6f8fa" if r % 2 == 0 else "white")
-                if c == 0:
-                    cell.set_text_props(ha="left")
-                if r == 0:
-                    cell.set_facecolor("#233f59")
-                    cell.set_height(cell.get_height()*1.45)
-                    cell.set_text_props(color="white", weight="bold")
-        else:
-            ax.text(.5, .5, "Candidate table not recorded", ha="center", va="center", fontsize=11)
-        phase = PHASES[min(3, max(0, row["phase"]))]
-        source = SOURCES.get(row["source"], "unspecified")
-        fig.text(.05, .94, title, fontsize=17, color="#17324d", fontweight="bold")
-        fig.text(.05, .89, f"Decision {row['step']}   ·   {phase}   ·   Actor command {row['actor']}   ·   {source}",
-                 fontsize=11, color="#536477")
-        notes = ["Green highlights the executed option. * marks a supported A score. "
-                 "A dash means unavailable or illegal. Heatmaps use 0–1."]
-        if goal:
-            notes.append("D state %d  ·  gate %.3f  ·  conflict %.3f  ·  verify %d  ·  reject %d" %
-                         (row["goal_state"], row["goal_gate"], row["goal_conflict"], row["goal_verify"], row["goal_reject"]))
-            if event.get("applied") is not None:
-                controls = ", ".join(f"{float(value):g}" for value in event["applied"])
-                notes.append("Applied [attack, forward, back, left, right, jump, use, pitch, yaw] = " + controls)
-        fig.text(.05, .035, "\n".join(notes), fontsize=9, color="#536477", linespacing=1.5)
-        self._save(fig, path)
+        from .paper_figures import decision
+        decision(self, event, path, "C" if title.startswith("C") else "A")
 
     def _render_outcomes(self, event, path):
         legal = np.flatnonzero(event["mask"])
         selected = event["row"]["option"]
-        order = ([selected] if selected in legal else []) + [i for i in legal if i != selected]
-        order = order[:3]
+        from .paper_figures import shortlist
+        order = shortlist(event)[:3]
         fig = self._figure((12 if len(order) == 2 else 14, 6))
         grid = fig.add_gridspec(1, 2+len(order), width_ratios=[1.2, .62] + [1]*len(order),
                                left=.05, right=.96, top=.76, bottom=.18, wspace=.22)
@@ -1234,17 +1139,27 @@ class SearchVisualizer:
                 p = np.r_[p, forecast[option]]
             if new_area is not None:
                 p = np.r_[p, new_area[option]]
-            ax.barh(np.arange(len(labels)), p, color="#408b63" if option == selected else "#779bb7", height=.65)
+            bars = ax.barh(np.arange(len(labels)), p, color="#408b63" if option == selected else "#779bb7", height=.65)
+            support_mask = event.get("event_support")
+            if support_mask is not None:
+                for j, bar in enumerate(bars):
+                    if j < support_mask.shape[-1] and not support_mask[option,j]:
+                        bar.set_alpha(.42)
+                        bar.set_hatch("//")
             ax.set(xlim=(0, 1), xticks=(0, .5, 1))
             ax.set_axisbelow(True)
             ax.grid(axis="x", alpha=.25)
             ax.tick_params(axis="y", labelleft=False, length=0)
             ax.set_title(names[option].replace("_", " ") + ("\nExecuted" if option == selected else "\nAlternative"),
                          fontsize=10, color="#33475b")
+            support = event.get("supported")
+            ax.set_xlabel("Score support: " + ("not recorded" if support is None else "yes" if support[option] else "no"), fontsize=8)
         fig.text(.05, .92, "A · Predicted consequences", fontsize=17, fontweight="bold", color="#17324d")
         fig.text(.05, .86, f"Decision {event['row']['step']}   ·   Predicted event probabilities on a 0–1 scale",
                  fontsize=11, color="#536477")
-        fig.text(.05, .055, "Only the executed action has an observed outcome. All bars show predictions.",
+        reasons = ", ".join(event.get("reasons", [])[:3]) or "retained decision"
+        fig.text(.05, .09, f"Selection: {reasons}", fontsize=9, color="#536477")
+        fig.text(.05, .045, "Independent events (probabilities need not sum to one). Hatching: event lacks held-out support (when recorded). Goal-specific rows follow Blocked.",
                  fontsize=9, color="#536477")
         self._save(fig, path)
 

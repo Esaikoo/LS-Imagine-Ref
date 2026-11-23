@@ -1021,6 +1021,16 @@ class VNextController(nn.Module):
         state["active"][abort]=-1;state["position"][abort]=0
         new=state["active"]<0
         info={key:feat.new_zeros(batch,*dims) for key,dims in FIELDS.items()}
+        # Read-only telemetry. -1 distinguishes "ranking did not run" from ACTOR (0).
+        visual = bool(getattr(self.config, "vnext_visual_enabled", False))
+        if visual:
+            info["log_visual_rank_choice"] = proposed.new_full((batch,), -1)
+            info["log_visual_rank_mask"] = torch.zeros_like(mask)
+            info["log_visual_template_commands"] = torch.full_like(commands, -1, dtype=torch.int8)
+            info["log_visual_template_lengths"] = torch.zeros_like(lengths, dtype=torch.int8)
+            info["log_visual_event_support"] = torch.zeros((batch,N_OPTIONS,10 if self.goal_search else 7), device=device, dtype=torch.bool)
+            info["log_visual_memory_input"] = torch.zeros_like(first)
+
         info["log_vnext_version"].fill_(self.version)
         goal_forecast = feat.new_zeros(batch,N_OPTIONS,2)
         goal_new_area = feat.new_zeros(batch,N_OPTIONS) if self.goal_search else None
@@ -1101,6 +1111,10 @@ class VNextController(nn.Module):
                     goal_q_inputs = dict(goal_context=goal_context[calculate],goal_prediction=goal_forecast[calculate])
                 else:
                     goal_q_inputs = {}
+                if visual and "supported" in result:
+                    support_log = result["supported"]
+                    width = min(support_log.shape[-1], info["log_visual_event_support"].shape[-1])
+                    info["log_visual_event_support"][calculate, :, :width] = support_log[..., :width].bool()
                 descriptor[calculate]=result["descriptor"].detach()
                 if self.spatial:
                     a_score[calculate],score_supported[calculate]=self.prediction_score(result,descriptor[calculate])
@@ -1157,6 +1171,12 @@ class VNextController(nn.Module):
                 if not learned_selection:
                     # Offer the Actor to the normal rule chain, including fallback probes.
                     greedy = torch.full_like(greedy, ACTOR)
+                if visual:
+                    info["log_visual_rank_choice"][calculate] = greedy
+                    info["log_visual_rank_mask"][calculate] = local_mask
+                    info["log_visual_template_commands"][calculate] = commands[calculate].to(torch.int8)
+                    info["log_visual_template_lengths"][calculate] = lengths[calculate].to(torch.int8)
+                    info["log_visual_memory_input"][calculate] = memory is not None and bool(getattr(self.config,"vnext_memory_enabled",True))
                 # Calibrated visual interaction is a bounded real experiment,
                 # never a fabricated reward. It can repair an Actor that does
                 # not propose attack despite a credible joint actionable cue.

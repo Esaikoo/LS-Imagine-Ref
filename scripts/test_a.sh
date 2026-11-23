@@ -32,6 +32,7 @@ python tests/test_spatial_integration.py
 python tests/test_spatial_evidence.py
 python tests/test_runtime.py
 python tests/test_search_visualization.py
+python tests/test_paper_exports.py
 python tests/test_goal_reference.py
 python tests/test_goal_guidance.py
 python tests/test_goal_search_integration.py
