@@ -117,25 +117,13 @@ class VNextControlTests(unittest.TestCase):
         self.assertEqual(info["log_goal_verify_used"].item(),0)
         self.assertEqual(state["goal_verify_trials"].item(),1)
 
-    def test_goal_budget_counts_only_calibrated_absence_and_resets_on_unknown(self):
+    def test_region_only_policy_cannot_certify_absence(self):
         controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
             goal_search_enabled=True,vnext_probe_probability=0.))
-        state = controller.initial(1,torch.device("cpu"))
-        state["age"][:] = 100
-        state["search_probe_cooldown"][:] = 100
-        cur = current(ready=False)
-        ab = UnsupportedSpatialAB()
-        for _ in range(26):
-            _,state,info = self.run_step(controller,ab,state,cur=cur,training=False)
-        self.assertEqual(state["goal_absent_run"].item(),0)
-        self.assertEqual(info["log_goal_absence_confirmed"].item(),0)
-        for _ in range(26):
-            _,state,info = self.run_step(controller,ab,state,cur=cur,training=False,
-                obs={"goal_absence_confirmed":torch.tensor([True])})
-        self.assertEqual(state["goal_absent_run"].item(),26)
-        self.assertEqual(info["log_goal_absence_confirmed"].item(),1)
-        _,state,_ = self.run_step(controller,ab,state,cur=cur,training=False)
-        self.assertEqual(state["goal_absent_run"].item(),0)
+        _,state,info = self.run_step(controller,UnsupportedSpatialAB(),cur=current(ready=False),
+            training=False,obs={"goal_absence_confirmed":torch.tensor([True])})
+        self.assertNotIn("goal_absent_run",state)
+        self.assertNotIn("log_goal_absence_confirmed",info)
 
     def test_goal_uncertain_evidence_does_not_erase_independent_a_visibility(self):
         controller = VNextController(8,config(vnext_spatial_enabled=True,vnext_spatial_fix_version=3,
@@ -172,7 +160,7 @@ class VNextControlTests(unittest.TestCase):
                 proposal=0, cur=cur, training=False)
         self.assertEqual(info["log_vnext_phase"].item(), SEARCH)
         self.assertEqual(info["log_goal_unresolved_search"].item(), 1)
-        self.assertEqual(info["log_goal_absence_confirmed"].item(), 0)
+        self.assertNotIn("log_goal_absence_confirmed",info)
         self.assertEqual(info["log_vnext_mask"][0, 8].item(), 0)
         cur["goal_context"] = torch.tensor([[.9, .7, .3, 0., 0., .1, 2., 1.]])
         _, state, info = self.run_step(controller, UnsupportedSpatialAB(), state,
@@ -194,7 +182,7 @@ class VNextControlTests(unittest.TestCase):
                 proposal=1, cur=cur, training=False, obs={"image": blue})
         self.assertEqual(action.argmax(-1).item(), 3)
         self.assertEqual(info["log_goal_visual_sky_recovery"].item(), 1)
-        self.assertEqual(info["log_goal_absence_confirmed"].item(), 0)
+        self.assertNotIn("log_goal_absence_confirmed",info)
         self.assertEqual(info["log_vnext_applied"][0, 0].item(), 0)
 
     def test_centered_d_can_corroborate_a_probe_and_finish_pickup_after_target_loss(self):

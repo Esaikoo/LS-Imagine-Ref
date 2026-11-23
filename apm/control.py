@@ -326,7 +326,7 @@ class VNextController(nn.Module):
             last_option=torch.full((batch,),-1,device=device,dtype=torch.long),
             episode_phase_coverage=z(4,N_OPTIONS).long())
         if self.goal_search:
-            state.update(goal_absent_run=z().long(), goal_unresolved_run=z().long(),
+            state.update(goal_unresolved_run=z().long(),
                 goal_conflict_run=z().long(),
                 goal_verify_trials=z().long(), goal_verify_cooldown=z().long(),
                 goal_verify_active=z().bool(), goal_reject_active=z().bool())
@@ -767,9 +767,6 @@ class VNextController(nn.Module):
             evidence = goal_context[:,7]>.5
             goal_trusted = evidence & (goal_context[:,6]==2)
             uncertain = evidence & (goal_context[:,6]==1)
-            absent = torch.as_tensor(obs.get("goal_absence_confirmed", False),
-                                     device=device).bool().expand(batch)
-            absent = absent & ~goal_trusted & ~uncertain
             state["goal_verify_cooldown"] = (state["goal_verify_cooldown"]-1).clamp_min(0)
             # A later, genuinely changed viewpoint can start a new bounded
             # verification attempt after the previous one has cooled down.
@@ -789,12 +786,10 @@ class VNextController(nn.Module):
                 torch.zeros_like(state["goal_conflict_run"]))
             upward_or_attack = (proposed==2)|(proposed==1)|(proposed==11)
             goal_reject = sky & (state["goal_conflict_run"]>=2) & upward_or_attack & ~progress
-            high = (goal_trusted | (high & ~absent)) & ~sky
-            low = absent | sky | (low & ~goal_trusted & ~uncertain)
-            state["goal_absent_run"] = torch.where(absent,
-                state["goal_absent_run"]+1, torch.zeros_like(state["goal_absent_run"]))
+            high = (goal_trusted | high) & ~sky
+            low = sky | (low & ~goal_trusted & ~uncertain)
             # Region evidence can veto a contradiction; C/A still qualify reach and aim.
-            interaction_allowed = (~evidence | goal_trusted) & ~absent & ~sky
+            interaction_allowed = (~evidence | goal_trusted) & ~sky
             act &= interaction_allowed
         interaction_probe=torch.zeros_like(act)
         if self.guidance_fix and rule_probes:
@@ -902,15 +897,12 @@ class VNextController(nn.Module):
         fraction=min(fraction,float(cfg(self.config,"vnext_search_max")))
         span=(state["age"]+1).clamp(max=window).float()
         extra_fraction = float(cfg(self.config,"vnext_total_fraction"))
-        if self.goal_search and bool(getattr(self.config,"goal_search_adaptive_budget",True)):
-            absence_ramp = ((state["goal_absent_run"]-3)/20.).clamp(0,1)
-            if self.goal_guidance_fix:
-                unknown_ramp = ((state["goal_unresolved_run"]-11)/24.).clamp(0, .5)
-                absence_ramp = torch.maximum(absence_ramp, unknown_ramp * (phase == SEARCH))
+        if self.goal_guidance_fix and bool(getattr(self.config,"goal_search_adaptive_budget",True)):
+            unknown_ramp = ((state["goal_unresolved_run"]-11)/24.).clamp(0, .5) * (phase == SEARCH)
             search_max = max(fraction,float(getattr(self.config,"goal_search_absent_fraction",.3)))
             total_max = max(extra_fraction,float(getattr(self.config,"goal_total_absent_fraction",.4)))
-            fraction = fraction+(search_max-fraction)*absence_ramp
-            extra_fraction = extra_fraction+(total_max-extra_fraction)*absence_ramp
+            fraction = fraction+(search_max-fraction)*unknown_ramp
+            extra_fraction = extra_fraction+(total_max-extra_fraction)*unknown_ramp
         search_limit=torch.floor(span*fraction).clamp_min(3)
         extra_limit=torch.floor(span*extra_fraction).clamp_min(3)
         remaining=(self.max_steps()-state["age"]).clamp_min(0)
@@ -1349,10 +1341,7 @@ class VNextController(nn.Module):
                 state["search_probe_trials"][search_rows]+=1
                 state["search_probe_cooldown"][search_rows]=int(cfg(self.config,"vnext_search_probe_every"))
                 if self.goal_search:
-                    sustained_search = state["goal_absent_run"] >= 12
-                    if self.goal_guidance_fix:
-                        sustained_search |= unresolved_search
-                    sustained = search_rows[sustained_search[search_rows]]
+                    sustained = search_rows[unresolved_search[search_rows]]
                     state["search_probe_cooldown"][sustained] = state["search_probe_cooldown"][sustained].clamp(max=8)
                     verify_rows = starts[state["goal_verify_active"][starts]]
                     state["goal_verify_trials"][verify_rows] += 1

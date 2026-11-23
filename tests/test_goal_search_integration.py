@@ -51,6 +51,24 @@ def goal_config(**updates):
 
 
 class GoalSearchIntegrationTests(unittest.TestCase):
+    def test_open_loop_video_waits_for_real_update_without_consuming_another_batch(self):
+        agent = agent_for(goal_config(video_pred_log=True))
+        sample = {"batch": 1}
+        agent._dataset = iter([sample])
+        agent._logger = mock.Mock(step=48)
+        agent._policy = mock.Mock(return_value=({}, None))
+        agent._video_prediction = mock.Mock(return_value=torch.zeros(1))
+        agent._train = mock.Mock()
+        agent.flush_metrics = mock.Mock()
+        agent._should_pretrain = lambda: False
+        agent._should_train = mock.Mock(side_effect=[0, 1, 0])
+        agent._should_log = mock.Mock(side_effect=[True, False, False])
+        for _ in range(3):
+            agent({}, [False])
+        agent._train.assert_called_once_with(sample)
+        agent._video_prediction.assert_called_once_with(sample)
+        self.assertEqual(agent._logger.video.call_count, 1)
+
     def test_online_encoder_and_training_batch_use_identical_fusion_without_oracles(self):
         agent = agent_for(goal_config())
         # Deterministic calibrated-output fixture. No assertion of learned quality.
@@ -94,7 +112,7 @@ class GoalSearchIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = goal_config(logdir=root/"source", traindir=root/"source"/"train_eps",
-                              video_pred_log=False)
+                              video_pred_log=False, vnext_visual_strict=True)
             cfg.traindir.mkdir(parents=True)
             agent = agent_for(cfg)
             episode = collected_episode(agent, 24)
@@ -120,10 +138,11 @@ class GoalSearchIntegrationTests(unittest.TestCase):
             checkpoint_path = save_training_checkpoint(agent,cfg,100000)
             checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
             incoming = goal_config(logdir=root/"new", resume_from=str(checkpoint_path), steps=128,
-                                   video_pred_log=True, goal_ref_border_padding="replicate",
+                                   video_pred_log=True, vnext_visual_strict=False, goal_ref_border_padding="replicate",
                                    vnext_pose_loss_version=4, goal_guidance_revision=2)
             plan = prepare_resume(incoming)
             self.assertTrue(incoming.video_pred_log)
+            self.assertFalse(incoming.vnext_visual_strict)
             self.assertEqual(incoming.goal_ref_border_padding, "zeros")
             self.assertEqual(incoming.vnext_pose_loss_version, 1)
             self.assertEqual(incoming.goal_guidance_revision, 1)

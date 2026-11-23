@@ -548,6 +548,7 @@ apm_vnext:
 
 # Standalone preset, using the spatial fix3 backbone.
 apm_vnext4:
+  vnext_visual_strict: False  # Log a failed figure export and continue training.
   goal_guidance_revision: 2
   vnext_pose_loss_version: 4
   goal_ref_border_padding: replicate

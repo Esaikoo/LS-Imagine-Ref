@@ -175,6 +175,45 @@ class PaperTests(unittest.TestCase):
             self.assertEqual(snap["groups"]["calibrated active fusion"]["row"]["step"],5)
             viz.close()
 
+    def test_print_layout_preserves_scores_missing_fields_and_pre_rule_choice(self):
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from apm.paper_figures import command_text, decision
+        self.assertEqual(command_text(np.full(9,np.nan)),"Not recorded")
+        self.assertEqual(command_text(np.zeros(3)),"Not recorded")
+        self.assertEqual(command_text(np.zeros(9)),"no input")
+        with tempfile.TemporaryDirectory() as tmp:
+            viz = SearchVisualizer(tmp, {"goal_ref_version":2}, scheduled_eval_maps=False)
+            e = dict(row=dict(step=4, actor=2, option=6, phase=0, source=9, override=True),
+                     mask=np.isin(np.arange(12), [0,6]), rank_choice=0, rank_mask=np.arange(12)==0,
+                     prediction=np.full((12,7),.42), has_prediction=True, q=np.arange(12)/11,
+                     q_computed=True, a_score=np.full(12,-.125), feedback=None)
+            for narrow in (False, True):
+                viz.single_column = narrow
+                for kind in ("A","AC"):
+                    def inspect(fig, path):
+                        canvas=FigureCanvasAgg(fig)
+                        canvas.draw()
+                        table=next(ax for ax in fig.axes if any(t.get_text()=="Discover" for t in ax.texts))
+                        headers=[t for t in table.texts if t.get_position()[1]==.125]
+                        renderer=canvas.get_renderer()
+                        bounds=[t.get_window_extent(renderer) for t in headers]
+                        for left,right in zip(bounds,bounds[1:]):
+                            self.assertLess(left.x1+1,right.x0)
+                        labels=[t.get_text() for ax in fig.axes for t in ax.texts]
+                        self.assertIn("-0.125",labels)
+                        self.assertIn("0.42",labels)
+                        if kind=="A":
+                            self.assertFalse({"Support","Supp."}.intersection(labels))
+                            self.assertTrue(any("Not recorded: forecast support" in t.get_text() for t in fig.texts))
+                        else:
+                            self.assertIn("Pre-rule: actor",labels)
+                            self.assertIn("Ineligible",labels)
+                            self.assertIn("Env: Not recorded",labels)
+                        fig.clear()
+                    viz._save=inspect
+                    decision(viz,e,Path(tmp)/"figure.png",kind)
+            viz.close()
+
     def test_archived_timeline_keeps_missing_goal_state_unknown(self):
         rows = [dict(step=0, phase=0, source=1, success=False, reward=0.0),
                 dict(step=1, phase=0, source=2, success=False, reward=0.0, goal_state=0)]

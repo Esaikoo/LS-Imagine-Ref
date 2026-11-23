@@ -22,6 +22,7 @@ def render(rgb, heat, transitions, meta, path, dpi=140, style="paper"):
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.patches import Rectangle, Patch
+    from .figure_style import INK, MUTED, save
 
     if style not in ("original", "paper"):
         raise ValueError(f"Unknown imagination style: {style}")
@@ -33,10 +34,12 @@ def render(rgb, heat, transitions, meta, path, dpi=140, style="paper"):
     colors = {"short": "#3c71ae" if paper else "blue", "long": "#bc4231" if paper else "red",
               "terminal": "#858585"}
     # Limit the physical file dimensions, while keeping one column per source state.
-    fig = Figure(figsize=(min(24, max(6.5, .92*n + 1.2)), 4.2))
+    width = min(24, max(4.4, .46*n + .62))
+    tile = min(.53,(width-.56)/n)
+    fig = Figure(figsize=(width, 1.03+3*tile))
     FigureCanvasAgg(fig)
     axes = fig.subplots(3, n, squeeze=False)
-    fig.subplots_adjust(left=.08, right=.99, top=.826, bottom=.107, wspace=.04, hspace=.25)
+    fig.subplots_adjust(left=.43/width, right=.99, top=1-.66/fig.get_figheight(), bottom=.26/fig.get_figheight(), wspace=.075, hspace=.095)
     for i, edge in enumerate(edges):
         for row in range(3):
             ax = axes[row, i]
@@ -49,27 +52,30 @@ def render(rgb, heat, transitions, meta, path, dpi=140, style="paper"):
             for spine in ax.spines.values():
                 spine.set_visible(False)
             ax.add_patch(Rectangle((0,0),1,1,transform=ax.transAxes,fill=False,
-                                   edgecolor=colors[edge],lw=3,clip_on=False))
+                                   edgecolor=colors[edge],lw=1.7,clip_on=False))
             if i == 0:
-                ax.set_ylabel(("RGB", "Heatmap", "Overlay")[row], fontsize=9)
+                ax.set_ylabel(("RGB", "Heatmap", "Overlay")[row], fontsize=7.3, color=INK, labelpad=3)
             if row == 0:
-                ax.set_title(str(meta["start"] + i), fontsize=8, pad=3)
+                ax.set_title(str(meta["start"] + i), fontsize=7, color=MUTED, pad=2.4)
     version = meta.get("d_version")
     provenance = meta.get("source", "Archived model decode")
     display_version = (f"D v{version}" if version else
                        "D not used" if meta.get("fixture") else "D version unrecorded")
-    fig.suptitle(f"LS-Imagine  |  {style.capitalize()} style  ·  {provenance}  ·  {display_version}",
-                 fontsize=12, y=.98)
+    fig.suptitle(f"LS-Imagine   {style.capitalize()} style", x=.02, y=.985, ha="left",
+                 fontsize=11.4, color=INK, weight="bold")
+    fig.text(.98,.982,display_version,ha="right",va="top",fontsize=7.5,color=MUTED)
     step_kind = meta.get("step_kind", "Environment step")
-    fig.text(.08, 1-.48/fig.get_figheight(),
-             f"{step_kind} {meta['environment_step']:,}   ·   Imagination step across columns   ·   "
-             f"Trajectory {meta['column']} (zero-based) of {meta['batch_size']}   ·   "
-             f"Showing {n} of {meta['sequence_length']} states", fontsize=9)
+    fig.text(.02,1-.26/fig.get_figheight(),f"{provenance}   /   {step_kind} {meta['environment_step']:,}",
+             fontsize=7.4, va="top",color=MUTED)
+    fig.text(.02,1-.405/fig.get_figheight(),f"Trajectory {meta['column']} of {meta['batch_size']} (zero-based)   /   "
+             f"Imagination steps across columns · {n} of {meta['sequence_length']} states",
+             fontsize=7.4, va="top",color=MUTED)
     fig.legend(handles=[Patch(color=colors[key], label=title) for key, title in
                         (("short", "Short outgoing transition"), ("long", "Long outgoing transition"),
-                         ("terminal", "Final state: no outgoing transition"))],
-               loc="lower center", ncol=3, frameon=False, fontsize=9)
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+                         ("terminal", "Final state · no outgoing edge"))],
+               loc="lower center", ncol=3, frameon=False, fontsize=7.05, handlelength=.8,
+               handletextpad=.38, columnspacing=.95, borderaxespad=.18)
+    save(fig,path,dpi)
     fig.clear()
 
 

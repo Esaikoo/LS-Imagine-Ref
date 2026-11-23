@@ -30,7 +30,7 @@ esac
 # Default vnext is the task-preserving revision; abc/full preserve historical runs.
 case "$MODE" in
   vnext) set -- --configs minedojo apm_vnext "$@" ;;
-  vnext4) set -- --configs minedojo apm_vnext4 "$@" ;;
+  vnext4) set -- --configs minedojo apm_vnext4 --goal_ref_bank_root "${BANK:-assets/goal_references}" "$@" ;;
   vnext4_d_only) set -- --configs minedojo apm_vnext4 --goal_search_enabled False --vnext_control False "$@" ;;
   vnext4_search_only) set -- --configs minedojo apm_vnext4 --goal_fusion_enabled False "$@" ;;
   vnext_ac) set -- --configs minedojo apm_vnext --vnext_memory_enabled False "$@" ;;

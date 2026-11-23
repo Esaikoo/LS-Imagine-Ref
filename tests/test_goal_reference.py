@@ -186,6 +186,26 @@ class ReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Legacy D"):
             restored.load_state_dict(dict(model.state_dict(), **{"visibility.0.weight": torch.ones(1)}), strict=False)
 
+    def test_region_calibration_uses_independent_frames_and_survives_restore(self):
+        model = GoalReference(config(), bank())
+        data = labeled()
+        data["goal_holdout"] = np.ones((2,4),bool)
+        data["log_vnext_world_group"] = np.full((2,4),123)
+        data["goal_region_gt"][:, :, 8, 8, 0] = 1
+        model.updates.fill_(1)
+        def known_logits(rgb, refs):
+            logits = rgb.new_full((len(rgb),16,16), -3.)
+            logits[:,8,8] = 3.
+            return {"region_logits":logits}
+        with patch.object(model,"_match",side_effect=known_logits):
+            report = model.train_batch(data)
+        self.assertGreaterEqual(report["D/region_cal_positive"], 4)
+        self.assertGreater(report["D/region_cal_reliability"], .9)
+        clone = GoalReference(config(),model.export_bank())
+        clone.load_state_dict(model.state_dict())
+        for key in ("temperature","reliability","cal_ids","cal_world_groups"):
+            torch.testing.assert_close(getattr(model,key),getattr(clone,key))
+
     def test_reference_world_cannot_certify_even_with_bad_split_flag(self):
         model = GoalReference(config(), bank())
         data = labeled()

@@ -14,6 +14,8 @@ def main():
     parser.add_argument("output",type=Path)
     parser.add_argument("--replay",type=Path,help="Matching old episode NPZ, if available")
     parser.add_argument("--format",choices=("png","pdf","svg"),default="png")
+    parser.add_argument("--single-column",action="store_true",
+                        help="Use compact 85 mm panels for A1, A+C, C2 and B history")
     parser.add_argument("--case",help="Render one recorded case group (names in summary.json case_groups)")
     parser.add_argument("--style", choices=("paper","original","both"), help="Imagination cache style, default paper")
     group = parser.add_mutually_exclusive_group()
@@ -57,7 +59,8 @@ def main():
         parser.error("--focus is outside the recorded timeline")
     class Offline(SearchVisualizer):
         def _save(self,fig,path,*,tight=True):
-            fig.savefig(path.with_suffix("."+args.format),dpi=260,bbox_inches="tight" if tight else None)
+            from apm.figure_style import save
+            save(fig,path.with_suffix("."+args.format),260,tight=tight)
             fig.clear()
     if args.case and args.case not in snap["groups"]:
         parser.error("Unavailable group. Recorded: " + ", ".join(snap["groups"]))
@@ -65,6 +68,7 @@ def main():
     viz=Offline(args.output,dict(vnext_spatial_fix_version=snap["summary"].get("spatial_fix_version",0),
                                    goal_ref_version=snap["summary"].get("goal_ref_version")),
                 scheduled_eval_maps=False)
+    viz.single_column=args.single_column
     viz.goal_references=refs
     if args.focus is not None:
         from apm.paper_figures import timeline

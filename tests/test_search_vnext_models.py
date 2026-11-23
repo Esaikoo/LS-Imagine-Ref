@@ -93,7 +93,7 @@ class VNextModelsTest(unittest.TestCase):
             goal_region_valid=np.zeros((6,16,16,1), np.uint8),
             goal_instance_group=np.zeros((6,16,16,1), np.int32),
             log_goal_context=np.zeros((6,8), np.float32),
-            log_goal_version=np.ones(6, np.uint8),
+            log_goal_version=np.full(6, 2, np.uint8),
             log_goal_boxes=np.zeros((6,8,4), np.float32),
         )
         # A different shortlist box supports the same block after turning;
@@ -112,6 +112,11 @@ class VNextModelsTest(unittest.TestCase):
             for row, i in enumerate(d["vnext_observation_index"]):
                 expected = ep["log_goal_boxes"][i+1] if i < 5 else np.zeros((8,4))
                 np.testing.assert_array_equal(d["vnext_goal_boxes"][row], expected)
+
+        legacy = dict(ep,log_goal_version=np.ones(6,np.uint8))
+        sample = next(sample_spatial_episodes({"legacy":legacy},6,seed=2,history_slots=3,goal_enabled=True))
+        self.assertFalse(sample["vnext_goal_context_valid"].any())
+        self.assertFalse(sample["vnext_goal_discovery_valid"].any())
 
         context = torch.zeros(1,6,8)
         data = {key: value[None] for key,value in ep.items()}

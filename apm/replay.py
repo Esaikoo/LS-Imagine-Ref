@@ -179,7 +179,8 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
                 if goal_enabled and i+1 < total and "log_goal_context" in ep:
                     version = ep.get("log_goal_version", np.zeros(total))[i+1]
                     context = np.asarray(ep["log_goal_context"][i+1])
-                    if version in (1, 2) and context.shape == (8,) and np.isfinite(context).all():
+                    # v1 blended its first context field with an independent frame head.
+                    if version == 2 and context.shape == (8,) and np.isfinite(context).all():
                         goal_context[row] = context
                         goal_valid[row] = 1.
                         if "log_goal_boxes" in ep:
@@ -261,5 +262,5 @@ def sample_spatial_episodes(episodes, length, seed=0, patch_size=21, history_slo
                           vnext_goal_boxes=goal_boxes,
                           vnext_goal_memory=goal_memory,
                           vnext_goal_discovery_gt=goal_discovery,
-                          vnext_goal_discovery_valid=goal_discovery_valid)
+                          vnext_goal_discovery_valid=goal_discovery_valid * goal_valid)
         yield result

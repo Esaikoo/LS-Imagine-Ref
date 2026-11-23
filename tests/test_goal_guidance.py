@@ -19,9 +19,8 @@ class MatchedRegions:
     fusion_overlap = .5
 
     def __init__(self):
-        self.reliability = torch.tensor([1., 0., 0.])
+        self.reliability = torch.tensor([1.])
         self.region = torch.full((1,16,16), .04)
-        self.visible = torch.tensor([.5])
 
     def observation_images(self, data):
         return data["image"]
@@ -30,8 +29,6 @@ class MatchedRegions:
         return dict(leading=(1,), probability=self.region, saliency=self.region,
                     heatmap=heatmap[:,None].float()/255.,
                     region_uncertainty=torch.zeros_like(self.region),
-                    visible_probability=self.visible,
-                    interaction_probability=torch.tensor([.5]),
                     embeddings=torch.nn.functional.normalize(torch.ones((1,8,16,16)), dim=1))
 
 

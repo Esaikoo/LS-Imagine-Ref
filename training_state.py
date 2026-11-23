@@ -17,11 +17,11 @@ import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
-CODE_VERSION = "VN4R3D2P2"
+CODE_VERSION = "VN4R3D2P3R1"
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "resume_tensorboard", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
-    "use_wandb", "wandb_key", "results_dir", "name", "debug",
+    "use_wandb", "wandb_key", "results_dir", "name", "debug", "vnext_visual_strict",
 }
 _CLOCKS = ("_should_train", "_should_log", "_should_reset")
 _SCALERS = ("_wm._model_opt", "_wm._a_opt", "_task_behavior._actor_opt",

@@ -44,6 +44,7 @@ class LS_Imagine(nn.Module):
         self._step = logger.step // config.action_repeat
         self._update_count = 0
         self._dataset = dataset
+        self._train_video_pending = False
         if getattr(config, "search_vnext_enabled", False):
             if any((config.search_a_enabled, config.search_b_enabled, config.search_c_enabled, config.search_branch_enabled)):
                 raise ValueError("vNext cannot mix with legacy ABC modules or branch collection")
@@ -154,15 +155,23 @@ class LS_Imagine(nn.Module):
                 self._train(data)
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
-            if self._should_log(step):
+            log_now = self._should_log(step)
+            if log_now:
                 self.flush_metrics()
-                if self._config.video_pred_log:
-                    # vNext4 can reuse this step's replay window without
-                    # advancing the training sampler for a diagnostic.
-                    video_data = data if self._goal_reference is not None and steps else next(self._dataset)
-                    openl = self._video_prediction(video_data)
-                    self._logger.video("train_openl", to_np(openl))
-                self._logger.write(fps=True)
+            if self._goal_reference is not None:
+                # An idle logging tick has no training batch. Render at the
+                # next update instead of advancing the training replay iterator.
+                self._train_video_pending |= log_now and self._config.video_pred_log
+                render_now = self._train_video_pending and steps > 0
+                if render_now:
+                    self._logger.video("train_openl", to_np(self._video_prediction(data)))
+                    self._train_video_pending = False
+            else:
+                render_now = log_now and self._config.video_pred_log
+                if render_now:
+                    self._logger.video("train_openl", to_np(self._video_prediction(next(self._dataset))))
+            if log_now or render_now:
+                self._logger.write(fps=bool(log_now))
 
         policy_output, state = self._policy(obs, state, training)
 
@@ -727,7 +736,7 @@ def main(config): # config is namespace
     config.eval_every //= config.action_repeat
     config.log_every //= config.action_repeat
     config.time_limit //= config.action_repeat
-    logdir.mkdir(parents=True, exist_ok=True)
+    logdir.mkdir(parents=True, exist_ok=False)
     config.traindir.mkdir(parents=True, exist_ok=True)
     config.evaldir.mkdir(parents=True, exist_ok=True)
     step = resume_plan["environment_step"] if resume_plan else count_steps(config.traindir)
