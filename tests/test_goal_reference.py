@@ -13,8 +13,8 @@ from PIL import Image
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from apm.goal_reference import GoalReference, TASKS, load_reference_bank
-from apm.goal_guidance import build_policy_observation, fuse_zoomed_observation
+from grace.goal_reference import GoalReference, TASKS, load_reference_bank
+from grace.goal_guidance import build_policy_observation, fuse_zoomed_observation
 
 
 def config(task="harvest_sand", **changes):

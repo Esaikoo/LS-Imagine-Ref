@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from apm.replay import identity
+from grace.replay import identity
 
 TASKS = ("harvest_log_in_plains", "harvest_water_with_bucket", "harvest_sand",
          "mine_iron_ore", "shear_sheep")

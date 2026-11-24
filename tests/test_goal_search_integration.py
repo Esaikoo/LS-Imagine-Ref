@@ -14,8 +14,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_search_a import replay_batch
 from test_spatial_integration import config, collected_episode
-from apm.evidence import GOAL_LABEL_SHAPES, GOAL_LABEL_DTYPES
-from apm.replay import sample_spatial_episodes
+from grace.evidence import GOAL_LABEL_SHAPES, GOAL_LABEL_DTYPES
+from grace.replay import sample_spatial_episodes
 from expr import LS_Imagine, make_dataset
 from training_state import prepare_resume, restore_training_state, save_training_checkpoint
 import tools

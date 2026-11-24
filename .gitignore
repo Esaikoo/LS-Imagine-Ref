@@ -1,7 +1,9 @@
 # Ignore all __pycache__ folders in the project
 __pycache__/
 
-# Ignore the ckpt data folder
+# Local editor and desktop metadata
+.DS_Store
+DS_Store
 .idea
 
 # Ignore the ckpt data folder
@@ -43,9 +45,6 @@ weights/*
 
 # Ignore all files with the .log extension
 *.log
-
-# Ignore all files with the .sh extension
-# *.sh
 
 # Ignore DynDream_exprs.sh
 DynDream_exprs.sh

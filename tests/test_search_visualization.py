@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from apm.visualization import SearchVisualizer
+from grace.visualization import EpisodeVisualizer
 from evaluate_checkpoints import (create_search_visualizer, record_search_visual_decision,
                                   finish_search_visual_episode, worker_runtime_args,
                                   reference_specification, validate_reference)
@@ -60,7 +60,7 @@ def completed(viz, mode, env_id, end, length=5, predicted=True, **kwargs):
 class VisualizationTests(unittest.TestCase):
     def test_fix3_segment_map_and_history_are_distinct_from_global_trajectory(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz=SearchVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=3))
+            viz=EpisodeVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=3))
             for i in range(4):
                 obs,out=fixture(i)
                 out.update(log_spatial_trajectory_valid=0.,log_spatial_pose_gap_count=1.,
@@ -102,7 +102,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_fix3_prefers_wider_qualified_segment_over_terminal_fragment(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=3))
             for i in range(5):
                 obs, output = fixture(i)
                 if i >= 2:
@@ -138,7 +138,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_pose_gap_does_not_create_complete_path_and_align_names_match_phase(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz=SearchVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=2))
+            viz=EpisodeVisualizer(directory,dict(task="sand",vnext_spatial_fix_version=2))
             for i in range(4):
                 obs,out=fixture(i)
                 out["log_vnext_phase"]=1
@@ -168,7 +168,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_bounded_recovery_probe_is_distinct_from_learned_control(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=1))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_spatial_fix_version=1))
             for i in range(2):
                 obs, output = fixture(i)
                 output["log_vnext_source"] = 6.
@@ -241,7 +241,7 @@ class VisualizationTests(unittest.TestCase):
         flags = dict(search_vnext_enabled=True, vnext_spatial_enabled=True,
                      vnext_visual_enabled=True, vnext_visual_root="",
                      vnext_visual_map_all_eval_episodes=True)
-        with mock.patch("apm.visualization.SearchVisualizer") as constructor:
+        with mock.patch("grace.visualization.EpisodeVisualizer") as constructor:
             self.assertIsNone(create_search_visualizer({}, "unused"))
             self.assertIsNone(create_search_visualizer(dict(flags, vnext_spatial_enabled=False), "unused"))
             self.assertIsNone(create_search_visualizer(dict(flags, vnext_visual_enabled=False), "unused"))
@@ -290,7 +290,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_maps_for_selected_eval_round_and_latest_complete_train_episode_only(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10,
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_every=10,
                                                      vnext_visual_map_all_eval_episodes=True))
             try:
                 with mock.patch.object(viz, "_render_timeline"), mock.patch.object(viz, "_render_decision"), mock.patch.object(viz, "_render_outcomes"):
@@ -327,7 +327,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_b_map_uses_fixed_square_panel_and_a_minimum_world_span(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_map_min_span=24.))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_map_min_span=24.))
             for i in range(2):
                 viz.observe("eval", "scale", *fixture(i), 100)
             with mock.patch.object(viz, "_render") as render:
@@ -348,7 +348,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_eval_only_last_and_real_complete_png_suite(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="minedojo_harvest_sand", vnext_visual_every=10,
+            viz = EpisodeVisualizer(directory, dict(task="minedojo_harvest_sand", vnext_visual_every=10,
                                                      vnext_visual_strict=True))
             for index in (1, 2):
                 self.assertIsNone(completed(viz, "eval", "eval_%d" % index, 100,
@@ -378,7 +378,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_unlocalized_decision_keeps_only_real_visual_history(self):
         with tempfile.TemporaryDirectory() as root:
-            viz = SearchVisualizer(root, dict(task="sand", vnext_spatial_fix_version=3))
+            viz = EpisodeVisualizer(root, dict(task="sand", vnext_spatial_fix_version=3))
             obs, out = fixture()
             frames = np.zeros((3, 4, 4, 4), dtype=np.uint8)
             frames[0, :, :, :3], frames[2, :, :, :3] = 40, 80
@@ -395,7 +395,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_goal_keyframe_prefers_actual_fusion_over_raw_heat_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", goal_ref_use_raw_image=True))
+            viz = EpisodeVisualizer(directory, dict(task="sand", goal_ref_use_raw_image=True))
             for i, (raw, effective, gate) in enumerate(((40, 40, 0), (200, 200, 0),
                                                        (60, 64, .04), (230, 230, .2))):
                 obs, out = fixture(i)
@@ -436,7 +436,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_train_threshold_uses_latest_completed_before_threshold(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_every=10))
             with mock.patch.object(viz, "_render"):
                 completed(viz, "train", "earlier", 5, length=2)
                 completed(viz, "train", "last_before_ten", 9, length=2)
@@ -451,7 +451,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_exact_threshold_completion_and_resume_no_backfill(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_every=10))
             viz.set_step(30)
             with mock.patch.object(viz, "_render"):
                 completed(viz, "train", "at_forty", 40, length=2)
@@ -461,7 +461,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_reused_complete_episode_at_later_threshold_is_explicit(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_every=10))
             with mock.patch.object(viz, "_render"):
                 completed(viz, "train", "last_complete", 9, length=2)
                 first = viz.maybe_export_train(10)
@@ -475,7 +475,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_prefill_and_uncomputed_candidates_never_fabricated(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_every=10))
             obs, output = fixture()
             output.pop("log_spatial_version")
             viz.observe("train", "random", obs, output, 0)
@@ -492,7 +492,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_mid_episode_prefill_prefix_waits_for_real_reset(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_every=10))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_every=10))
             for i in range(5):
                 obs, output = fixture(i+1)  # Learner first sees an ongoing episode.
                 viz.observe("train", "prefill_tail", obs, output, i+5)
@@ -517,7 +517,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_buffers_are_bounded_and_inputs_not_mutated(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_max_steps=8))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_max_steps=8))
             for i in range(100):
                 obs, output = fixture(i)
                 before = copy.deepcopy((obs, output))
@@ -537,7 +537,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_unlocalized_map_never_claims_actual_static_trajectory(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_max_steps=3))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_max_steps=3))
             for i in range(5):
                 obs, output = fixture(i)
                 output["log_spatial_summary"][0] = 0.
@@ -572,7 +572,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_full_episode_ledger_outside_rolling_window_is_retained_and_rendered(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="synthetic_sparse_map_test"))
+            viz = EpisodeVisualizer(directory, dict(task="synthetic_sparse_map_test"))
             for i in range(2):
                 obs, output = fixture(i)
                 viz.observe("eval", "sparse", obs, output, 100)
@@ -595,7 +595,7 @@ class VisualizationTests(unittest.TestCase):
 
     def test_export_error_explicit_and_no_partial_success_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_strict=False))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_strict=False))
             error_output = io.StringIO()
             with contextlib.redirect_stderr(error_output), mock.patch.object(viz, "_render", side_effect=OSError("disk test")):
                 path = completed(viz, "eval", "failure", 100, eval_index=1, eval_total=1)
@@ -609,7 +609,7 @@ class VisualizationTests(unittest.TestCase):
     def test_rendering_preserves_python_numpy_and_torch_rng(self):
         import torch
         with tempfile.TemporaryDirectory() as directory:
-            viz = SearchVisualizer(directory, dict(task="sand", vnext_visual_strict=True))
+            viz = EpisodeVisualizer(directory, dict(task="sand", vnext_visual_strict=True))
             random.seed(119); np.random.seed(119); torch.manual_seed(119)
             before = random.getstate(), np.random.get_state(), torch.get_rng_state().clone()
             completed(viz, "eval", "rng", 100, length=2, eval_index=1, eval_total=1)

@@ -6,9 +6,9 @@ from torch import nn
 
 import networks
 import tools
-from apm.legacy.observation import SearchOutcomeHead
-from apm.legacy.feedback import FullSearchOutcomeHead, actor_search_bonus
-from apm.legacy.memory import SearchMemory, describe_torch
+from grace.legacy.observation import SearchOutcomeHead
+from grace.legacy.feedback import FullSearchOutcomeHead, actor_search_bonus
+from grace.legacy.memory import SearchMemory, describe_torch
 
 
 to_np = lambda x: x.detach().cpu().numpy()

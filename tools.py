@@ -1,4 +1,6 @@
 import collections
+from contextlib import contextmanager
+import sys
 import io
 import os
 import json
@@ -16,7 +18,7 @@ from torch import distributions as torchd
 from torch.utils.tensorboard import SummaryWriter
 from collections import defaultdict
 from bisect import insort
-from apm.evidence import complete_episode_labels
+from grace.evidence import complete_episode_labels
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -86,6 +88,20 @@ class TimeRecording:
         torch.cuda.synchronize()
         print(self._comment, self._st.elapsed_time(self._nd) / 1000)
 
+@contextmanager
+def _diagnostic_export(mode, destination, step):
+    """Keep named experiments running when an optional output sink fails."""
+    try:
+        yield
+    except Exception as error:
+        if not mode:
+            raise
+        try:
+            print(f"[GRACE] step {step}, {destination} export failed: {error}", file=sys.stderr, flush=True)
+        except OSError:
+            pass  # stderr may share the failed stdout/log filesystem.
+
+
 class Logger:
     KEY_METRICS = frozenset((
         "eval_success", "eval_first_success_step", "eval_search_rate",
@@ -121,13 +137,19 @@ class Logger:
                 "task", "seed", "env_seed", "search_a_model_version",
                 "search_a_control_version", "search_b_enabled", "search_c_enabled",
                 "search_vnext_enabled", "vnext_control", "vnext_memory_enabled", "vnext_interaction")}
+        self._experiment_mode = getattr(config, "experiment_mode", "")
+        if self._experiment_mode:
+            self.evaluation_metadata["experiment_mode"] = self._experiment_mode
+        self._backend_available = False
 
         if self._wandb:
             if config.wandb_key is None:
                 raise ValueError("wandb_key is None")
-            wandb.login(key=config.wandb_key)
-            wandb.init(project="LS-Imgine", dir=str(logdir), config = config.__dict__, name = str(logdir), save_code=True)
-            wandb.config.update({"initial_step": step})
+            with _diagnostic_export(self._experiment_mode, "W&B initialization", step):
+                wandb.login(key=config.wandb_key)
+                wandb.init(project="LS-Imgine", dir=str(logdir), config = config.__dict__, name = str(logdir), save_code=True)
+                wandb.config.update({"initial_step": step})
+                self._backend_available = True
 
         else:
             if self._goal_console and (getattr(config, "video_pred_log", False)
@@ -140,11 +162,15 @@ class Logger:
                     if not sample.value[0].image.encoded_image_string:
                         raise RuntimeError("TensorBoard video encoder returned no image")
                 except Exception as error:
-                    raise RuntimeError("TensorBoard video encoding failed. Check moviepy and imageio in the training environment.") from error
-                print("TensorBoard video encoding ready.", flush=True)
+                    with _diagnostic_export(self._experiment_mode, "TensorBoard video encoder", step):
+                        raise RuntimeError("TensorBoard video encoding failed. Check moviepy and imageio in the training environment.") from error
+                else:
+                    print("TensorBoard video encoding ready.", flush=True)
             # Only event files can follow the original run; JSON and Replay stay separate.
             event_dir = getattr(config, "tensorboard_logdir", None) or logdir
-            self._writer = SummaryWriter(log_dir=str(event_dir), max_queue=1000)
+            with _diagnostic_export(self._experiment_mode, "TensorBoard initialization", step):
+                self._writer = SummaryWriter(log_dir=str(event_dir), max_queue=1000)
+                self._backend_available = True
 
     def scalar(self, name, value):
         self._scalars[name] = float(value)
@@ -207,11 +233,24 @@ class Logger:
             fields = [f"{name} {value:.1%}" if name in ("eval_success", "eval_search_rate")
                       else f"{name} {value:.4g}" for name, value in visible]
         if fields:
-            print(f"[{step}]", " / ".join(fields))
+            with _diagnostic_export(self._experiment_mode, "console", step):
+                print(f"[{step}]", " / ".join(fields))
         if scalars:
-            with (self._logdir / "metrics.jsonl").open("a") as f:
-                f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
+            with _diagnostic_export(self._experiment_mode, "metrics.jsonl", step):
+                with (self._logdir / "metrics.jsonl").open("a") as f:
+                    f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
 
+        if self._backend_available:
+            with _diagnostic_export(self._experiment_mode, "W&B" if self._wandb else "TensorBoard", step):
+                self._write_backend(scalars, step)
+            if not self._wandb:
+                with _diagnostic_export(self._experiment_mode, "TensorBoard flush", step):
+                    self._writer.flush()
+        self._scalars = {}
+        self._images = {}
+        self._videos = {}
+
+    def _write_backend(self, scalars, step):
         if self._wandb:
             for name, value in scalars:
                 tag = "diagnostics/" + name if name in self.DIAGNOSTIC_METRICS else name
@@ -227,11 +266,6 @@ class Logger:
                 B, T, H, W, C = value.shape
                 value = value.transpose(1, 4, 2, 0, 3).reshape((T, C, H, B * W))
                 wandb.log({name: wandb.Video(value, fps=16, format="mp4")}, step=step)
-
-            self._scalars = {}
-            self._images = {}
-            self._videos = {}
-
         else:
             for name, value in scalars:
                 self._writer.add_scalar(self._scalar_tag(name), value, step)
@@ -245,11 +279,6 @@ class Logger:
                 value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
                 self._writer.add_video(name, value, step, 16)
 
-            self._writer.flush()
-            self._scalars = {}
-            self._images = {}
-            self._videos = {}
-
     def _compute_fps(self, step):
         if self._last_step is None:
             self._last_time = time.time()
@@ -262,30 +291,38 @@ class Logger:
         return steps / duration
 
     def offline_scalar(self, name, value, step):
-        if self._wandb:
-            tag = "diagnostics/" + name if name in self.DIAGNOSTIC_METRICS else name
-            wandb.log({tag: value}, step=step)
-        else:
-            self._writer.add_scalar(self._scalar_tag(name), value, step)
+        if not self._backend_available:
+            return
+        with _diagnostic_export(self._experiment_mode, "offline_scalar", step):
+            if self._wandb:
+                tag = "diagnostics/" + name if name in self.DIAGNOSTIC_METRICS else name
+                wandb.log({tag: value}, step=step)
+            else:
+                self._writer.add_scalar(self._scalar_tag(name), value, step)
 
     def offline_video(self, name, value, step):
-        if np.issubdtype(value.dtype, np.floating):
-            value = np.clip(255 * value, 0, 255).astype(np.uint8)
-        B, T, H, W, C = value.shape
-        value = value.transpose(1, 4, 2, 0, 3).reshape((T, C, H, B * W))
-        if self._wandb:
-            wandb.log({name: wandb.Video(value, fps=16, format="mp4")}, step=step)
-        else:
-            self._writer.add_video(name, value, step, 16)
+        if not self._backend_available:
+            return
+        with _diagnostic_export(self._experiment_mode, "offline_video", step):
+            if np.issubdtype(value.dtype, np.floating):
+                value = np.clip(255 * value, 0, 255).astype(np.uint8)
+            B, T, H, W, C = value.shape
+            value = value.transpose(1, 4, 2, 0, 3).reshape((T, C, H, B * W))
+            if self._wandb:
+                wandb.log({name: wandb.Video(value, fps=16, format="mp4")}, step=step)
+            else:
+                self._writer.add_video(name, value, step, 16)
 
     def finish(self):
         # The final evaluation can queue an open-loop video after its scalar
         # write. Flush it and any partial final training interval before exit.
         self.write()
-        if self._wandb:
-            wandb.finish()
-        else:
-            self._writer.close()
+        if self._backend_available:
+            with _diagnostic_export(self._experiment_mode, "logger close", self.step):
+                if self._wandb:
+                    wandb.finish()
+                else:
+                    self._writer.close()
 
 def calculate_accumulated_reward(rewards, intrinsics, gamma):
     if len(rewards) == 0:
@@ -495,8 +532,9 @@ def simulate(
         live = np.flatnonzero(active)
         pending = [envs[i].step(action[i]) for i in live]
         results = {i: future() for i, future in zip(live, pending)}
-        if hasattr(base_agent, "observe_vnext_results"):
-            base_agent.observe_vnext_results(agent_state, results, training=is_training)
+        observe_results = getattr(base_agent, "observe_control_results", None) or getattr(base_agent, "observe_vnext_results", None)
+        if observe_results is not None:
+            observe_results(agent_state, results, training=is_training)
         done = np.zeros(len(envs), bool)
         for i, result in results.items():
             obs[i], reward[i], done[i], information[i] = result[:4]
@@ -566,7 +604,7 @@ def simulate(
                 video = cache[envs[i].id]["image"]
                 if is_eval and hasattr(logger, "evaluation_metadata"):
                     record = dict(logger.evaluation_metadata, protocol_version=(
-                        7 if "log_vnext_version" in cache[envs[i].id] else
+                        7 if ("log_vnext_version" in cache[envs[i].id] or "log_goal_version" in cache[envs[i].id]) else
                         6 if np.asarray(cache[envs[i].id].get("search_visible_valid", [])).any() else 5),
                         training_step=int(logger.step), episode_id=str(envs[i].id),
                         length=episode_length, success=bool(suc), **{"return": score},
@@ -574,8 +612,9 @@ def simulate(
                                      "terminal" if bool(obs[i].get("is_terminal", False))
                                      else "time_limit_or_truncation"),
                         world_seed=None, seed_note="configured seeds; world seed unavailable")
-                    with (pathlib.Path(directory)/"episodes.jsonl").open("a") as stream:
-                        stream.write(json.dumps(record)+"\n")
+                    with _diagnostic_export(record.get("experiment_mode"), "episodes.jsonl", logger.step):
+                        with (pathlib.Path(directory)/"episodes.jsonl").open("a") as stream:
+                            stream.write(json.dumps(record)+"\n")
                 # B prediction-derived revisit proxy; NOT oracle true-location coverage.
                 b_values = np.asarray(cache[envs[i].id].get("log_b_revisit_prob", []), dtype=float)
                 b_used = np.asarray(cache[envs[i].id].get("log_b_memory_used", []), dtype=float)
@@ -591,20 +630,20 @@ def simulate(
 
                 a_diagnostics = search_episode_diagnostics(cache[envs[i].id])
                 if "log_spatial_version" in cache[envs[i].id]:
-                    from apm.diagnostics import spatial_episode_diagnostics
+                    from grace.diagnostics import spatial_episode_diagnostics
                     a_diagnostics.update(spatial_episode_diagnostics(cache[envs[i].id]))
                 if "log_goal_version" in cache[envs[i].id]:
-                    from apm.diagnostics import goal_episode_diagnostics
+                    from grace.diagnostics import goal_episode_diagnostics
                     a_diagnostics.update(goal_episode_diagnostics(cache[envs[i].id]))
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
-                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_goal_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_grace_", "log_spatial_", "log_goal_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             logger.scalar(key, float(np.array(cache[envs[i].id][key]).sum()))
                         # log items won't be used later
                         # Keep search traces intact until this episode is evicted.
                         # Replay excludes log_*; C uses separate numeric search_c_*.
-                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_spatial_", "log_goal_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
+                        if not key.startswith(("log_search_", "log_b_", "log_vnext_", "log_grace_", "log_spatial_", "log_goal_", "log_actuator_", "log_applied_", "log_requested_", "log_env_")):
                             cache[envs[i].id].pop(key)
 
                 if not is_eval:
@@ -656,7 +695,7 @@ def simulate(
                         logger.video("eval_policy", np.asarray(video)[None])
                         logger.scalar(f"eval_return", score)
                         logger.scalar(f"eval_length", episode_length)
-                        logger.scalar("eval_protocol_version", 7 if "log_vnext_version" in cache[envs[i].id] else
+                        logger.scalar("eval_protocol_version", 7 if ("log_vnext_version" in cache[envs[i].id] or "log_goal_version" in cache[envs[i].id]) else
                                       6 if "true_visible_rate" in a_diagnostics else 5)
                         logger.scalar(f"eval_episodes", len(eval_scores))
                         logger.scalar(f"eval_success", success_rate)

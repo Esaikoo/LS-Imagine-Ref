@@ -1,4 +1,6 @@
 defaults:
+  # Ablation / Experiment Modes. Empty identifies historical presets.
+  experiment_mode: ''
 
   use_wandb: False
   log_all_metrics: False  # Console verbosity only; all scalars are always saved.
@@ -11,9 +13,35 @@ defaults:
   resume_from: ''
   resume_tensorboard: False  # Continue source TensorBoard events; keep new checkpoints/replay separate.
   resume_upgrade_spatial: False  # Explicit fix2 -> fix3 warm start; ordinary resume preserves its revision.
+  # Shared GRACE network and historical protocol settings
   search_vnext_enabled: False
   vnext_spatial_enabled: False
   vnext_spatial_fix_version: 3  # Restore historical revisions explicitly.
+  vnext_hidden: 256
+  vnext_lr: 0.0001
+  vnext_grad_clip: 100.0
+
+  # A / Action Outcome Prediction
+  vnext_future_dim: 128
+  vnext_bootstrap_heads: 3
+  vnext_aux_horizon: 8
+  vnext_aux_every: 4
+  vnext_min_labels: 128
+  vnext_min_positives: 8
+  vnext_min_calibration: 32
+  vnext_max_disagreement: 0.15
+  vnext_forecast_min_skill: 0.05
+  vnext_interaction_probe_precision: 0.6
+  vnext_interaction_probe_min_samples: 16
+  vnext_current_min_operating_samples: 16
+  vnext_current_min_precision: 0.8
+  vnext_interaction_min_precision: 0.9
+  vnext_current_consistency_min: 0.5
+  vnext_direction_min_contrast: 0.1
+  vnext_direction_min_peak: 0.5
+  vnext_direction_max_up_pitch: 30.0
+
+  # B / Visual and Spatial Memory
   vnext_pose_supervision: True
   vnext_map_size: 65
   vnext_map_resolution: 1.5
@@ -31,33 +59,18 @@ defaults:
   vnext_pose_max_sigma: 1.0
   vnext_pose_loss_weight: 1.0
   vnext_pose_loss_version: 1
+  vnext_memory_enabled: True
+  vnext_memory_dim: 128
+  vnext_slots: 16
+  vnext_memory_save_every: 8
+  vnext_snapshot_every: 64
+  vnext_match_threshold: 0.94
+  vnext_dynamic_target: False
+  vnext_map_ledger_capacity: 2048
+
+  # C / Option-based Control
   vnext_score_cost: 0.01
   vnext_score_uncertainty: 0.2
-  vnext_visual_enabled: False
-  vnext_visual_every: 10000
-  vnext_visual_map_all_eval_episodes: False
-  vnext_visual_map_min_span: 24.0
-  vnext_visual_audit: True
-  vnext_visual_root: ''
-  check_obs_enabled: True
-  goal_ref_enabled: False
-  goal_ref_use_raw_image: True
-  goal_ref_version: 2
-  goal_ref_border_padding: zeros
-  goal_ref_bank_root: assets/goal_references
-  goal_ref_dim: 128
-  goal_ref_max_candidates: 8
-  goal_ref_max_references: 32
-  goal_ref_loss_weight: 1.0
-  goal_ref_lr: 0.0001
-  goal_ref_train_every: 4
-  goal_ref_batch_frames: 64
-  goal_ref_chunk: 64
-  goal_ref_hard_negative_enabled: True
-  goal_fusion_enabled: True
-  goal_fusion_max_gate: 0.8
-  goal_fusion_epsilon: 0.05
-  goal_fusion_overlap_weight: 0.5
   goal_search_enabled: False
   goal_guidance_revision: 1
   goal_verify_max_trials: 3
@@ -88,39 +101,6 @@ defaults:
   vnext_recovery_probe_limit: 4
   vnext_clearance_enabled: True
   vnext_clearance_attempts: 2
-  vnext_visual_strict: True
-  vnext_visual_max_steps: 4096
-  vnext_visual_max_active: 8
-  vnext_profile_every: 32
-  # Task-isolated vNext defaults.
-  vnext_memory_enabled: True
-  vnext_memory_dim: 128
-  vnext_slots: 16
-  vnext_hidden: 256
-  vnext_future_dim: 128
-  vnext_bootstrap_heads: 3
-  vnext_lr: 0.0001
-  vnext_grad_clip: 100.0
-  vnext_memory_save_every: 8
-  vnext_snapshot_every: 64
-  vnext_aux_horizon: 8
-  vnext_aux_every: 4
-  vnext_min_labels: 128
-  vnext_min_positives: 8
-  vnext_min_calibration: 32
-  vnext_max_disagreement: 0.15
-  vnext_forecast_min_skill: 0.05
-  vnext_interaction_probe_precision: 0.6
-  vnext_interaction_probe_min_samples: 16
-  vnext_current_min_operating_samples: 16
-  vnext_current_min_precision: 0.8
-  vnext_interaction_min_precision: 0.9
-  vnext_current_consistency_min: 0.5
-  vnext_direction_min_contrast: 0.1
-  vnext_direction_min_peak: 0.5
-  vnext_direction_max_up_pitch: 30.0
-  vnext_match_threshold: 0.94
-  vnext_dynamic_target: False
   vnext_control: True
   vnext_interaction: True
   vnext_c_hidden: 128
@@ -154,9 +134,43 @@ defaults:
   vnext_commit_steps: 3
   vnext_c_margin: 0.01
   vnext_c_tie_margin: 0.02
+
+  # D / Goal Reference Verification
+  goal_ref_enabled: False
+  goal_ref_use_raw_image: True
+  goal_ref_version: 2
+  goal_ref_border_padding: zeros
+  goal_ref_bank_root: assets/goal_references
+  goal_ref_dim: 128
+  goal_ref_max_candidates: 8
+  goal_ref_max_references: 32
+  goal_ref_loss_weight: 1.0
+  goal_ref_lr: 0.0001
+  goal_ref_train_every: 4
+  goal_ref_batch_frames: 64
+  goal_ref_chunk: 64
+  goal_ref_hard_negative_enabled: True
+  goal_fusion_enabled: True
+  goal_fusion_max_gate: 0.8
+  goal_fusion_epsilon: 0.05
+  goal_fusion_overlap_weight: 0.5
+
+  # Visualization / Diagnostics
+  vnext_visual_enabled: False
+  vnext_visual_every: 10000
+  vnext_visual_map_all_eval_episodes: False
+  vnext_visual_map_min_span: 24.0
+  vnext_visual_audit: True
+  vnext_visual_root: ''
+  check_obs_enabled: True
+  vnext_visual_strict: True
+  vnext_visual_max_steps: 4096
+  vnext_visual_max_active: 8
+  vnext_profile_every: 32
+
+  # MineDojo runtime
   minedojo_reset_retries: 2
   minedojo_gradle_offline: False
-  vnext_map_ledger_capacity: 2048
   seed: 0
   deterministic_run: False
   steps: 1e6
@@ -547,7 +561,7 @@ apm_vnext:
   search_eval_evidence: True
 
 # Standalone preset, using the spatial fix3 backbone.
-apm_vnext4:
+apm_vnext4: &region_verification_backbone
   vnext_visual_strict: False  # Log a failed figure export and continue training.
   goal_guidance_revision: 2
   vnext_pose_loss_version: 4
@@ -568,3 +582,27 @@ apm_vnext4:
   vnext_visual_audit: False
   video_pred_log: True
   check_obs_enabled: True
+
+# GRACE experiment modes inherit one numeric configuration, including its
+# A (Action Outcome Prediction), B (Visual and Spatial Memory), C (Option-based
+# Control), D (Goal Reference Verification) and Visualization / Diagnostics.
+grace_full:
+  <<: *region_verification_backbone
+  experiment_mode: grace_full
+
+grace_d_only:
+  <<: *region_verification_backbone
+  experiment_mode: grace_d_only
+  vnext_memory_enabled: False
+  vnext_control: False
+  goal_search_enabled: False
+
+grace_dac:
+  <<: *region_verification_backbone
+  experiment_mode: grace_dac
+  vnext_memory_enabled: False
+
+grace_no_fusion:
+  <<: *region_verification_backbone
+  experiment_mode: grace_no_fusion
+  goal_fusion_enabled: False

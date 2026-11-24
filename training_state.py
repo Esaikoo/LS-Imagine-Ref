@@ -16,8 +16,10 @@ import re
 import numpy as np
 import torch
 
+from grace.experiments import ENGINEERING_VERSION, checkpoint_mode, module_manifest, parameter_counts
+
 SCHEMA_VERSION = 1
-CODE_VERSION = "VN4R3D2P3R1"
+CODE_VERSION = ENGINEERING_VERSION
 _RUNTIME_KEYS = {
     "resume_from", "resume_upgrade_spatial", "resume_tensorboard", "logdir", "traindir", "evaldir", "offline_traindir",
     "offline_evaldir", "device", "steps", "log_every", "log_all_metrics", "video_pred_log",
@@ -160,6 +162,9 @@ def _completed_branches(source_runs):
 
 def validate_goal_checkpoint(checkpoint, values, *, evaluation=False):
     """Restore the saved input protocol, or reject a cross-architecture resume."""
+    mode = checkpoint_mode(checkpoint, values.get("experiment_mode", ""), evaluation=evaluation)
+    if evaluation and mode:
+        values["experiment_mode"] = mode
     saved = checkpoint.get("config", {})
     state = checkpoint.get("agent_state_dict", {})
     enabled = any(key.startswith("_goal_reference.") for key in state)
@@ -186,13 +191,13 @@ def validate_goal_checkpoint(checkpoint, values, *, evaluation=False):
 
 
 def _validate_search_versions(checkpoint, values):
-    from apm.outcome import check_vnext_checkpoint
+    from grace.outcome import check_prediction_checkpoint
     enabled = values.get("search_vnext_enabled", False) if isinstance(values, dict) else getattr(values, "search_vnext_enabled", False)
-    check_vnext_checkpoint(checkpoint, enabled)
+    check_prediction_checkpoint(checkpoint, enabled)
     validate_goal_checkpoint(checkpoint, vars(values) if hasattr(values, "__dict__") else values)
-    from apm.legacy.observation import check_checkpoint
-    from apm.legacy.memory import check_b_checkpoint
-    from apm.legacy.control import check_c_checkpoint
+    from grace.legacy.observation import check_checkpoint
+    from grace.legacy.memory import check_b_checkpoint
+    from grace.legacy.control import check_c_checkpoint
     get = values.get if isinstance(values, dict) else lambda key, default=None: getattr(values, key, default)
     enabled_a, enabled_b, enabled_c = (bool(get("search_" + item + "_enabled", False)) for item in ("a", "b", "c"))
     check_checkpoint(checkpoint, enabled_a, get("search_a_model_version", 2))
@@ -234,7 +239,7 @@ def _spatial_upgrade_request(checkpoint, incoming):
 def _upgrade_b_optimizer(agent, saved_state):
     """Retain Adam moments by old parameter name; new history parameters start fresh."""
     from types import SimpleNamespace
-    from apm.spatial_memory import SpatialMapMemory
+    from grace.spatial_memory import SpatialMapMemory
     values = dict(vars(agent._config), vnext_spatial_fix_version=2)
     legacy = SpatialMapMemory(agent._vnext_control.feature_dim, SimpleNamespace(**values))
     old_names = [name for name, _ in legacy.named_parameters()]
@@ -321,6 +326,9 @@ def prepare_resume(config):
     if repeat < 1:
         raise ValueError("Invalid saved action_repeat")
     restored = copy.deepcopy(saved)
+    if incoming.get("experiment_mode"):
+        # The validated R1-compatible Full may have an empty historical mode.
+        restored["experiment_mode"] = incoming["experiment_mode"]
     # Saved intervals are decision-step units; main normalizes them once again.
     for key in ("steps", "eval_every", "log_every", "time_limit"):
         if key in restored:
@@ -624,6 +632,15 @@ def save_training_checkpoint(agent, config, next_branch_step, name="latest.pt"):
         replay_budget_offset=int(getattr(agent, "_replay_budget_offset", 0)),
         resume_source_runs=[str(path) for path in _unique_paths(source_runs)],
         interrupted=name == "interrupted.pt")
+    mode = getattr(config, "experiment_mode", "")
+    if mode:
+        payload.update(experiment_mode=mode, experiment_modules=module_manifest(mode),
+                       experiment_parameter_counts=parameter_counts(agent))
+        if mode in ("grace_dac", "grace_d_only"):
+            payload.update(vnext_memory_version=None, pose_version=None, spatial_map_version=None)
+        if mode == "grace_d_only":
+            payload.update(search_vnext_version=None, search_candidate_version=None, search_a_label_version=None)
+
     try:
         with pending.open("wb") as stream:
             torch.save(payload, stream)

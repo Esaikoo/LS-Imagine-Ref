@@ -14,12 +14,12 @@ from datetime import datetime
 import exploration as expl
 import models
 import tools
-from apm.legacy.observation import (SearchAController, PrefixSearchController, actor_action_sequence,
+from grace.legacy.observation import (SearchAController, PrefixSearchController, actor_action_sequence,
                       prefix_macro_actions, prefix_candidate_predictions, check_checkpoint, MODEL_VERSION)
-from apm.legacy.control import SearchBehavior, build_transitions, check_c_checkpoint, C_VERSION
-from apm.legacy.memory import describe_torch, sample_episodes_with_history, B_VERSION, check_b_checkpoint
-from apm.outcome import SearchVNext, sample_episodes_vnext
-from apm.control import VNextController
+from grace.legacy.control import SearchBehavior, build_transitions, check_c_checkpoint, C_VERSION
+from grace.legacy.memory import describe_torch, sample_episodes_with_history, B_VERSION, check_b_checkpoint
+from grace.outcome import PredictiveMemorySystem, sample_predictive_episodes
+from grace.control import N_OPTIONS, OptionController
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
 
@@ -107,22 +107,22 @@ class LS_Imagine(nn.Module):
         )[config.expl_behavior]().to(self._config.device)
         self._goal_reference = None
         if getattr(config, "goal_ref_enabled", False):
-            if (not getattr(config, "search_vnext_enabled", False)
+            if getattr(config, "experiment_mode", "") != "grace_d_only" and (not getattr(config, "search_vnext_enabled", False)
                     or not getattr(config, "vnext_spatial_enabled", False)
                     or getattr(config, "vnext_spatial_fix_version", 0) != 3):
                 raise ValueError("Goal verification requires the spatial fix3 vNext backbone")
-            from apm.goal_reference import GoalReference
+            from grace.goal_reference import GoalReference
             with torch.random.fork_rng(devices=[]):
                 self._goal_reference = GoalReference(config, bank=goal_bank)
 
         self._vnext = self._vnext_control = None
-        if getattr(config, "search_vnext_enabled", False):
+        if getattr(config, "search_vnext_enabled", False) and getattr(config, "experiment_mode", "") != "grace_d_only":
             size = (config.dyn_stoch * config.dyn_discrete if config.dyn_discrete
                     else config.dyn_stoch) + config.dyn_deter
             # Additional modules cannot perturb original Actor/RSSM initialization.
             with torch.random.fork_rng(devices=[]):
-                self._vnext = SearchVNext(size, config)
-                self._vnext_control = VNextController(size, config, memory_dim=self._vnext.memory_dim)
+                self._vnext = PredictiveMemorySystem(size, config)
+                self._vnext_control = OptionController(size, config, memory_dim=self._vnext.memory_dim)
             if self._goal_reference is not None:
                 optimizers = (
                     ("vnext_A_opt", self._vnext._a_opt),
@@ -131,6 +131,8 @@ class LS_Imagine(nn.Module):
                     ("goal_D_opt", self._goal_reference.optimizer),
                 )
                 for name, optimizer in optimizers:
+                    if optimizer is None:
+                        continue
                     count = sum(p.numel() for group in optimizer.param_groups for p in group["params"])
                     suffix = ""
                     if optimizer is self._vnext_control._optimizer:
@@ -139,6 +141,11 @@ class LS_Imagine(nn.Module):
                     print(f"Optimizer {name} has {count:,} variables.{suffix}")
                 print(f"Goal reference bank: {len(self._goal_reference.bank_pixels)} positives, "
                       f"{len(self._goal_reference.negative_pixels)} hard negatives.")
+
+        if getattr(config, "experiment_mode", ""):
+            from grace.experiments import parameter_counts
+            counts = parameter_counts(self)
+            print(f"[GRACE] {config.experiment_mode} | parameters (including targets): {counts}")
 
     def __call__(self, obs, reset, state=None, training=True):
         step = self._step
@@ -188,7 +195,7 @@ class LS_Imagine(nn.Module):
             self._metrics[name] = []
 
     @torch.no_grad()
-    def observe_vnext_results(self, state, results, training=False):
+    def observe_control_results(self, state, results, training=False):
         """Consume real terminal feedback before the driver resets an episode."""
         if self._vnext_control is None or not self._vnext_control.guidance_fix or state is None:
             return
@@ -223,7 +230,7 @@ class LS_Imagine(nn.Module):
                       for key in ("image", "heatmap", "goal_image", "goal_image_valid") if key in terminal_obs}
             extra = {}
             if self._goal_reference is not None:
-                from apm.goal_guidance import build_policy_observation
+                from grace.goal_guidance import build_policy_observation
                 tracking = state[3].get("goal_tracking")
                 if tracking is not None:
                     tracking = tuple(value[index:index+1] for value in tracking)
@@ -236,8 +243,8 @@ class LS_Imagine(nn.Module):
         return self._vnext.b.visualization_state(memory)
 
     def _policy(self, obs, state, training):
-        if self._vnext is not None:
-            return self._vnext_policy(obs, state, training)
+        if self._vnext is not None or self._goal_reference is not None:
+            return self._grace_policy(obs, state, training)
         # APM-IMAGINE A STAGE: keep a macro progress tensor in recurrent policy state.
         # APM-IMAGINE B STAGE: persistent bank is part of the recurrent policy state.
         if state is None:
@@ -335,7 +342,7 @@ class LS_Imagine(nn.Module):
         return policy_output, state
 
     @torch.no_grad()
-    def _vnext_policy(self, obs, state, training):
+    def _grace_policy(self, obs, state, training):
         latent, previous_action, memory_state, control_state = (
             (None, None, None, None) if state is None else state)
         # Only original, legal policy inputs reach the shared encoder or search.
@@ -349,13 +356,15 @@ class LS_Imagine(nn.Module):
             for key in ("goal_image", "goal_image_valid"):
                 if key in obs:
                     clean[key] = obs[key]
-            from apm.goal_guidance import build_policy_observation
+            from grace.goal_guidance import build_policy_observation
             if control_state is not None:
                 control_state = dict(control_state)
                 tracking = control_state.pop("goal_tracking", None)
             raw_heatmap = clean["heatmap"]
-            previous = (control_state["previous_control"] if control_state is not None
+            previous = (control_state.get("previous_control", obs.get("vnext_bootstrap_control")) if control_state is not None
                         else obs.get("vnext_bootstrap_control"))
+            if self._vnext_control is None and previous is None:
+                previous = obs.get("log_applied_control")  # own actuator receipt in standalone evaluation
             clean, goal, tracking = build_policy_observation(
                 clean, self._goal_reference, tracking, previous_control=previous)
             policy_heatmap = clean["heatmap"]
@@ -372,6 +381,16 @@ class LS_Imagine(nn.Module):
         actor = (self._expl_behavior.actor(feature)
                  if training and self._should_expl(self._step) else self._task_behavior.actor(feature))
         proposed = actor.sample() if training else actor.mode()
+        if self._vnext_control is None:
+            # The unchanged environment actuator executes the original Actor action.
+            # Only legal own-control feedback enters D's short temporal tracker.
+            action = proposed.detach()
+            output = {"action": action, "logprob": actor.log_prob(action),
+                      "search_data_source": feature.new_zeros(len(feature)),
+                      "log_vnext_source": torch.zeros_like(action.argmax(-1)),
+                      "log_vnext_actor_action": action.argmax(-1)}
+            output.update(self._goal_diagnostics(goal, policy_heatmap))
+            return output, ({k:v.detach() for k,v in latent.items()}, action, None, {"goal_tracking": tracking})
         if control_state is None and "vnext_bootstrap_actuator" in obs:
             control_state = self._vnext_control.initial(len(feature), feature.device)
             control_state["actuator"] = torch.as_tensor(obs["vnext_bootstrap_actuator"],device=feature.device).float()
@@ -396,7 +415,12 @@ class LS_Imagine(nn.Module):
             feature, clean["image"], memory_heatmap, memory_state,
             clean["is_first"], previous_control=previous_control,
             reward=clean.get("obs_reward"),**spatial_inputs)
-        if self._vnext.spatial:
+        if self._vnext.b is None:
+            # Same controller input schema, explicitly no map, directions or novelty.
+            clean["vnext_spatial_summary"] = feature.new_zeros(len(feature), 12)
+            clean["vnext_spatial_directions"] = feature.new_zeros(len(feature), 12)
+            clean["goal_direction_novelty"] = feature.new_zeros(len(feature), N_OPTIONS)
+        elif self._vnext.spatial:
             enabled = bool(self._config.vnext_memory_enabled)
             if enabled and "log_goal_direction_novelty" in memory_info:
                 clean["goal_direction_novelty"] = memory_info["log_goal_direction_novelty"]
@@ -418,25 +442,14 @@ class LS_Imagine(nn.Module):
         output = {"action": action, "logprob": actor.log_prob(action)}
         output.update(memory_info)
         output.update(control_info)
+        if self._vnext.b is None:
+            output["log_grace_dac"] = torch.ones_like(control_info["log_vnext_version"])
         if "log_visual_rank_choice" in output:
             output["log_visual_weight_update"] = torch.full_like(
                 output["log_visual_rank_choice"], self._update_count)
         if goal is not None:
             control_state["goal_tracking"] = tracking
-            output.update(
-                log_goal_version=goal["version"],
-                log_goal_model_update=self._goal_reference.updates.expand_as(goal["gate"]),
-                log_goal_context=goal["context"].detach(),
-                log_goal_state=goal["state"].detach(),
-                log_goal_gate=goal["gate"].detach(),
-                log_goal_region_cal_reliability=self._goal_reference.reliability[0].expand_as(goal["gate"]),
-                log_goal_conflict=goal["conflict"].detach(),
-                log_goal_peak_rejected=goal["peak_rejected"].detach(),
-                log_goal_boxes=goal["boxes"].detach(),
-                log_goal_candidate_scores=goal["candidate_scores"].detach(),
-                log_goal_candidate_sources=goal["candidate_sources"].detach(),
-                log_goal_ref_map=(goal["region"].squeeze(-1).clamp(0, 1)*255).round().to(torch.uint8),
-                log_goal_heatmap_policy=torch.as_tensor(policy_heatmap, device=feature.device).round().clamp(0, 255).to(torch.uint8))
+            output.update(self._goal_diagnostics(goal, policy_heatmap))
         # Preserve the intervention/decision metric interface; protocol 7 also
         # records separate option and task-stage rates in vNext diagnostics.
         output["log_search_override"] = control_info["log_vnext_override"]
@@ -446,12 +459,32 @@ class LS_Imagine(nn.Module):
         latent = {key: value.detach() for key, value in latent.items()}
         return output, (latent, action, memory_state, control_state)
 
+    # Compatibility for callers of the R1 policy and feedback hooks.
+    _vnext_policy = _grace_policy
+    observe_vnext_results = observe_control_results
+
+    def _goal_diagnostics(self, goal, policy_heatmap):
+        return dict(
+            log_goal_version=goal["version"],
+            log_goal_model_update=self._goal_reference.updates.expand_as(goal["gate"]),
+            log_goal_context=goal["context"].detach(),
+            log_goal_state=goal["state"].detach(),
+            log_goal_gate=goal["gate"].detach(),
+            log_goal_region_cal_reliability=self._goal_reference.reliability[0].expand_as(goal["gate"]),
+            log_goal_conflict=goal["conflict"].detach(),
+            log_goal_peak_rejected=goal["peak_rejected"].detach(),
+            log_goal_boxes=goal["boxes"].detach(),
+            log_goal_candidate_scores=goal["candidate_scores"].detach(),
+            log_goal_candidate_sources=goal["candidate_sources"].detach(),
+            log_goal_ref_map=(goal["region"].squeeze(-1).clamp(0, 1)*255).round().to(torch.uint8),
+            log_goal_heatmap_policy=torch.as_tensor(policy_heatmap, device=goal["gate"].device).round().clamp(0, 255).to(torch.uint8))
+
     @torch.no_grad()
     def _goal_model_batch(self, raw):
         """Use current D on legal frames while preserving historical action logs."""
         if self._goal_reference is None:
             return raw
-        from apm.goal_guidance import build_policy_observation, fuse_zoomed_observation
+        from grace.goal_guidance import build_policy_observation, fuse_zoomed_observation
         if (not self._goal_reference.fusion_enabled
                 or not bool(self._goal_reference.reliability[0] > 0.)):
             return raw
@@ -604,7 +637,7 @@ class LS_Imagine(nn.Module):
             return state, result[4]
         state, prediction = inputs("start")
         next_state, next_prediction = inputs("end")
-        from apm.legacy.feedback import imagined_search_transitions
+        from grace.legacy.feedback import imagined_search_transitions
         imagined = imagined_search_transitions(self, snapshots["start"], state, prediction, records)
         return self._search_c.train_transitions(
             state, prediction, next_state, next_prediction, records, imagined=imagined)
@@ -615,14 +648,15 @@ def count_steps(folder):
 def make_dataset(episodes, config):
     if getattr(config, "search_vnext_enabled", False):
         if getattr(config, "vnext_spatial_enabled", False):
-            from apm.replay import sample_spatial_episodes
+            from grace.replay import sample_spatial_episodes
             return tools.from_generator(sample_spatial_episodes(episodes,config.batch_length,
                 seed=config.seed,patch_size=config.vnext_map_patch,
                 history_slots=config.vnext_slots,
+                include_memory=getattr(config, "experiment_mode", "") not in ("grace_d_only", "grace_dac"),
                 goal_enabled=(getattr(config, "goal_ref_enabled", False)
                               or getattr(config, "goal_search_enabled", False)),
                 goal_use_raw_image=getattr(config, "goal_ref_use_raw_image", False)),config.batch_size)
-        generator = sample_episodes_vnext(
+        generator = sample_predictive_episodes(
             episodes, config.batch_length, slots=config.vnext_slots, seed=config.seed)
         return tools.from_generator(generator, config.batch_size)
     generator = (sample_episodes_with_history(
@@ -717,6 +751,8 @@ def main(config): # config is namespace
 
     from training_state import (prepare_resume, restore_training_state,
                                 write_resume_manifest, save_training_checkpoint)
+    from grace.experiments import validate_training_mode
+    validate_training_mode(vars(config))
     resume_plan = prepare_resume(config)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
@@ -857,10 +893,10 @@ def main(config): # config is namespace
     agent.requires_grad_(requires_grad=False)
 
     if config.search_vnext_enabled and getattr(config,"vnext_spatial_enabled",False) and config.vnext_visual_enabled:
-        from apm.visualization import SearchVisualizer
+        from grace.visualization import EpisodeVisualizer
         visual_root = (pathlib.Path(config.vnext_visual_root).expanduser() if config.vnext_visual_root
                        else pathlib.Path(config.logdir))
-        logger.search_visualizer = SearchVisualizer(visual_root,config)
+        logger.search_visualizer = EpisodeVisualizer(visual_root,config)
         logger.search_visualizer.set_step(agent._step)
 
     if agent._goal_reference is not None:
@@ -887,7 +923,7 @@ def main(config): # config is namespace
         agent._replay_budget_offset = 0
 
     if config.check_obs_enabled and (not config.search_vnext_enabled or config.vnext_visual_enabled):
-        from apm.imagination_figures import ImaginationSampler
+        from grace.imagination_figures import ImaginationSampler
         agent._task_behavior._visual_sampler = ImaginationSampler(config, agent._step * config.action_repeat)
 
     # Branch interactions share the same total real-interaction budget.
@@ -931,7 +967,7 @@ def main(config): # config is namespace
                 agent.flush_metrics()
                 break
             if config.search_branch_enabled and agent._step >= next_branch_step:
-                from apm.legacy.branches import collect_real_branches
+                from grace.legacy.branches import collect_real_branches
                 collect_real_branches(agent, config, train_eps, logger, next_branch_step // config.search_branch_every)
                 next_branch_step += config.search_branch_every
                 save_training_checkpoint(agent, config, next_branch_step)
@@ -1017,4 +1053,11 @@ if __name__ == "__main__":
         arg_type = tools.args_type(value)
         parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
 
-    main(parser.parse_args(remaining))
+    config = parser.parse_args(remaining)
+    named = [name for name in name_list if name.startswith("grace_")]
+    launcher = os.environ.get("EXPERIMENT_MODE") or os.environ.get("A_MODE", "")
+    if (named or config.experiment_mode) and named != [config.experiment_mode]:
+        parser.error("Select one GRACE training preset and its matching experiment_mode")
+    if launcher and (named or launcher.startswith("grace_")) and config.experiment_mode != launcher:
+        parser.error("The effective training mode differs from the launcher")
+    main(config)

@@ -10,8 +10,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from apm.odometry import PoseNet, local_pose_delta, wrap_angle
-from apm.spatial_memory import (SpatialMapMemory, SPATIAL_VERSION, SUMMARY_DIM,
+from grace.odometry import PoseNet, local_pose_delta, wrap_angle
+from grace.spatial_memory import (SpatialMapMemory, SPATIAL_VERSION, SUMMARY_DIM,
                                 centered_cell, heading_sector)
 
 

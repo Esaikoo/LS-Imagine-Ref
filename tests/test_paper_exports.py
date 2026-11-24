@@ -10,10 +10,10 @@ import sys
 import numpy as np
 import torch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from apm.imagination_figures import ImaginationSampler, render, transition_types
-from apm.paper_archive import load_episode
-from apm.paper_figures import shortlist, timeline
-from apm.visualization import SearchVisualizer
+from grace.imagination_figures import ImaginationSampler, render, transition_types
+from grace.paper_archive import load_episode
+from grace.paper_figures import shortlist, timeline
+from grace.visualization import EpisodeVisualizer
 from test_search_visualization import fixture
 
 
@@ -136,7 +136,7 @@ class PaperTests(unittest.TestCase):
             self.assertTrue(torch.equal(grad,feat.grad))
 
     def test_history_weights_are_the_actual_masked_read(self):
-        from apm.spatial_memory import ViewHistoryEncoder
+        from grace.spatial_memory import ViewHistoryEncoder
         encoder = ViewHistoryEncoder(8,16)
         args=(torch.randn(2,8),torch.randint(0,255,(2,4,4,4,4),dtype=torch.uint8),
               torch.zeros(2,4,8),torch.tensor([[1,0,1,0],[0,0,0,0]],dtype=torch.bool),torch.tensor([3,5]))
@@ -149,7 +149,7 @@ class PaperTests(unittest.TestCase):
 
     def test_calibrated_fusion_requires_observed_change_and_model_updates(self):
         with tempfile.TemporaryDirectory() as tmp:
-            viz=SearchVisualizer(tmp,dict(goal_ref_version=2))
+            viz=EpisodeVisualizer(tmp,dict(goal_ref_version=2))
             for i,(gate,cal,update,effective) in enumerate([
                     (0,.6,10,50),(.3,.1,10,50),(.3,.6,0,50),(.3,.6,10,0),
                     (.3,.6,10,20),(.3,.6,10,60),(.3,.6,10,40)]):
@@ -177,12 +177,12 @@ class PaperTests(unittest.TestCase):
 
     def test_print_layout_preserves_scores_missing_fields_and_pre_rule_choice(self):
         from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from apm.paper_figures import command_text, decision
+        from grace.paper_figures import command_text, decision
         self.assertEqual(command_text(np.full(9,np.nan)),"Not recorded")
         self.assertEqual(command_text(np.zeros(3)),"Not recorded")
         self.assertEqual(command_text(np.zeros(9)),"no input")
         with tempfile.TemporaryDirectory() as tmp:
-            viz = SearchVisualizer(tmp, {"goal_ref_version":2}, scheduled_eval_maps=False)
+            viz = EpisodeVisualizer(tmp, {"goal_ref_version":2}, scheduled_eval_maps=False)
             e = dict(row=dict(step=4, actor=2, option=6, phase=0, source=9, override=True),
                      mask=np.isin(np.arange(12), [0,6]), rank_choice=0, rank_mask=np.arange(12)==0,
                      prediction=np.full((12,7),.42), has_prediction=True, q=np.arange(12)/11,
@@ -219,7 +219,7 @@ class PaperTests(unittest.TestCase):
                 dict(step=1, phase=0, source=2, success=False, reward=0.0, goal_state=0)]
         seen = []
         with tempfile.TemporaryDirectory() as tmp:
-            viz = SearchVisualizer(tmp, {}, scheduled_eval_maps=False)
+            viz = EpisodeVisualizer(tmp, {}, scheduled_eval_maps=False)
             def inspect_figure(figure, path):
                 for axis in figure.axes[:3]:
                     seen.append(axis.images[0].get_array().ravel().tolist())
@@ -231,7 +231,7 @@ class PaperTests(unittest.TestCase):
 
     def test_archive_aligns_real_feedback_and_preserves_masks(self):
         with tempfile.TemporaryDirectory() as tmp:
-            viz=SearchVisualizer(tmp,dict(task="fixture",vnext_spatial_fix_version=3))
+            viz=EpisodeVisualizer(tmp,dict(task="fixture",vnext_spatial_fix_version=3))
             obs,log=fixture(0)
             mask=np.zeros(12);mask[[0,3]]=1
             log.update(log_vnext_mask=mask,log_vnext_choice=3,log_vnext_source=1,

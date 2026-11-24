@@ -31,10 +31,10 @@ def create_search_visualizer(config, root):
     if not all(bool(get(key, False)) for key in
                ('search_vnext_enabled', 'vnext_spatial_enabled', 'vnext_visual_enabled')):
         return None
-    from apm.visualization import SearchVisualizer
+    from grace.visualization import EpisodeVisualizer
     custom_root = get('vnext_visual_root', '')
     # A standalone run is not a training-time visualization round.
-    return SearchVisualizer(Path(custom_root).expanduser() if custom_root else root, config,
+    return EpisodeVisualizer(Path(custom_root).expanduser() if custom_root else root, config,
                             scheduled_eval_maps=False)
 
 
@@ -263,8 +263,8 @@ def configure_search_checkpoint(config, checkpoint):
     """Restore the trained search module without changing the base evaluation."""
     state = checkpoint['agent_state_dict']
     saved = checkpoint.get('config', {})
-    from apm.outcome import restore_vnext_config
-    restore_vnext_config(config, checkpoint)
+    from grace.outcome import restore_prediction_config
+    restore_prediction_config(config, checkpoint)
     if config.get("search_vnext_enabled"):
         # Audit rays are labels/logs only, and were enabled by the saved preset.
         config["search_eval_evidence"] = bool(saved.get("search_eval_evidence", False))
@@ -283,12 +283,12 @@ def configure_search_checkpoint(config, checkpoint):
     config['search_b_model_version'] = checkpoint.get('search_b_version') or 2
     if (has_a or has_c) and 'step' not in checkpoint:
         raise ValueError('A/C checkpoint requires training step to restore warmup')
-    from apm.legacy.observation import check_checkpoint, restore_a_config
-    from apm.legacy.memory import check_b_checkpoint
+    from grace.legacy.observation import check_checkpoint, restore_a_config
+    from grace.legacy.memory import check_b_checkpoint
     restore_a_config(config, checkpoint)
     check_checkpoint(checkpoint, has_a)
     check_b_checkpoint(checkpoint, has_b)
-    from apm.legacy.control import restore_c_config
+    from grace.legacy.control import restore_c_config
     restore_c_config(config, checkpoint)
     return int(checkpoint.get('step', 0))
 
@@ -305,7 +305,7 @@ def apply_a_control_mode(config, mode):
     if config.get('search_c_enabled') and config.get('search_c_control'):
         raise ValueError('Use explicit C ablation settings for a C checkpoint; legacy A-only control override is ambiguous')
     if mode == 'repaired':
-        from apm.legacy.observation import apply_repaired_control
+        from grace.legacy.observation import apply_repaired_control
         apply_repaired_control(config)
         return
     if mode != 'off':
@@ -378,7 +378,7 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
     different = [key for key, value in saved['config'].items()
                  if key not in runtime and key not in audit_flags
                  and not key.startswith(('search_a_', 'search_b_', 'search_c_'))
-                 and key != 'search_vnext_enabled' and not key.startswith(('vnext_', 'goal_'))
+                 and key not in ('search_vnext_enabled', 'experiment_mode') and not key.startswith(('vnext_', 'goal_'))
                  and config.get(key) != value]
     if has_control_override(args):
         if getattr(args, 'a_control', 'checkpoint') != 'checkpoint':
@@ -390,7 +390,7 @@ def validate_reference(args, task, run, config, task_specs, sim_specs):
         expected_path = (args.checkpoint_root / task / 'latest.pt').resolve()
         if Path(saved['checkpoint']).resolve() != expected_path:
             raise ValueError('A-off ablation must load exactly the reference checkpoint')
-        from apm.legacy.observation import REPAIRED_CONTROL_DEFAULTS
+        from grace.legacy.observation import REPAIRED_CONTROL_DEFAULTS
         allowed = set()
         if getattr(args, 'a_control', 'checkpoint') != 'checkpoint':
             allowed.add('search_a_control')
@@ -1068,7 +1068,7 @@ def worker(args, manifest):
     checkpoint_path = args.checkpoint_root / task / 'latest.pt'
     checkpoint = torch.load(str(checkpoint_path), map_location='cpu', mmap=True)
     checkpoint_step = configure_search_checkpoint(config, checkpoint)
-    from apm.legacy.control import apply_c_control_mode
+    from grace.legacy.control import apply_c_control_mode
     apply_c_control_mode(config, args.c_control)
     apply_a_control_mode(config, args.a_control)
     config.update(compile=False, video_pred_log=False, use_wandb=False, device=args.device,
@@ -1098,7 +1098,7 @@ def worker(args, manifest):
             revisit_gap=config.search_a_horizon)
         sim_specs["use_lidar"] = bool(config.search_eval_evidence)
         if sim_specs["use_lidar"]:
-            from apm.evidence import lidar_rays
+            from grace.evidence import lidar_rays
             sim_specs["lidar_rays"] = lidar_rays(config.search_a_ray_distance)
     task_specs['log_dir'] = str(folder)
     sim_specs['seed'] = run_seed

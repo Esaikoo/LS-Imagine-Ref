@@ -73,6 +73,21 @@ Jiajian Li*, Qi Wang*, Yunbo Wang, Xin Jin, Yang Li, Wenjun Zeng, Xiaokang Yang
 
 [[arXiv]](https://arxiv.org/pdf/2410.03618)  [[Project Page]](https://qiwang067.github.io/ls-imagine) -->
 
+## GRACE research extension
+
+GRACE (Goal-Referenced Adaptive Control and Exploration) is the engineering name of the search extension in this fork of LS-Imagine. A predicts action outcomes, B maintains visual history and local spatial memory, C selects and executes control options, and D verifies regions against target references. The original method, authors and citation appear below.
+
+Select one training architecture per run. The same entry point selects the task, reference bank, environment budget and evaluation schedule.
+
+```sh
+EXPERIMENT_MODE=grace_full      BANK=assets/goal_references sh scripts/train.sh harvest_sand
+EXPERIMENT_MODE=grace_d_only    BANK=assets/goal_references sh scripts/train.sh harvest_sand
+EXPERIMENT_MODE=grace_dac       BANK=assets/goal_references sh scripts/train.sh harvest_sand
+EXPERIMENT_MODE=grace_no_fusion BANK=assets/goal_references sh scripts/train.sh harvest_sand
+```
+
+Each command starts a separate experiment. Run the regression suite with `bash scripts/test_all.sh`. For frozen-policy experiments, historical aliases, checkpoint compatibility, exact module membership and reproducible launch commands, see the [naming and experiment reference](docs/NAMING_COMPATIBILITY.md).
+
 ## Quick Start
 ### Install the Environment
 LS-Imagine is implemented and tested on Ubuntu 20.04 with python==3.9:

@@ -8,8 +8,8 @@ import gym
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from apm.evidence import SpatialEvidenceWrapper, SPATIAL_LABEL_SHAPES
-from apm.diagnostics import spatial_episode_diagnostics
+from grace.evidence import SpatialEvidenceWrapper, SPATIAL_LABEL_SHAPES
+from grace.diagnostics import spatial_episode_diagnostics
 
 
 def observation(x=0., z=0., yaw=0., y=64.):

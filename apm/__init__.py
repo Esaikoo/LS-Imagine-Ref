@@ -1,1 +1,1 @@
-"""Predictive search, spatial memory and high-level control for LS-Imagine."""
+"""Historical import namespace. Implementations live in grace."""

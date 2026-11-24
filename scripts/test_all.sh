@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+if [[ "${1:-}" == "--minedojo-recovery" ]]; then
+  shift
+  export MINEDOJO_HEADLESS=1 PYTHONUNBUFFERED=1
+  exec python tests/test_env_recovery.py --minedojo "$@"
+fi
+if [[ "${1:-}" == "--startup-replay" ]]; then
+  shift
+  exec python tests/test_search_a.py --startup-replay "$@"
+fi
+if [[ "${1:-}" == "--branch-checkpoint" ]]; then
+  shift
+  export MINEDOJO_HEADLESS=1 PYTHONUNBUFFERED=1
+  exec python tests/test_search_a.py --branch-checkpoint "$@"
+fi
+if [[ "${1:-}" == "--audit-replay" ]]; then
+  shift
+  exec python tests/test_search_a.py --audit-replay "$@"
+fi
+python tests/test_search_a.py
+python tests/test_env_recovery.py
+python tests/test_training_state.py
+python tests/test_search_b.py
+python tests/test_search_evidence.py
+python tests/test_predictive_memory.py
+python tests/test_option_control.py
+python tests/test_predictive_integration.py
+python tests/test_spatial_memory.py
+python tests/test_spatial_integration.py
+python tests/test_spatial_evidence.py
+python tests/test_runtime.py
+python tests/test_search_visualization.py
+python tests/test_paper_exports.py
+python tests/test_goal_reference.py
+python tests/test_goal_guidance.py
+python tests/test_goal_search_integration.py
+python tests/test_grace_experiments.py
+python -m py_compile grace/actuator.py grace/outcome.py grace/control.py grace/odometry.py grace/spatial_memory.py grace/replay.py grace/diagnostics.py grace/visualization.py training_state.py envs/recovery.py envs/runtime.py networks.py grace/legacy/observation.py grace/legacy/control.py grace/legacy/feedback.py grace/legacy/branches.py grace/legacy/memory.py grace/evidence.py expr.py models.py tools.py test.py evaluate_checkpoints.py \
+  envs/tasks/minedojo/__init__.py envs/tasks/minedojo/wrappers.py envs/tasks/base/ls_imagine_wrapper.py
+bash -n scripts/test_all.sh
+sh -n scripts/train.sh
+echo '[GRACE] Regression tests and syntax: PASS'
+if [[ "${1:-}" == "--minedojo" || "${1:-}" == "--minedojo-off" || "${1:-}" == "--minedojo-abc" || "${1:-}" == "--minedojo-full" || "${1:-}" == "--minedojo-vnext" || "${1:-}" == "--minedojo-vnext4" ]]; then
+  MODE=full
+  EXTRA=()
+  PREFILL=32
+  CONFIGS=(minedojo apm_a apm_a_smoke)
+  if [[ "$1" == "--minedojo-abc" ]]; then
+    MODE=abc
+    CONFIGS=(minedojo apm_a apm_abc apm_a_smoke)
+    EXTRA=(--search_b_slots 4 --search_b_dim 16 --search_b_hidden 32 --search_b_lookback 12)
+  fi
+  if [[ "$1" == "--minedojo-full" ]]; then
+    MODE=complete
+    CONFIGS=(minedojo apm_a apm_full apm_a_smoke)
+    EXTRA=(--search_b_slots 4 --search_b_dim 16 --search_b_hidden 32 --search_b_lookback 12
+      --search_branch_every 64 --search_branch_count 2 --search_branch_prefix 2
+      --eval_every 32)
+  fi
+  if [[ "$1" == "--minedojo-vnext" || "$1" == "--minedojo-vnext4" ]]; then
+    MODE=vnext
+    PREFILL=40
+    CONFIGS=(minedojo apm_vnext apm_a_smoke)
+    EXTRA=(--vnext_slots 4 --vnext_memory_dim 16 --vnext_hidden 64
+      --vnext_future_dim 16 --vnext_start_step 32 --vnext_warmup 64
+      --vnext_full_step 96 --vnext_base_episode_fraction 0
+      --vnext_probe_probability 1 --eval_every 32 --eval_episode_num 3
+      --vnext_visual_every 32 --vnext_pose_min_samples 8)
+  fi
+  if [[ "$1" == "--minedojo-vnext4" ]]; then
+    MODE=vnext4
+    CONFIGS=(minedojo apm_vnext4 apm_a_smoke)
+    # Use the established smoke training-world seed.
+    EXTRA+=(--goal_ref_bank_root "${GOAL_REF_BANK_ROOT:-assets/goal_references}"
+      --goal_ref_train_every 1 --eval_every 48 --vnext_visual_every 48 --vnext_visual_strict True
+      --video_pred_log True --env_seed "${APM_SMOKE_ENV_SEED:-19}" --minedojo_gradle_offline "${MINEDOJO_GRADLE_OFFLINE:-False}")
+  fi
+  if [[ "$1" == "--minedojo-off" ]]; then
+    MODE=off
+    EXTRA=(--search_a_enabled False)
+  fi
+  # Fresh run root prevents stale checkpoints from satisfying verification.
+  RUN_ROOT="${APM_SMOKE_ROOT:-./logs/test_apm_a_v4}/${MODE}_$(date +%Y%m%dT%H%M%S)_$$"
+  export MINEDOJO_HEADLESS=1 PYTHONUNBUFFERED=1
+  echo "[APM] MineDojo $MODE: 96 train steps including $PREFILL prefill; short eval."
+  python expr.py \
+    --configs "${CONFIGS[@]}" \
+    --task minedojo_harvest_sand --target_item sand \
+    --steps 96 --prefill "$PREFILL" --eval_every 96 --eval_episode_num 1 \
+    --episode_max_steps_override 32 --log_every 16 --train_ratio 4 \
+    --search_a_start_step 32 --search_a_override_prob 1.0 --search_a_epsilon 1.0 \
+    --search_a_min_labels 1 --search_a_min_positives 0 \
+    --search_a_low_evidence 1.1 --compile False --video_pred_log False \
+    --log_all_metrics True --env_seed 0 --logdir "$RUN_ROOT" "${EXTRA[@]}"
+  python - "$RUN_ROOT" "$MODE" <<'CHECK'
+import json
+import pathlib
+import sys
+import numpy as np
+import torch
+root, mode = pathlib.Path(sys.argv[1]), sys.argv[2]
+paths = list(root.glob('**/latest.pt'))
+assert len(paths) == 1, paths
+latest = paths[0]
+checkpoint = torch.load(latest, map_location='cpu')
+assert checkpoint['step'] == 96
+assert all(torch.isfinite(v).all() for v in checkpoint['agent_state_dict'].values())
+rows = [json.loads(line) for line in (latest.parent/'metrics.jsonl').read_text().splitlines()]
+assert all(np.isfinite(value) for row in rows for value in row.values())
+episodes = list(latest.parent.glob('*_eps/*.npz'))
+assert episodes
+override = 0
+known = 0
+for episode in episodes:
+    with np.load(episode) as data:
+        assert len({len(data[k]) for k in data.files}) == 1, episode
+        if (episode.parent.name == 'eval_eps' and mode not in ('complete','vnext','vnext4')) or mode == 'off':
+            assert all(not data[k].any() for k in data.files if k.startswith('search_') and k.endswith('_valid'))
+        else:
+            known += data['search_visible_valid'].sum()
+        if episode.parent.name == 'train_eps' and 'log_search_override' in data.files:
+            override += data['log_search_override'].sum()
+if mode in ('vnext', 'vnext4'):
+    from grace.outcome import check_prediction_checkpoint
+    check_prediction_checkpoint(checkpoint, True)
+    assert checkpoint['search_vnext_version'] == 2
+    assert checkpoint['spatial_map_version'] == 2
+    assert checkpoint['pose_version'] == 1
+    assert checkpoint['spatial_fix_version'] == 3
+    assert any(row.get('B/history_valid',0)>0 for row in rows), 'No causal persistent history supervised'
+    assert any(row.get('B/history_loss',0)>0 for row in rows), 'History network did not receive a loss'
+    assert checkpoint['search_a_label_version'] == 3
+    assert not any('_wm.search_a.' in k or '_wm.search_b.' in k for k in checkpoint['agent_state_dict'])
+    for key in ('A/prediction_loss','B/total_loss','C/transitions'):
+        assert any(key in row for row in rows), key
+    assert any(row.get('C/updates',0)>0 for row in rows)
+    # Optimizer calls/finite losses alone missed the historical zero-mask bug.
+    # A real collected replay must actually supervise and update future heads.
+    for key in ('A/future_train_windows', 'A/future_valid_labels',
+                'A/future_prediction_loss', 'A/future_grad_norm'):
+        assert any(row.get(key,0)>0 for row in rows), ('No real future learning',key)
+    for path in episodes:
+        with np.load(path) as d:
+            assert len({len(d[k]) for k in d.files}) == 1
+            if 'log_vnext_applied' in d:
+                active=d['log_vnext_version']==(3 if mode=='vnext4' else 2)
+                np.testing.assert_allclose(d['log_vnext_applied'][active],d['log_applied_control'][active])
+            if path.parent.name == 'eval_eps' and 'search_pose_valid' in d:
+                assert not d['search_pose_valid'].any()
+            assert 'log_actuator_valid' in d, path
+            assert not d['log_actuator_valid'][0], path
+            clean=(d['log_env_error'][1:]==0)
+            assert np.all(d['log_actuator_valid'][1:][clean]==1), path
+            if 'log_vnext_memory_refs' in d:
+                for t,refs in enumerate(d['log_vnext_memory_refs']):
+                    if not d['is_first'][t]:
+                        assert np.all(refs[refs>=0]<t), (path,t,refs)
+    if mode == 'vnext4':
+        assert checkpoint['goal_ref_version'] == 2
+        assert checkpoint['goal_controller_version'] == 3
+        assert checkpoint['goal_reference_fingerprint']
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        media = EventAccumulator(str(latest.parent)).Reload().Tags()
+        video_tags = set(media["images"]) | set(media["tensors"])
+        assert {"eval_openl", "eval_policy", "train_openl"} <= video_tags, media
+        assert any(row.get('D/updates', 0) > 0 for row in rows)
+        for path in episodes:
+            if path.parent.name == 'eval_eps':
+                with np.load(path) as d:
+                    assert not any(d[key].any() for key in d.files
+                                   if key.startswith(('goal_', 'search_')) and key.endswith('_valid')
+                                   and key != 'goal_image_valid')
+elif mode in ('full', 'abc', 'complete'):
+    assert checkpoint['search_a_version'] == (5 if mode == 'complete' else 4)
+    for key in ('A/future_loss','A/prediction_loss','A/new_loss','A/discovery_loss','A/revisit_loss','A/current_visible_loss','A/future_visible_loss','A/shared_grad_scale'):
+        assert any(key in row for row in rows), key
+    assert any('_a_opt' in key for key in checkpoint['optims_state_dict'])
+    assert checkpoint['search_a_control_version'] == 4
+    assert checkpoint['search_a_label_version'] == 2
+    assert known > 0, known
+    if mode == 'full':
+        assert override > 0, override
+    if mode in ('abc', 'complete'):
+        assert checkpoint['search_c_version'] == (2 if mode == 'complete' else 1)
+        assert any(row.get('C/transitions', 0) > 0 for row in rows)
+        assert any(row.get('C/updates', 0) > 0 for row in rows)
+        assert any('B/total_loss' in row for row in rows)
+    if mode == 'complete':
+        assert checkpoint['search_b_version'] == 3
+        assert any(row.get('C/imagined_transitions', 0) > 0 for row in rows)
+        assert any('C/task_actor_search_bonus' in row for row in rows)
+        assert any(row.get('C/branch_real_steps', 0) > 0 for row in rows)
+        assert any(row.get('C/branch_verified_options', 0) >= 2 for row in rows)
+        assert any(row.get('eval_observed_surface_cells', 0) > 0 for row in rows)
+    assert any(row.get('A/new_valid',0) > 0 for row in rows)
+    assert any(row.get('A/discovery_valid',0) > 0 for row in rows)
+    assert any(row.get('eval_search_decision_rate',0) > 0 for row in rows)
+else:
+    assert not any('.search_a.' in key for key in checkpoint['agent_state_dict'])
+    assert not any(row.get('eval_search_rate',0) for row in rows)
+    assert not any('A/prediction_loss' in row for row in rows)
+print('[APM] Verified model, real labels, eval isolation, replay and mode:', mode, latest)
+CHECK
+  echo "[APM] MineDojo $MODE: PASS"
+elif [[ -n "${1:-}" ]]; then
+  echo 'Usage: bash scripts/test_all.sh [--minedojo|--minedojo-off|--minedojo-abc|--minedojo-full|--minedojo-vnext|--minedojo-vnext4|--audit-replay ...|--branch-checkpoint ...|--startup-replay ...|--minedojo-recovery --output ...]' >&2
+  exit 2
+fi

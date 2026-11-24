@@ -13,9 +13,9 @@ import torch
 from torch.nn import functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from apm.legacy.observation import (SearchOutcomeHead, SearchAController, macro_actions, actor_action_sequence,
+from grace.legacy.observation import (SearchOutcomeHead, SearchAController, macro_actions, actor_action_sequence,
                       check_checkpoint, normalize_feature, MODEL_VERSION, LABEL_VERSION)
-from apm.evidence import (SearchEvidence, SearchEvidenceWrapper, SEARCH_LABEL_KEYS,
+from grace.evidence import (SearchEvidence, SearchEvidenceWrapper, SEARCH_LABEL_KEYS,
                              complete_episode_labels, lidar_rays)
 
 torch.set_num_threads(2)
@@ -1180,7 +1180,7 @@ class RepairTrainingTests(unittest.TestCase):
         self.assertEqual(result["extra_update_applied"],0)
 
     def test_old_checkpoint_remains_strictly_loadable(self):
-        from apm.legacy.observation import restore_a_config,apply_repaired_control
+        from grace.legacy.observation import restore_a_config,apply_repaired_control
         old_cfg=config_for_test(search_a_model_version=2,search_a_control_version=2,
                                 search_a_separate_optimizer=False)
         old=make_agent(old_cfg)
@@ -1341,7 +1341,7 @@ class PrefixAndFeedbackTests(unittest.TestCase):
         torch.testing.assert_close(predicted["event_logits"], head(feat, actions[:, :3])["event_logits"])
 
     def test_explicit_migration_does_not_claim_new_prefixes_are_trained(self):
-        from apm.legacy.observation import migrate_v3_head
+        from grace.legacy.observation import migrate_v3_head
         old, new = SearchOutcomeHead(16, hidden=16, version=3), SearchOutcomeHead(16, hidden=16, version=4)
         old.label_counts[:] = 10000
         report = migrate_v3_head(old, new)
@@ -1351,7 +1351,7 @@ class PrefixAndFeedbackTests(unittest.TestCase):
         self.assertEqual(float(new.label_counts.sum()), 0)
 
     def test_untrained_duration_is_rejected(self):
-        from apm.legacy.observation import PrefixSearchController
+        from grace.legacy.observation import PrefixSearchController
         with self.assertRaises(ValueError):
             PrefixSearchController(horizon=6, commit_steps=5)
 
@@ -1369,7 +1369,7 @@ class PrefixAndFeedbackTests(unittest.TestCase):
         self.assertEqual(unknown["search_first_discovery_valid"], 0)
 
     def test_default_prefix_really_moves_and_has_bounded_budget(self):
-        from apm.legacy.observation import PrefixSearchController, prefix_macro_actions
+        from grace.legacy.observation import PrefixSearchController, prefix_macro_actions
         seq = prefix_macro_actions(3, "cpu").argmax(-1)
         self.assertEqual(seq[6].tolist(), [3, 6, 6])
         self.assertEqual(seq[7].tolist(), [2, 6, 6])
@@ -1445,7 +1445,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
                                search_a_commit_steps=3, search_c_enabled=True, **changes)
 
     def dataset(self):
-        from apm.legacy.control import complete_c_fields
+        from grace.legacy.control import complete_c_fields
         data = replay_batch(time=12)
         episode = complete_c_fields({k: v[0] for k, v in data.items()})
         data = {k: v[None] for k, v in episode.items()}
@@ -1461,7 +1461,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
         return data
 
     def test_semimarkov_discount_true_feedback_and_censoring(self):
-        from apm.legacy.control import build_transitions
+        from grace.legacy.control import build_transitions
         cfg, data = self.config(), self.dataset()
         data["is_last"][0, 8] = 1
         data["is_first"][0, 9] = 1
@@ -1478,7 +1478,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
 
     def test_real_rollout_records_replay_train_and_strict_reload(self):
         import tools
-        from apm.legacy.control import check_c_checkpoint
+        from grace.legacy.control import check_c_checkpoint
         from evaluate_checkpoints import configure_search_checkpoint
         for enabled_b in (False, True):
             cfg = self.config(search_b_enabled=enabled_b, search_b_lookback=4, search_b_slots=2)
@@ -1533,7 +1533,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
         return {k: v[0] for k, v in self.dataset().items()}
 
     def test_C_ablation_masks_A_visibility_and_has_private_rng(self):
-        from apm.legacy.control import SearchBehavior
+        from grace.legacy.control import SearchBehavior
         cfg = self.config(search_c_use_predictions=False)
         c = SearchBehavior(16, cfg)
         state = torch.randn(2, 16)
@@ -1550,7 +1550,7 @@ class SearchFeedbackLearningTests(unittest.TestCase):
         torch.testing.assert_close(probability, torch.ones(2))
 
     def test_C_runtime_ablation_keeps_strict_weights_and_is_explicit(self):
-        from apm.legacy.control import apply_c_control_mode
+        from grace.legacy.control import apply_c_control_mode
         from evaluate_checkpoints import apply_a_control_mode
         agent = make_agent(self.config())
         saved = agent.state_dict()
@@ -1601,7 +1601,7 @@ def audit_replay(argv):
     import time
     import gym
     import networks
-    from apm.legacy.observation import migrate_v3_head
+    from grace.legacy.observation import migrate_v3_head
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=pathlib.Path, required=True)
     parser.add_argument("--replay", type=pathlib.Path, required=True)
@@ -1929,7 +1929,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertGreater(metrics["C/imagined_transitions"],0)
 
     def test_return_targets_unknown_masks_terminal_and_reliability_gradient(self):
-        from apm.legacy.feedback import window_targets, FullSearchOutcomeHead
+        from grace.legacy.feedback import window_targets, FullSearchOutcomeHead
         cfg = self.cfg(search_b_enabled=False)
         raw = SearchFeedbackLearningTests().dataset()
         data = {k:torch.tensor(v) for k,v in raw.items()}
@@ -1958,7 +1958,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertTrue((projected[:,1] <= cfg.search_c_discovery_weight).all())
 
     def test_terminal_differs_from_truncation(self):
-        from apm.legacy.control import build_transitions
+        from grace.legacy.control import build_transitions
         data = SearchFeedbackLearningTests().dataset()
         data["is_last"][0,8] = 1
         cfg = self.cfg()
@@ -1969,7 +1969,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertEqual(rec[-1]["discount"],0)
 
     def test_actor_bonus_alignment_masks_long_jumps_and_excludes_task_reward(self):
-        from apm.legacy.feedback import actor_search_bonus, FullSearchOutcomeHead
+        from grace.legacy.feedback import actor_search_bonus, FullSearchOutcomeHead
         cfg = self.cfg(search_b_enabled=False, search_c_step_cost=0., search_c_reverse_cost=0.)
         head = FullSearchOutcomeHead(16,8,32,version=5,feedback_config=cfg)
         head.prefix_counts.fill_(100)
@@ -1992,7 +1992,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertGreater(float(bonus[1].sum()),0)
 
     def test_branch_comparison_rejects_same_seed_different_scene(self):
-        from apm.legacy.branches import compare_branch_scenes
+        from grace.legacy.branches import compare_branch_scenes
         base=dict(world_seed=1,mission_seed=1,java_launch_seed=1,terrain_sha256="x",rays_sha256="r",
             inventory={},life_stats={},policy_observation_keys=["image"],
             image_sha256="i",heatmap_sha256="h",
@@ -2013,7 +2013,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertFalse(compare_branch_scenes(base,different,prefix,prefix)["match"])
 
     def test_real_branch_budget_replay_and_training_with_native_heatmap_shape(self):
-        from apm.legacy.branches import collect_real_branches
+        from grace.legacy.branches import collect_real_branches
         from expr import make_dataset
         from unittest import mock
         import tempfile
@@ -2040,8 +2040,8 @@ class FullPlanTests(unittest.TestCase):
             cfg.steps=initial_step+10;cfg.search_branch_count=2;cfg.search_branch_prefix=2
             replay=OrderedDict()
             logger=SimpleNamespace(step=initial_step,scalar=lambda *a:None,write=lambda:None)
-            with mock.patch("apm.legacy.branches.make_branch_env",side_effect=lambda *a:(Env(),None)), mock.patch(
-                    "apm.legacy.branches.scene_record",return_value=scene):
+            with mock.patch("grace.legacy.branches.make_branch_env",side_effect=lambda *a:(Env(),None)), mock.patch(
+                    "grace.legacy.branches.scene_record",return_value=scene):
                 used=collect_real_branches(agent,cfg,replay,logger,1)
             self.assertEqual(used,10)
             self.assertEqual(agent._step,cfg.steps)
@@ -2063,7 +2063,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertEqual([config["search_"+x+"_model_version"] for x in ("a","b","c")],[5,3,2])
         self.assertTrue(config["search_branch_enabled"])
         text=(root/"scripts/train.sh").read_text()
-        self.assertIn('MODE="${A_MODE:-vnext}"',text)
+        self.assertIn('MODE="${EXPERIMENT_MODE:-${A_MODE:-vnext}}"',text)
         self.assertIn('vnext) set -- --configs minedojo apm_vnext',text)
         self.assertIn('abc) set -- --configs minedojo apm_a apm_full',text)
 
@@ -2254,7 +2254,7 @@ def audit_real_branches(argv):
     from collections import OrderedDict
     from datetime import datetime
     from expr import LS_Imagine, make_dataset
-    from apm.legacy.branches import collect_real_branches
+    from grace.legacy.branches import collect_real_branches
     parser=argparse.ArgumentParser()
     parser.add_argument("--checkpoint",type=pathlib.Path,required=True)
     parser.add_argument("--output",type=pathlib.Path,required=True)

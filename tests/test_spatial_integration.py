@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT/"tests"))
 from test_search_a import make_agent, replay_batch
-from test_search_vnext_integration import config as base_config
-from apm.evidence import VNEXT_LABEL_KEYS, SPATIAL_LABEL_SHAPES
-from apm.outcome import _hash_int, check_vnext_checkpoint, restore_vnext_config, SearchVNext
-from apm.replay import sample_spatial_episodes
+from test_predictive_integration import config as base_config
+from grace.evidence import VNEXT_LABEL_KEYS, SPATIAL_LABEL_SHAPES
+from grace.outcome import _hash_int, check_prediction_checkpoint, restore_prediction_config, PredictiveMemorySystem
+from grace.replay import sample_spatial_episodes
 from expr import make_dataset
 from training_state import save_training_checkpoint, prepare_resume, restore_training_state
 import tools
@@ -122,8 +122,8 @@ class SpatialIntegrationTests(unittest.TestCase):
                     control["trial_phase"][:]=0
                     state=(None,None,None,control)
                 return {"action":torch.eye(12)[[6]]},state
-            def observe_vnext_results(self,state,results,training=False):
-                owner.observe_vnext_results(state,results,training)
+            def observe_control_results(self,state,results,training=False):
+                owner.observe_control_results(state,results,training)
         logger=SimpleNamespace(step=0,scalar=lambda *a:None,video=lambda *a:None,write=lambda **kw:None)
         storage=mock.Mock();storage.count_data_pairs.return_value=0
         storage.get_and_remove_less_than.return_value=[]
@@ -406,32 +406,32 @@ class SpatialIntegrationTests(unittest.TestCase):
         checkpoint = dict(agent_state_dict=agent.state_dict(),search_vnext_version=2,
             vnext_memory_version=2,pose_version=1,spatial_map_version=2,
             actuator_version=1,search_a_label_version=3,config={})
-        check_vnext_checkpoint(checkpoint,True)
-        restored = restore_vnext_config({"vnext_spatial_fix_version":1},checkpoint)
+        check_prediction_checkpoint(checkpoint,True)
+        restored = restore_prediction_config({"vnext_spatial_fix_version":1},checkpoint)
         self.assertEqual(restored["vnext_spatial_fix_version"],0)
         checkpoint["spatial_fix_version"] = 1
         with self.assertRaisesRegex(ValueError,"revision"):
-            check_vnext_checkpoint(checkpoint,True)
+            check_prediction_checkpoint(checkpoint,True)
         checkpoint["config"]["vnext_spatial_fix_version"] = 1
-        check_vnext_checkpoint(checkpoint,True)
-        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],1)
+        check_prediction_checkpoint(checkpoint,True)
+        self.assertEqual(restore_prediction_config({},checkpoint)["vnext_spatial_fix_version"],1)
         checkpoint["spatial_fix_version"] = 2
         checkpoint["config"]["vnext_spatial_fix_version"] = 2
-        check_vnext_checkpoint(checkpoint,True)
-        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],2)
+        check_prediction_checkpoint(checkpoint,True)
+        self.assertEqual(restore_prediction_config({},checkpoint)["vnext_spatial_fix_version"],2)
         checkpoint["spatial_fix_version"] = 3
         checkpoint["config"]["vnext_spatial_fix_version"] = 3
-        check_vnext_checkpoint(checkpoint,True)
-        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_spatial_fix_version"],3)
-        self.assertEqual(restore_vnext_config({"vnext_pose_loss_version":2},checkpoint)["vnext_pose_loss_version"],1)
+        check_prediction_checkpoint(checkpoint,True)
+        self.assertEqual(restore_prediction_config({},checkpoint)["vnext_spatial_fix_version"],3)
+        self.assertEqual(restore_prediction_config({"vnext_pose_loss_version":2},checkpoint)["vnext_pose_loss_version"],1)
         checkpoint["config"]["vnext_pose_loss_version"] = 2
-        self.assertEqual(restore_vnext_config({},checkpoint)["vnext_pose_loss_version"],2)
+        self.assertEqual(restore_prediction_config({},checkpoint)["vnext_pose_loss_version"],2)
         checkpoint["spatial_fix_version"] = 4
         checkpoint["config"]["vnext_spatial_fix_version"] = 4
         with self.assertRaisesRegex(ValueError,"revision"):
-            check_vnext_checkpoint(checkpoint,True)
+            check_prediction_checkpoint(checkpoint,True)
         with self.assertRaisesRegex(ValueError,"revision"):
-            SearchVNext(24,config(vnext_spatial_fix_version=9))
+            PredictiveMemorySystem(24,config(vnext_spatial_fix_version=9))
 
     def test_clearance_endpoint_obstruction_uses_real_movement_label(self):
         cfg = config(batch_size=1,batch_length=4)
@@ -561,7 +561,7 @@ class SpatialIntegrationTests(unittest.TestCase):
             agent._train(next(make_dataset({"spatial": ep}, cfg)))
             path = save_training_checkpoint(agent, cfg, 100000)
             checkpoint = torch.load(path, map_location="cpu")
-            check_vnext_checkpoint(checkpoint, True)
+            check_prediction_checkpoint(checkpoint, True)
             self.assertEqual(checkpoint["search_vnext_version"], 2)
             self.assertEqual(checkpoint["vnext_memory_version"], 2)
             self.assertEqual(checkpoint["pose_version"], 1)

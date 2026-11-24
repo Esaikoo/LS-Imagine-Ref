@@ -7,11 +7,11 @@ from collections import OrderedDict
 
 import copy
 import uuid
-from apm.evidence import (SEARCH_LABEL_KEYS, VNEXT_LABEL_KEYS, empty_labels,
+from grace.evidence import (SEARCH_LABEL_KEYS, VNEXT_LABEL_KEYS, empty_labels,
                           SPATIAL_LABEL_SHAPES, empty_spatial_labels,
                           GOAL_LABEL_SHAPES, GOAL_LABEL_DTYPES, GOAL_IMAGE_SIZE,
                           empty_goal_labels)
-from apm.actuator import CONTROL_KEYS, CONTROL_DIM, STATE_DIM, apply_command, world_group_id
+from grace.actuator import CONTROL_KEYS, CONTROL_DIM, STATE_DIM, apply_command, world_group_id
 
 BASIC_ACTIONS = {
     "noop": dict(),
@@ -232,7 +232,7 @@ class LSImagineWrapper(Wrapper, ABC):
             evidence.update({key: np.asarray(obs.get(key, value), GOAL_LABEL_DTYPES[key]).copy()
                              for key, value in empty_goal_labels().items()})
             if evidence["goal_label_version"]:
-                from apm.replay import identity
+                from grace.replay import identity
                 evidence["goal_holdout"] = np.uint8(identity(str(self._world_group)) % 5 == 0)
         image = obs['rgb'] # 3 * H * W
         image = image.transpose(1, 2, 0).astype(np.uint8) # H * W * 3

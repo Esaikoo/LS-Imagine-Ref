@@ -1,6 +1,6 @@
 from typing import Dict
 import copy
-from apm.evidence import SearchEvidenceWrapper, SpatialEvidenceWrapper, lidar_rays
+from grace.evidence import SearchEvidenceWrapper, SpatialEvidenceWrapper, lidar_rays
 from omegaconf import OmegaConf
 from minedojo.tasks import MetaTaskBase, _meta_task_make, _parse_inventory_dict, ALL_TASKS_SPECS
 from minedojo.sim import MineDojoSim

@@ -16,7 +16,12 @@ export PYTHONUNBUFFERED=1
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 LOG_ROOT="${LOG_ROOT:-/root/rivermind-data/mine/projects/tb_logs}"
-MODE="${A_MODE:-vnext}"
+if [ -n "${EXPERIMENT_MODE:-}" ] && [ -n "${A_MODE:-}" ] && [ "$EXPERIMENT_MODE" != "$A_MODE" ]; then
+  echo "Conflicting EXPERIMENT_MODE=$EXPERIMENT_MODE and A_MODE=$A_MODE" >&2
+  exit 2
+fi
+MODE="${EXPERIMENT_MODE:-${A_MODE:-vnext}}"
+export EXPERIMENT_MODE="$MODE"
 
 case "$TASK_NAME" in
   harvest_log_in_plains) TARGET_ITEM=log ;;
@@ -29,6 +34,8 @@ esac
 
 # Default vnext is the task-preserving revision; abc/full preserve historical runs.
 case "$MODE" in
+  grace_full|grace_d_only|grace_dac|grace_no_fusion)
+    set -- --configs minedojo "$MODE" --goal_ref_bank_root "${BANK:-assets/goal_references}" "$@" ;;
   vnext) set -- --configs minedojo apm_vnext "$@" ;;
   vnext4) set -- --configs minedojo apm_vnext4 --goal_ref_bank_root "${BANK:-assets/goal_references}" "$@" ;;
   vnext4_d_only) set -- --configs minedojo apm_vnext4 --goal_search_enabled False --vnext_control False "$@" ;;
@@ -50,7 +57,7 @@ case "$MODE" in
   ac) set -- --configs minedojo apm_a apm_ac "$@" ;;
   bc) set -- --configs minedojo apm_a apm_bc "$@" ;;
   b) set -- --configs minedojo apm_b "$@" ;;
-  *) echo "A_MODE must be vnext4, vnext4_d_only, vnext4_search_only, vnext, vnext_ac, vnext_no_search, vnext_no_interaction, abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
+  *) echo "Unknown experiment mode; use grace_full, grace_d_only, grace_dac, grace_no_fusion, or a historical mode: vnext4, vnext4_d_only, vnext4_search_only, vnext, vnext_ac, vnext_no_search, vnext_no_interaction, abc, a5, ab5, ac5, bc2, b3, full, off, loss_only, ab, abc_v1, ac, bc, or b" >&2; exit 2 ;;
 esac
 
 RUN_LOG_ROOT="$LOG_ROOT/$PROJECT_NAME/$MODE"
@@ -134,7 +141,7 @@ fi
 mkdir -p "$RUN_LOG_ROOT"
 cd "$PROJECT_ROOT"
 
-echo "[train] task=$TASK_NAME A_MODE=$MODE logdir=$RUN_LOG_ROOT"
+echo "[train] task=$TASK_NAME EXPERIMENT_MODE=$MODE logdir=$RUN_LOG_ROOT"
 set -- python expr.py \
     --task "minedojo_$TASK_NAME" \
     --target_item "$TARGET_ITEM" \

@@ -11,8 +11,8 @@ import tools
 from parallel import Parallel, Damy
 
 from expr import LS_Imagine, make_env, make_dataset, check_b_checkpoint
-from apm.legacy.observation import check_checkpoint, restore_a_config, apply_repaired_control
-from apm.legacy.control import restore_c_config, apply_c_control_mode
+from grace.legacy.observation import check_checkpoint, restore_a_config, apply_repaired_control
+from grace.legacy.control import restore_c_config, apply_c_control_mode
 from evaluate_checkpoints import create_search_visualizer
 
 os.environ["MUJOCO_GL"] = "osmesa"
@@ -22,11 +22,11 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 def configure_evaluation(config, checkpoint):
     """Restore trained shapes, then honor explicit runtime control-off flags."""
-    from apm.outcome import restore_vnext_config
+    from grace.outcome import restore_prediction_config
     runtime_vnext_control = getattr(config, "vnext_control", True)
     runtime_vnext_interaction = getattr(config, "vnext_interaction", True)
     runtime_vnext_memory = getattr(config, "vnext_memory_enabled", True)
-    restore_vnext_config(vars(config), checkpoint)
+    restore_prediction_config(vars(config), checkpoint)
     from training_state import validate_goal_checkpoint
     validate_goal_checkpoint(checkpoint, vars(config), evaluation=True)
     if config.search_vnext_enabled:
